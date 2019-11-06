@@ -30,12 +30,15 @@ class GridTrader(object):
         self.closedPositions = []
         self.fee = 0.0004
         self.statusUpdated = False
-        with open(self.stateFile, 'r') as fp:
-            state = json.load(fp)
-            if 'openedPositions' in state:
-                self.openedPositions = state['openedPositions']
-            if 'closedPositions' in state:
-                self.closedPositions = state['closedPositions']
+        try:
+            with open(self.stateFile, 'r') as fp:
+                state = json.load(fp)
+                if 'openedPositions' in state:
+                    self.openedPositions = state['openedPositions']
+                if 'closedPositions' in state:
+                    self.closedPositions = state['closedPositions']
+        except Exception as e:
+            pass
 
     def doPassiveTrade(self):
         orderBook = self.ex.level1OrderBook(self.symbol)
@@ -59,7 +62,7 @@ class GridTrader(object):
                         print(p)
                         p['status'] = 3 # order is Filled
                         closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
-                        closePrice = f'{closePrice:>.2f}' if self.symbol == "ETH-USDT" else f'{closePrice:>.5f}'
+                        closePrice = self._pricePrecision(closePrice)
                         res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
                         if res is not None and res['data']['action'] == 'new':
                             p['closeOrderId'] = res['data']['coid']
@@ -90,7 +93,7 @@ class GridTrader(object):
             return False
         p = {
             'symbol': self.symbol.replace('-', '/'),
-            'price': f'{openPrice:>.2f}' if self.symbol == "ETH-USDT" else f'{openPrice:>.5f}',
+            'price': self._pricePrecision(openPrice),
             'volume': f"{volume:>.3f}",
             'status': 1, # prepare to open position
             'closedPrice': 0,
@@ -126,6 +129,13 @@ class GridTrader(object):
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
         print(tb)
 
+    def _pricePrecision(self, price):
+        if self.symbol == 'ETH-USDT':
+            return f'{price:>.2f}'
+        elif self.symbol == 'QTUM-USDT':
+            return f'{price:>.3f}'
+        else:
+            return f'{price:>.5f}'
 
 if __name__ == "__main__":
     apiKey = input("Input api key: ")

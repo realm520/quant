@@ -88,6 +88,9 @@ class GridTrader(object):
 
     def openPosition(self, orderBook):
         openPrice = Decimal(orderBook['askPrice'])
+        gap = (openPrice - Decimal(orderBook['bidPrice'])) / openPrice
+        if gap > Decimal(0.005):
+            return False
         volume = Decimal(self.amount) / openPrice
         if volume > Decimal(orderBook['askSize']):
             return False

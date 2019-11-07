@@ -57,17 +57,20 @@ class GridTrader(object):
                     continue
                 elif p['status'] == 2:
                     res = self.ex.getOrderStatus(p['placeOrderId'])
-                    if res is not None and res['code'] == 0 and res['data']['status'] == 'Filled':
-                        print('buy order filled, place sell order')
-                        print(p)
-                        p['status'] = 3 # order is Filled
-                        closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
-                        closePrice = self._pricePrecision(closePrice)
-                        res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
-                        if res is not None and res['data']['action'] == 'new':
-                            p['closeOrderId'] = res['data']['coid']
-                            p['status'] = 4 # place close order
-                            p['closedPrice'] = closePrice
+                    if res is not None and res['code'] == 0:
+                        if res['data']['status'] == 'Filled':
+                            print('buy order filled, place sell order')
+                            print(p)
+                            p['status'] = 3 # order is Filled
+                            closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
+                            closePrice = self._pricePrecision(closePrice)
+                            res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
+                            if res is not None and res['data']['action'] == 'new':
+                                p['closeOrderId'] = res['data']['coid']
+                                p['status'] = 4 # place close order
+                                p['closedPrice'] = closePrice
+                    elif res['data']['status'] == 'Cancel':
+                        self.openedPositions.remove(p)
                 elif p['status'] == 3:
                     logging.info("Need to place close order...")
                 elif p['status'] == 4:
@@ -116,21 +119,19 @@ class GridTrader(object):
             json.dump(data, fp)
 
     def printStat(self):
-        stat = {'TotalPositions': len(self.openedPositions)}
-        profit = 0
-        for p in self.positions:
-            if p['status'] == 2:
-                profit += (p['closedPrice'] - p['price']) * p['quantity']
-        stat['Profit'] = profit
-        logging.info(json.dumps(stat, indent=4))
+        stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': len(self.closedPositions)}
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
         for p in self.openedPositions:
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
         print(tb)
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
+        profit = Decimal(0)
         for p in self.closedPositions:
+            profit += (Decimal(p['closedPrice']) - Decimal(p['price'])) * Decimal(p['volume'])
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
         print(tb)
+        stat['Profit'] = f'{profit:>.5f}'
+        logging.info(json.dumps(stat, indent=4))
 
     def _pricePrecision(self, price):
         if self.symbol == 'ETH-USDT':

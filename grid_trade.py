@@ -69,8 +69,8 @@ class GridTrader(object):
                                 p['closeOrderId'] = res['data']['coid']
                                 p['status'] = 4 # place close order
                                 p['closedPrice'] = closePrice
-                    elif res['data']['status'] == 'Cancel':
-                        self.openedPositions.remove(p)
+                        elif res['data']['status'] == 'Canceled':
+                            self.openedPositions.remove(p)
                 elif p['status'] == 3:
                     logging.info("Need to place close order...")
                 elif p['status'] == 4:

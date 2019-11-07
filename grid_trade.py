@@ -120,6 +120,8 @@ class GridTrader(object):
 
     def printStat(self):
         stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': len(self.closedPositions)}
+        lowPrice = Decimal(self.openedPositions[-1]['price']) * Decimal(0.99 - self.fee)
+        stat['nextOpenPrice'] = f'{lowPrice:>.5f}'
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
         for p in self.openedPositions:
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])

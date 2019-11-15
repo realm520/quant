@@ -29,7 +29,7 @@ class GridTrader(object):
         self.openedPositions = []
         self.closedPositions = []
         self.fee = 0.0004
-        self.statusUpdated = False
+        self.lastPrice = Decimal(0)
         try:
             with open(self.stateFile, 'r') as fp:
                 state = json.load(fp)
@@ -44,11 +44,12 @@ class GridTrader(object):
         orderBook = self.ex.level1OrderBook(self.symbol)
         if orderBook is None:
             return
+        self.lastPrice = orderBook['bidPrice']
         logging.info(f'Tick: {json.dumps(orderBook)}')
         if len(self.openedPositions) == 0:
             self.openPosition(orderBook)
-        elif len(self.openedPositions) >= 10:
-            logging.info("More than 10 positions opened, pending...")
+        elif len(self.openedPositions) >= 20:
+            logging.info("More than 20 positions opened, pending...")
             return
         else:
             for p in self.openedPositions:
@@ -84,7 +85,7 @@ class GridTrader(object):
             if len(self.openedPositions) >= 1:
                 lowPrice = Decimal(self.openedPositions[-1]['price'])
                 currentPrice = Decimal(orderBook['askPrice'])
-                if len(self.openedPositions) < 10 \
+                if len(self.openedPositions) < 20 \
                     and self.openedPositions[-1]['status'] >= 3 \
                     and lowPrice * Decimal(0.99 - self.fee) > currentPrice:
                     self.openPosition(orderBook)
@@ -120,11 +121,15 @@ class GridTrader(object):
 
     def printStat(self):
         stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': len(self.closedPositions)}
-        lowPrice = Decimal(self.openedPositions[-1]['price']) * Decimal(0.99 - self.fee)
+        lowPrice = Decimal(self.openedPositions[-1]['price']) * Decimal(0.99 - self.fee) if len(self.openedPositions) > 0 else Decimal("0.001")
         stat['nextOpenPrice'] = f'{lowPrice:>.5f}'
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
+        cost = Decimal(0)
+        fLoss = Decimal(0)
         for p in self.openedPositions:
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
+            cost += Decimal(p['price']) * Decimal(p['volume'])
+            fLoss += (Decimal(self.lastPrice) - Decimal(p['price'])) * Decimal(p['volume'])
         print(tb)
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
         profit = Decimal(0)
@@ -133,10 +138,12 @@ class GridTrader(object):
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
         print(tb)
         stat['Profit'] = f'{profit:>.5f}'
+        stat['Cost'] = f'{cost:>.5f}'
+        stat['FloatingLoss'] = f'{fLoss:>.5f}'
         logging.info(json.dumps(stat, indent=4))
 
     def _pricePrecision(self, price):
-        if self.symbol == 'ETH-USDT':
+        if self.symbol in ['ETH-USDT', 'BCH-USDT']:
             return f'{price:>.2f}'
         elif self.symbol == 'QTUM-USDT':
             return f'{price:>.3f}'

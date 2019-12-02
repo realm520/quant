@@ -18,17 +18,18 @@ logging.basicConfig(level=logging.INFO,
 
 
 class GridTrader(object):
-    def __init__(self, sid, ex, symbol, amount):
+    def __init__(self, sid, ex, symbol, amount, stopPrice):
         self.sid = sid
         self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
         self.ex = ex
         self.symbol = symbol
         self.amount = amount
+        self.stopPrice = Decimal(0)
         self.totalUsdt = 100
         self.positions = []
         self.openedPositions = []
         self.closedPositions = []
-        self.fee = 0.0004
+        self.fee = 0.001
         self.lastPrice = Decimal(0)
         try:
             with open(self.stateFile, 'r') as fp:
@@ -37,6 +38,8 @@ class GridTrader(object):
                     self.openedPositions = state['openedPositions']
                 if 'closedPositions' in state:
                     self.closedPositions = state['closedPositions']
+				if 'stopPrice' in state:
+					self.stopPrice = Decimal(state['stopPrice'])
         except Exception as e:
             pass
 
@@ -48,9 +51,6 @@ class GridTrader(object):
         logging.info(f'Tick: {json.dumps(orderBook)}')
         if len(self.openedPositions) == 0:
             self.openPosition(orderBook)
-        elif len(self.openedPositions) >= 20:
-            logging.info("More than 20 positions opened, pending...")
-            return
         else:
             for p in self.openedPositions:
                 if p['status'] == 1:
@@ -85,13 +85,18 @@ class GridTrader(object):
             if len(self.openedPositions) >= 1:
                 lowPrice = Decimal(self.openedPositions[-1]['price'])
                 currentPrice = Decimal(orderBook['askPrice'])
-                if len(self.openedPositions) < 20 \
-                    and self.openedPositions[-1]['status'] >= 3 \
+                if self.openedPositions[-1]['status'] >= 3 \
                     and lowPrice * Decimal(0.99 - self.fee) > currentPrice:
-                    self.openPosition(orderBook)
+                    if len(self.openedPositions) < 40:
+                        self.openPosition(orderBook)
+                    else:
+                        logging.info("More than 40 positions opened, pending...")
 
     def openPosition(self, orderBook):
         openPrice = Decimal(orderBook['askPrice'])
+        if self.stopPrice > Decimal(0) and self.stopPrice < openPrice:
+            logging.info(f'Over the price limit: {self.stopPrice} / {openPrice}')
+            return
         gap = (openPrice - Decimal(orderBook['bidPrice'])) / openPrice
         if gap > Decimal(0.005):
             return False
@@ -116,7 +121,7 @@ class GridTrader(object):
 
     def savePositions(self):
         with open(self.stateFile, 'w') as fp:
-            data = {'openedPositions': self.openedPositions, 'closedPositions': self.closedPositions}
+            data = {'openedPositions': self.openedPositions, 'closedPositions': self.closedPositions, 'stopPrice': f'{self.stopPrice:.5f}'}
             json.dump(data, fp)
 
     def printStat(self):
@@ -136,7 +141,8 @@ class GridTrader(object):
         for p in self.closedPositions:
             profit += (Decimal(p['closedPrice']) - Decimal(p['price'])) * Decimal(p['volume'])
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
-        print(tb)
+        # print(tb)
+        profit *= Decimal(0.999)
         stat['Profit'] = f'{profit:>.5f}'
         stat['Cost'] = f'{cost:>.5f}'
         stat['FloatingLoss'] = f'{fLoss:>.5f}'
@@ -156,8 +162,8 @@ if __name__ == "__main__":
     ex = BitMax(apiKey, secret)
     symbol = input("Input coin symbol: ")
     # symbol = 'BTMX-USDT'
-    if symbol.upper() not in ['ETH', 'ELF', 'BTMX']:
-        logging.error(f'Invalid coin symbol: {symbol}')
+    # if symbol.upper() not in ['ETH', 'ELF', 'BTMX']:
+    #     logging.error(f'Invalid coin symbol: {symbol}')
     trader = GridTrader('1', ex, symbol.upper()+'-USDT', 5.1)
     count = 0
     trader.printStat()
@@ -168,3 +174,4 @@ if __name__ == "__main__":
         if count % 10 == 0:
             trader.printStat()
         time.sleep(1)
+

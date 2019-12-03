@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO,
 
 
 class GridTrader(object):
-    def __init__(self, sid, ex, symbol, amount, stopPrice):
+    def __init__(self, sid, ex, symbol, amount):
         self.sid = sid
         self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
         self.ex = ex
@@ -26,7 +26,6 @@ class GridTrader(object):
         self.amount = amount
         self.stopPrice = Decimal(0)
         self.totalUsdt = 100
-        self.positions = []
         self.openedPositions = []
         self.closedPositions = []
         self.fee = 0.001
@@ -38,8 +37,8 @@ class GridTrader(object):
                     self.openedPositions = state['openedPositions']
                 if 'closedPositions' in state:
                     self.closedPositions = state['closedPositions']
-				if 'stopPrice' in state:
-					self.stopPrice = Decimal(state['stopPrice'])
+                if 'stopPrice' in state:
+                    self.stopPrice = Decimal(state['stopPrice'])
         except Exception as e:
             pass
 
@@ -100,7 +99,8 @@ class GridTrader(object):
         gap = (openPrice - Decimal(orderBook['bidPrice'])) / openPrice
         if gap > Decimal(0.005):
             return False
-        volume = Decimal(self.amount) / openPrice
+        amplify = Decimal(1) + Decimal(0.2) * Decimal(int(len(self.openedPositions) / 20))
+        volume = Decimal(self.amount) * amplify / openPrice
         if volume > Decimal(orderBook['askSize']):
             return False
         p = {

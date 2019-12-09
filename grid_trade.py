@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO,
 
 
 class GridTrader(object):
-    def __init__(self, sid, ex, symbol, amount):
+    def __init__(self, sid, ex, symbol, amount, db):
         self.sid = sid
         self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
         self.ex = ex
@@ -32,7 +32,7 @@ class GridTrader(object):
         self.openedPositions = []
         self.fee = 0.001
         self.lastPrice = Decimal(0)
-        self.db = Session()
+        self.db = db
         try:
             with open(self.stateFile, 'r') as fp:
                 state = json.load(fp)
@@ -223,18 +223,16 @@ if __name__ == "__main__":
     apiKey = input("Input api key: ")
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
-    symbol = input("Input coin symbol: ")
-    # symbol = 'BTMX-USDT'
-    # if symbol.upper() not in ['ETH', 'ELF', 'BTMX']:
-    #     logging.error(f'Invalid coin symbol: {symbol}')
-    trader = GridTrader('1', ex, symbol.upper()+'-USDT', 5.1)
+    symbols = ['BTMX-USDT', 'ETH-USDT']
+    db = Session()
+    traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]
     count = 0
-    trader.printStat()
     while True:
-        trader.doPassiveTrade()
-        trader.savePositions()
+        for t in traders:
+            if count % 10 == 0:
+                t.printStat()
+            t.doPassiveTrade()
+            t.savePositions()
         count += 1
-        if count % 10 == 0:
-            trader.printStat()
         time.sleep(1)
 

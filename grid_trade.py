@@ -7,7 +7,10 @@ import hmac, hashlib, base64
 import logging
 import prettytable as pt
 from decimal import Decimal
+from peewee import *
+from functools import reduce
 from btmx import BitMax
+from models import BtmxCompletedPosition, BtmxTradeHistory, Session
 
 
 logging.basicConfig(level=logging.INFO,
@@ -27,20 +30,82 @@ class GridTrader(object):
         self.stopPrice = Decimal(0)
         self.totalUsdt = 100
         self.openedPositions = []
-        self.closedPositions = []
         self.fee = 0.001
         self.lastPrice = Decimal(0)
+        self.db = Session()
         try:
             with open(self.stateFile, 'r') as fp:
                 state = json.load(fp)
                 if 'openedPositions' in state:
                     self.openedPositions = state['openedPositions']
-                if 'closedPositions' in state:
-                    self.closedPositions = state['closedPositions']
                 if 'stopPrice' in state:
                     self.stopPrice = Decimal(state['stopPrice'])
         except Exception as e:
             pass
+
+    def save2Db(self, position):
+        resp = self.ex.getOrderStatus(position['closeOrderId'])
+        if resp['code'] != 0:
+            logging.error(f"Fail to get order status: {resp['code']}")
+        o = resp['data']
+        profit = Decimal(o['filledQty']) * Decimal(o['avgPrice']) - Decimal(o['fee'])
+        db.add(BtmxTradeHistory(
+            coid=o['coid'],
+            accountCategory=o['accountCategory'],
+            accountId=o['accountId'],
+            avgPrice=o['avgPrice'],
+            baseAsset=o['baseAsset'],
+            quoteAsset=o['quoteAsset'],
+            btmxCommission=o['btmxCommission'],
+            execId=o['execId'],
+            fee=o['fee'],
+            feeAsset=o['feeAsset'],
+            filledQty=o['filledQty'],
+            notional=o['notional'],
+            orderPrice=o['orderPrice'],
+            orderQty=o['orderQty'],
+            orderType=o['orderType'],
+            sendingTime=o['sendingTime'],
+            side=o['side'],
+            status=o['status'],
+            symbol=o['symbol'],
+            time=o['time'],
+            userId=o['userId']
+        ))
+        resp = self.ex.getOrderStatus(position['placeOrderId'])
+        if resp['code'] != 0:
+            logging.error(f"Fail to get order status: {resp['code']}")
+        o = resp['data']
+        profit -= Decimal(o['filledQty']) * Decimal(o['avgPrice']) + Decimal(o['fee'])
+        db.add(BtmxTradeHistory(
+            coid=o['coid'],
+            accountCategory=o['accountCategory'],
+            accountId=o['accountId'],
+            avgPrice=o['avgPrice'],
+            baseAsset=o['baseAsset'],
+            quoteAsset=o['quoteAsset'],
+            btmxCommission=o['btmxCommission'],
+            execId=o['execId'],
+            fee=o['fee'],
+            feeAsset=o['feeAsset'],
+            filledQty=o['filledQty'],
+            notional=o['notional'],
+            orderPrice=o['orderPrice'],
+            orderQty=o['orderQty'],
+            orderType=o['orderType'],
+            sendingTime=o['sendingTime'],
+            side=o['side'],
+            status=o['status'],
+            symbol=o['symbol'],
+            time=o['time'],
+            userId=o['userId']
+        ))
+        db.add(BtmxCompletedPosition(
+            symbol=position['symbol'], 
+            openOrderId=position['placeOrderId'], 
+            closeOrderId=position['closeOrderId'],
+            profit=f"{profit:.8f}"))
+        db.commit()
 
     def doPassiveTrade(self):
         orderBook = self.ex.level1OrderBook(self.symbol)
@@ -78,7 +143,7 @@ class GridTrader(object):
                     if res is not None and res['code'] == 0 and res['data']['status'] == 'Filled':
                         p['status'] = 5
                         p['avgClosedPrice'] = res['data']['avgPrice']
-                        self.closedPositions.append(p)
+                        self.save2Db(p)
                         self.openedPositions.remove(p)
             # process lower grid
             if len(self.openedPositions) >= 1:
@@ -121,11 +186,12 @@ class GridTrader(object):
 
     def savePositions(self):
         with open(self.stateFile, 'w') as fp:
-            data = {'openedPositions': self.openedPositions, 'closedPositions': self.closedPositions, 'stopPrice': f'{self.stopPrice:.5f}'}
+            data = {'openedPositions': self.openedPositions, 'stopPrice': f'{self.stopPrice:.5f}'}
             json.dump(data, fp)
 
     def printStat(self):
-        stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': len(self.closedPositions)}
+        closedPosition = self.db.query(BtmxCompletedPosition).filter_by(symbol=self.symbol.replace('-', '/'))
+        stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': 0}
         lowPrice = Decimal(self.openedPositions[-1]['price']) * Decimal(0.99 - self.fee) if len(self.openedPositions) > 0 else Decimal("0.001")
         stat['nextOpenPrice'] = f'{lowPrice:>.5f}'
         tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
@@ -136,13 +202,9 @@ class GridTrader(object):
             cost += Decimal(p['price']) * Decimal(p['volume'])
             fLoss += (Decimal(self.lastPrice) - Decimal(p['price'])) * Decimal(p['volume'])
         print(tb)
-        tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
         profit = Decimal(0)
-        for p in self.closedPositions:
-            profit += (Decimal(p['closedPrice']) - Decimal(p['price'])) * Decimal(p['volume'])
-            tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
-        # print(tb)
-        profit *= Decimal(0.999)
+        for p in closedPosition:
+            profit += Decimal(p.profit)
         stat['Profit'] = f'{profit:>.5f}'
         stat['Cost'] = f'{cost:>.5f}'
         stat['FloatingLoss'] = f'{fLoss:>.5f}'
@@ -155,6 +217,7 @@ class GridTrader(object):
             return f'{price:>.3f}'
         else:
             return f'{price:>.5f}'
+
 
 if __name__ == "__main__":
     apiKey = input("Input api key: ")

@@ -1,23 +1,29 @@
 import json
 import time
-import copy
-from datetime import datetime
-import hmac, hashlib, base64
-# from pprint import pprint  
 import logging
+import logging.handlers
 import prettytable as pt
 from decimal import Decimal
-from peewee import *
-from functools import reduce
+from queue import Queue
 from btmx import BitMax
 from models import BtmxCompletedPosition, BtmxTradeHistory, Session
+from btmx_ws import BtmxWsThread
 
 
-logging.basicConfig(level=logging.INFO,
+for name in logging.Logger.manager.loggerDict.keys():
+    logger = logging.getLogger(name)
+    # print(f'name = {name}, logger = {logger}')
+    logger.setLevel(logging.WARNING)
+logging.basicConfig(level=logging.DEBUG,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s",
                     datefmt = '%Y-%m-%d  %H:%M:%S %a'
                     )
-
+fhDebug = logging.handlers.TimedRotatingFileHandler('grid-trade.debug.log', when="H", interval=1, backupCount=24)
+formatter = logging.Formatter("%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
+fhDebug.setFormatter(formatter)
+# fhDebug.setLevel(logging.DEBUG)
+logger = logging.getLogger()
+logger.addHandler(fhDebug)
 
 
 class GridTrader(object):
@@ -33,6 +39,7 @@ class GridTrader(object):
         self.fee = 0.001
         self.lastPrice = Decimal(0)
         self.db = db
+        self.count = 0
         try:
             with open(self.stateFile, 'r') as fp:
                 state = json.load(fp)
@@ -44,6 +51,7 @@ class GridTrader(object):
             pass
 
     def save2Db(self, position):
+        logging.info(f"Save position: {json.dumps(position)}")
         resp = self.ex.getOrderStatus(position['closeOrderId'])
         if resp['code'] != 0:
             logging.error(f"Fail to get order status: {resp['code']}")
@@ -107,10 +115,22 @@ class GridTrader(object):
             profit=f"{profit:.8f}"))
         db.commit()
 
-    def doPassiveTrade(self):
-        orderBook = self.ex.level1OrderBook(self.symbol)
-        if orderBook is None:
-            return
+    def updateOrder(self, order):
+        for p in self.openedPositions:
+            if p['status'] == 4 and p['closeOrderId'] == order['coid'] and order['status'] == 'Filled':
+                p['status'] = 5
+                p['avgClosedPrice'] = order['ap']
+                self.save2Db(p)
+                self.openedPositions.remove(p)
+                return True
+        return False
+
+    def doPassiveTrade(self, orderBook):
+        if orderBook['symbol'] != self.symbol:
+            return False
+        # orderBook = self.ex.level1OrderBook(self.symbol)
+        # if orderBook is None:
+        #     return
         self.lastPrice = orderBook['bidPrice']
         logging.info(f'Tick: {json.dumps(orderBook)}')
         if len(self.openedPositions) == 0:
@@ -138,13 +158,6 @@ class GridTrader(object):
                             self.openedPositions.remove(p)
                 elif p['status'] == 3:
                     logging.info("Need to place close order...")
-                elif p['status'] == 4:
-                    res = self.ex.getOrderStatus(p['closeOrderId'])
-                    if res is not None and res['code'] == 0 and res['data']['status'] == 'Filled':
-                        p['status'] = 5
-                        p['avgClosedPrice'] = res['data']['avgPrice']
-                        self.save2Db(p)
-                        self.openedPositions.remove(p)
             # process lower grid
             if len(self.openedPositions) >= 1:
                 lowPrice = Decimal(self.openedPositions[-1]['price'])
@@ -155,6 +168,10 @@ class GridTrader(object):
                         self.openPosition(orderBook)
                     else:
                         logging.info("More than 40 positions opened, pending...")
+        if self.count % 60 == 0:
+            self.printStat()
+        self.count += 1
+        return True
 
     def openPosition(self, orderBook):
         openPrice = Decimal(orderBook['askPrice'])
@@ -223,16 +240,23 @@ if __name__ == "__main__":
     apiKey = input("Input api key: ")
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
-    symbols = ['BTMX-USDT', 'ETH-USDT']
+    symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
     db = Session()
+    q = Queue()
     traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]
+    threads = [BtmxWsThread(apiKey, secret, s, ex.account_group, q) for s in symbols]
+    [t.start() for t in threads]
     count = 0
     while True:
+        data = q.get()
         for t in traders:
-            if count % 10 == 0:
-                t.printStat()
-            t.doPassiveTrade()
+            if 'm' in data:
+                if t.updateOrder(data):
+                    break
+            else:
+                if t.doPassiveTrade(data):
+                    break
             t.savePositions()
-        count += 1
-        time.sleep(1)
+    count += 1
+    # time.sleep(1)
 

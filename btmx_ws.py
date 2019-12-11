@@ -142,6 +142,7 @@ class BtmxWsThread(Thread):
                 self.running = False
             except Exception as e:
                 self.running = False
+        self.q.put({'m':'threadStop'})
 
     def run(self):
         self.connect()

@@ -130,8 +130,7 @@ class GridTrader(object):
                 res = self.ex.getOrderStatus(p['placeOrderId'])
                 if res is not None and res['code'] == 0:
                     if res['data']['status'] == 'Filled':
-                        print('buy order filled, place sell order')
-                        print(p)
+                        logging.info('buy order filled, place sell order')
                         p['status'] = 3 # order is Filled
                         closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
                         closePrice = self._pricePrecision(closePrice)
@@ -146,7 +145,7 @@ class GridTrader(object):
                 logging.info("Need to place close order...")
             elif p['status'] == 4:
                 res = self.ex.getOrderStatus(p['closeOrderId'])
-                logging.debug(f"closed order status: {res}")
+                logging.debug(f"closing order status: {res}")
                 if res is not None and res['code'] == 0 and res['data']['status'] == 'Filled':
                     p['status'] = 5
                     p['avgClosedPrice'] = res['data']['avgPrice']
@@ -156,17 +155,12 @@ class GridTrader(object):
             self.openedPositions.remove(p)
 
     def updateOrder(self, order):
-        print(f"order updated: {order}")
+        logging.debug(f"order updated: {order}")
         if self.symbol.replace('-', '/') != order['s']:
             return False
         for p in self.openedPositions:
-            if p['closeOrderId'] == order['coid']:
-                if p['status'] == 4 and order['status'] == 'Filled':
-                    p['status'] = 5
-                    p['avgClosedPrice'] = order['ap']
-                    self.save2Db(p)
-                    self.openedPositions.remove(p)
-                elif p['status'] == 2 and order['status'] == 'Filled':
+            if p['placeOrderId'] == order['coid']:
+                if p['status'] == 2 and order['status'] == 'Filled':
                     logging.debug('buy order filled, place sell order')
                     logging.debug(p)
                     p['status'] = 3 # order is Filled
@@ -178,6 +172,12 @@ class GridTrader(object):
                         p['status'] = 4 # place close order
                         p['closedPrice'] = closePrice
                 elif p['status'] == 2 and order['status'] == 'Canceled':
+                    self.openedPositions.remove(p)
+            elif p['closeOrderId'] == order['coid']:
+                if p['status'] == 4 and order['status'] == 'Filled':
+                    p['status'] = 5
+                    p['avgClosedPrice'] = order['ap']
+                    self.save2Db(p)
                     self.openedPositions.remove(p)
         return True
 
@@ -274,8 +274,8 @@ if __name__ == "__main__":
     apiKey = input("Input api key: ")
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
-    symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
-    # symbols = ['QTUM-USDT']
+    #symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
+    symbols = ['QTUM-USDT', 'HT-USDT']
     db = Session()
     q = Queue()
     traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]

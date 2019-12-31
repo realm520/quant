@@ -1,3 +1,4 @@
+import fire
 import json 
 import requests
 from datetime import datetime
@@ -51,6 +52,16 @@ class BitMax(object):
     def POST(self, url, *args, **kwargs):
         try: 
             res = requests.post(url, *args, **kwargs)
+            return self.__parse_response(res)
+        except requests.exceptions.ConnectionError: 
+            print(f"[WARN] Failed to connect {url}")
+            return None
+        except: 
+            raise
+
+    def DELETE(self, url, *args, **kwargs):
+        try: 
+            res = requests.delete(url, *args, **kwargs)
             return self.__parse_response(res)
         except requests.exceptions.ConnectionError: 
             print(f"[WARN] Failed to connect {url}")
@@ -143,20 +154,45 @@ class BitMax(object):
         pprint(order)
         return self.POST(f"{self.url}/{self.account_group}/api/v1/order", json=order, headers=headers)
 
+    def cancelOrder(self, origCoid, symbol):
+        ts = self.utc_timestamp()
+        coid = self.uuid32()
+        headers = self.make_auth_header(ts, "order", coid)
+        order = dict(
+            coid       = coid,
+            origCoid   = origCoid,
+            time       = ts,
+            symbol     = symbol.replace("-", "/")
+        )
+        return self.DELETE(f"{self.url}/{self.account_group}/api/v1/order", json=order, headers=headers)
+
     def user_info(self): 
         ts = self.utc_timestamp()
         headers = self.make_auth_header(ts, "user/info")
         return self.GET(f"{self.url}/api/v1/user/info", headers=headers)
 
-if __name__ == "__main__":
 
-    btmx = BitMax()
+class BtmxCli(object):
+    def __init__(self):
+        super().__init__()
+        self.btmx = BitMax("IsjLHkaqIvG8evygdPqL8ZHoETVUpXle", "huKb2kMUdCIZdmqGXUtakcixDHEvaECJ5k9Zp5saGVcoUmr84nbJYfZE6kJYEnYU")
+
+    def getOrderStatus(self, coid=''):
+        if coid == "":
+            print("Please indicate coid.")
+        else:
+            res = self.btmx.getOrderStatus(coid)
+            pprint(res)
+
+if __name__ == "__main__":
+    fire.Fire(BtmxCli)
+    # btmx = BitMax("IsjLHkaqIvG8evygdPqL8ZHoETVUpXle", "huKb2kMUdCIZdmqGXUtakcixDHEvaECJ5k9Zp5saGVcoUmr84nbJYfZE6kJYEnYU")
     
-    res = btmx.placeNewOrder(
-        symbol = "ETH/USDT",
-        price = "188.08596",
-        quantity = "0.027",
-        side = "sell")
+    # res = btmx.placeNewOrder(
+    #     symbol = "ETH/USDT",
+    #     price = "188.08596",
+    #     quantity = "0.027",
+    #     side = "sell")
     # res = btmx.listAssets()
     # res = btmx.listProducts()
     # res = btmx.level1OrderBook('BTMX-USDT')
@@ -164,5 +200,6 @@ if __name__ == "__main__":
     # res = btmx.getBalance('USDT')
     # res = btmx.listOpenOrders()
     # res = btmx.listHistoricalOrders()
-    # res = btmx.getOrderStatus('7gY8QGMdYKNLpV4ZRE5x6Ulp7qLFMlmm')
-    pprint(res)
+    # res = btmx.getOrderStatus('YdFEX7iHVZJlIDrVgysiSmeo2S9yoqzZ')
+    # res = btmx.user_info()
+    # pprint(res)

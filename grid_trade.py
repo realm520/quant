@@ -156,13 +156,14 @@ class GridTrader(object):
 
     def updateOrder(self, order):
         logging.debug(f"order updated: {order}")
+        logging.debug(self.symbol.replace('-', '/'))
         if self.symbol.replace('-', '/') != order['s']:
             return False
         for p in self.openedPositions:
             if p['placeOrderId'] == order['coid']:
+                logging.debug(p['placeOrderId'])
                 if p['status'] == 2 and order['status'] == 'Filled':
                     logging.debug('buy order filled, place sell order')
-                    logging.debug(p)
                     p['status'] = 3 # order is Filled
                     closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
                     closePrice = self._pricePrecision(closePrice)
@@ -275,7 +276,7 @@ if __name__ == "__main__":
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
     #symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
-    symbols = ['QTUM-USDT', 'HT-USDT']
+    symbols = ['BCH-USDT', 'QTUM-USDT']
     db = Session()
     q = Queue()
     traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]
@@ -290,10 +291,12 @@ if __name__ == "__main__":
                     if t.updateOrder(data):
                         break
                 elif data['m'] == "threadStop":
-                    logging.warn(f"thread stop, restart... {symbols[i]}")
-                    threads[i].join()
-                    threads[i] = BtmxWsThread(apiKey, secret, symbols[i], ex.account_group, q)
-                    threads[i].start()
+                    if threads[i].symbol == data['s']:
+                        logging.warning(f"thread stop, restart... {symbols[i]}")
+                        threads[i].join()
+                        threads[i] = BtmxWsThread(apiKey, secret, symbols[i], ex.account_group, q)
+                        threads[i].start()
+                        logging.warning(f"new thread started")
             else:
                 if t.doPassiveTrade(data):
                     break

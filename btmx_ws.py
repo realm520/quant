@@ -6,6 +6,7 @@ from datetime import datetime
 from threading import Thread
 from websocket import create_connection
 from decimal import Decimal
+import logging
 
 
 def uuid32():
@@ -109,6 +110,7 @@ class BtmxWsThread(Thread):
     def disconnect(self):
         try:
             self.ws.close()
+            logging.debug("disconnected")
         # except WebSocketConnectionClosedException as e:
         except Exception as e:
             pass
@@ -121,9 +123,9 @@ class BtmxWsThread(Thread):
         }"""
         self.ws.send(subscribe)
         depth = None
+        start_t = 0
         while self.running:
             try:
-                start_t = 0
                 if time.time() - start_t >= 30:
                     # Set a 30 second ping to keep connection alive
                     self.ws.ping("keepalive")
@@ -141,8 +143,10 @@ class BtmxWsThread(Thread):
             except ValueError as e:
                 self.running = False
             except Exception as e:
+                logging.warning(f"Exception in depth thread: {str(e)}")
                 self.running = False
-        self.q.put({'m':'threadStop'})
+        self.q.put({'m':'threadStop', 's':self.symbol})
+        logging.debug(f"listen complete {self.symbol}")
 
     def run(self):
         self.connect()

@@ -14,14 +14,14 @@ for name in logging.Logger.manager.loggerDict.keys():
     logger = logging.getLogger(name)
     # print(f'name = {name}, logger = {logger}')
     logger.setLevel(logging.WARNING)
-logging.basicConfig(level=logging.DEBUG,
-                    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s',
                     datefmt = '%Y-%m-%d  %H:%M:%S %a'
                     )
 fhDebug = logging.handlers.TimedRotatingFileHandler('grid-trade.debug.log', when="H", interval=1, backupCount=24)
 formatter = logging.Formatter("%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
 fhDebug.setFormatter(formatter)
-# fhDebug.setLevel(logging.DEBUG)
+fhDebug.setLevel(logging.DEBUG)
 logger = logging.getLogger()
 logger.addHandler(fhDebug)
 
@@ -189,7 +189,7 @@ class GridTrader(object):
         # if orderBook is None:
         #     return
         self.lastPrice = orderBook['bidPrice']
-        logging.info(f'Tick: {json.dumps(orderBook)}')
+        logging.debug(f'Tick: {json.dumps(orderBook)}')
         if len(self.openedPositions) == 0:
             self.openPosition(orderBook)
 
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
     #symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
-    symbols = ['BCH-USDT', 'QTUM-USDT']
+    symbols = ['QTUM-USDT', 'ELF-USDT']
     db = Session()
     q = Queue()
     traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]

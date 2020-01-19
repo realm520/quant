@@ -105,7 +105,7 @@ class BtmxWsThread(Thread):
     def connect(self):
         ts = utc_timestamp()
         headers = self.make_auth_header(ts, "api/stream")
-        self.ws = create_connection(self.url, header=headers)
+        self.ws = create_connection(self.url, header=headers) #, http_proxy_host="192.168.1.3", http_proxy_port=1080
 
     def disconnect(self):
         try:
@@ -166,11 +166,13 @@ if __name__ == '__main__':
     # wss://bitmax.io/api/public/ETH-BTC
     url     = f"wss://btmx.com/{group}/api/stream/ETH-BTC"
     q = Queue()
-    thread = BtmxWsThread(api_key, group, secret, 'BTMX-USDT', q)
+    thread = BtmxWsThread(api_key, secret, 'BTC-USDT', group, q)
     thread.start()
-    time.sleep(20)
-    while not q.empty():
-        data = q.get()
-        print(data)
+    while True:
+        try:
+            data = q.get()
+            print(data)
+        except KeyboardInterrupt:
+            break
     thread.stop()
     thread.join()

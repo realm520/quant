@@ -61,7 +61,8 @@ class BtmxWsDepth(object):
             "askPrice": self.asks[0][0],
             "askSize": self.asks[0][1],
             "bidPrice": self.bids[0][0],
-            "bidSize": self.bids[0][1]
+            "bidSize": self.bids[0][1],
+            "recvTime": int(time.time())
         }
 
 class BtmxWsThread(Thread):
@@ -105,7 +106,8 @@ class BtmxWsThread(Thread):
     def connect(self):
         ts = utc_timestamp()
         headers = self.make_auth_header(ts, "api/stream")
-        self.ws = create_connection(self.url, header=headers) #, http_proxy_host="192.168.1.3", http_proxy_port=1080
+	#, http_proxy_host="192.168.1.3", http_proxy_port=1080
+        self.ws = create_connection(self.url, header=headers)
 
     def disconnect(self):
         try:
@@ -137,6 +139,7 @@ class BtmxWsThread(Thread):
                         self.depth.update(msg)
                         self.q.put(self.depth.getOrderBook())
                     elif msg['m'] == 'order':
+                        logging.info(msg)
                         self.q.put(msg)
                 except: 
                     raise f"Failed to parse message a json: {data}"
@@ -164,7 +167,6 @@ if __name__ == '__main__':
     # Make sure your API key has view and trade permissions
     # If you do not plan to place order with websocket, try connecting with:
     # wss://bitmax.io/api/public/ETH-BTC
-    url     = f"wss://btmx.com/{group}/api/stream/ETH-BTC"
     q = Queue()
     thread = BtmxWsThread(api_key, secret, 'BTC-USDT', group, q)
     thread.start()

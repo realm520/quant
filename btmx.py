@@ -186,7 +186,7 @@ class BtmxCli(object):
 
 if __name__ == "__main__":
     fire.Fire(BtmxCli)
-    # btmx = BitMax("IsjLHkaqIvG8evygdPqL8ZHoETVUpXle", "huKb2kMUdCIZdmqGXUtakcixDHEvaECJ5k9Zp5saGVcoUmr84nbJYfZE6kJYEnYU")
+    # btmx = BitMax("", "")
     
     # res = btmx.placeNewOrder(
     #     symbol = "ETH/USDT",

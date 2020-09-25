@@ -183,6 +183,10 @@ class BtmxCli(object):
         else:
             res = self.btmx.getOrderStatus(coid)
             pprint(res)
+    
+    def listHistoryOrders(self):
+        res = self.btmx.listHistoricalOrders()
+        pprint(res)
 
 if __name__ == "__main__":
     fire.Fire(BtmxCli)

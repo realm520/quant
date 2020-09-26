@@ -9,7 +9,7 @@ from pprint import pprint
 
 class BitMax(object):
     def __init__(self, apiKey, secret):
-        self.url = "https://btmx.com"
+        self.url = "https://btmx.io"
         self.apiKey = apiKey
         self.secret = secret
         account_group = self.user_info()

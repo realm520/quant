@@ -1,5 +1,6 @@
 import json
 import time
+import copy
 import logging
 import logging.handlers
 import prettytable as pt
@@ -14,7 +15,7 @@ for name in logging.Logger.manager.loggerDict.keys():
     logger = logging.getLogger(name)
     # print(f'name = {name}, logger = {logger}')
     logger.setLevel(logging.WARNING)
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s',
                     datefmt = '%Y-%m-%d  %H:%M:%S %a'
                     )
@@ -27,20 +28,17 @@ logger.addHandler(fhDebug)
 
 
 class GridTrader(object):
-    def __init__(self, sid, ex, symbol, amount, db):
+    def __init__(self, sid, ex, symbol, db):
         self.sid = sid
         self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
         self.ex = ex
         self.symbol = symbol
-        self.amount = amount
         self.stopPrice = Decimal(0)
-        self.totalUsdt = 100
         self.openedPositions = []
         self.fee = 0.001
-        self.lastPrice = Decimal(0)
+        self.lastTick = None
         self.db = db
         self.count = 0
-        self.lastTime = time.time()
         try:
             with open(self.stateFile, 'r') as fp:
                 state = json.load(fp)
@@ -48,15 +46,18 @@ class GridTrader(object):
                     self.openedPositions = state['openedPositions']
                 if 'stopPrice' in state:
                     self.stopPrice = Decimal(state['stopPrice'])
+                if 'positionAmount' in state:
+                    self.amount = Decimal(state['positionAmount'])
         except Exception as e:
-            pass
+            logging.exception(f"Fail to load position file.")
+            raise Exception(f"Cannot start grid trader for {self.symbol}")
         self.checkOrderStatus()
 
     def save2Db(self, position):
         logging.info(f"Save position: {json.dumps(position)}")
         resp = self.ex.getOrderStatus(position['closeOrderId'])
         if resp['code'] != 0:
-            logging.error(f"Fail to get order status: {resp['code']}")
+            logging.error(f"Fail to get order status: {resp}")
         o = resp['data']
         profit = Decimal(o['filledQty']) * Decimal(o['avgPrice']) - Decimal(o['fee'])
         db.query(BtmxTradeHistory).filter_by(coid=o['coid']).delete()
@@ -120,9 +121,37 @@ class GridTrader(object):
             profit=f"{profit:.8f}"))
         db.commit()
 
+    def checkLastOrder(self):
+        if len(self.openedPositions) == 0:
+            return
+        order = self.openedPositions[-1]
+        if order['status'] == 1:
+            self.openedPositions.remove(order)
+        elif order['status'] == 2:
+            res = self.ex.getOrderStatus(order['placeOrderId'])
+            if res is not None and res['code'] == 0:
+                if res['data']['status'] == 'Filled':
+                    logging.info('buy order filled, place sell order')
+                    order['status'] = 3 # order is Filled
+                    closePrice = Decimal(order['price']) * Decimal(1.01 + self.fee * 2)
+                    closePrice = self._pricePrecision(closePrice)
+                    res = self.ex.placeNewOrder(self.symbol, closePrice, order['volume'], 'sell')
+                    if res is not None and res['data']['action'] == 'new':
+                        order['closeOrderId'] = res['data']['coid']
+                        order['status'] = 4 # place close order
+                        order['closedPrice'] = closePrice
+                elif res['data']['status'] == 'Canceled':
+                    self.openedPositions.remove(order)
+                elif res['data']['status'] == 'New':
+                    if (Decimal(self.lastTick['bidPrice']) - Decimal(res['data']['orderPrice'])) / Decimal(res['data']['orderPrice']) > Decimal(0.02):
+                        self.ex.cancelOrder(order['placeOrderId'], order['symbol'])
+                        self.openedPositions.remove(order)
+
     def checkOrderStatus(self):
+        needRecheck = False
         removedPositions = []
         for p in self.openedPositions:
+            logging.debug(p['status'])
             if p['status'] == 1:
                 logging.info(f"Need to place open order...{p['price']}")
                 continue
@@ -146,17 +175,24 @@ class GridTrader(object):
             elif p['status'] == 4:
                 res = self.ex.getOrderStatus(p['closeOrderId'])
                 logging.debug(f"closing order status: {res}")
-                if res is not None and res['code'] == 0 and res['data']['status'] == 'Filled':
-                    p['status'] = 5
-                    p['avgClosedPrice'] = res['data']['avgPrice']
-                    self.save2Db(p)
-                    removedPositions.append(p)
+                if res is not None and res['code'] == 0:
+                    if res['data']['status'] == 'Filled':
+                        p['status'] = 5
+                        p['avgClosedPrice'] = res['data']['avgPrice']
+                        self.save2Db(p)
+                        removedPositions.append(p)
+                    elif res['data']['status'] == 'Canceled':
+                        p['status'] = 2
+                        needRecheck = True
         for p in removedPositions:
             self.openedPositions.remove(p)
+        if needRecheck:
+            self.checkOrderStatus()
+            self.savePositions()
 
     def updateOrder(self, order):
         logging.debug(f"order updated: {order}")
-        logging.debug(self.symbol.replace('-', '/'))
+        #logging.debug(self.symbol.replace('-', '/'))
         if self.symbol.replace('-', '/') != order['s']:
             return False
         for p in self.openedPositions:
@@ -185,10 +221,7 @@ class GridTrader(object):
     def doPassiveTrade(self, orderBook):
         if orderBook['symbol'] != self.symbol:
             return False
-        # orderBook = self.ex.level1OrderBook(self.symbol)
-        # if orderBook is None:
-        #     return
-        self.lastPrice = orderBook['bidPrice']
+        self.lastTick = copy.deepcopy(orderBook)
         logging.debug(f'Tick: {json.dumps(orderBook)}')
         if len(self.openedPositions) == 0:
             self.openPosition(orderBook)
@@ -199,11 +232,14 @@ class GridTrader(object):
             currentPrice = Decimal(orderBook['askPrice'])
             if self.openedPositions[-1]['status'] >= 3 \
                 and lowPrice * Decimal(0.99 - self.fee) > currentPrice:
-                if len(self.openedPositions) < 40:
+                if len(self.openedPositions) < 80:
                     self.openPosition(orderBook)
                 else:
-                    logging.info("More than 40 positions opened, pending...")
-        if self.count % 60 == 0:
+                    logging.info("More than 80 positions opened, pending...")
+            elif self.openedPositions[-1]['status'] >= 3:
+                pass
+        if self.count % 60 == 0 and self.count > 0:
+            self.checkLastOrder()
             self.printStat()
         self.count += 1
         return True
@@ -238,7 +274,7 @@ class GridTrader(object):
 
     def savePositions(self):
         with open(self.stateFile, 'w') as fp:
-            data = {'openedPositions': self.openedPositions, 'stopPrice': f'{self.stopPrice:.5f}'}
+            data = {'openedPositions': self.openedPositions, 'positionAmount': f"{self.amount:.5f}", 'stopPrice': f'{self.stopPrice:.5f}'}
             json.dump(data, fp)
 
     def printStat(self):
@@ -246,13 +282,13 @@ class GridTrader(object):
         stat = {'TotalOpenPositions': len(self.openedPositions), 'TotalClosePositions': len(closedPosition)}
         lowPrice = Decimal(self.openedPositions[-1]['price']) * Decimal(0.99 - self.fee) if len(self.openedPositions) > 0 else Decimal("0.001")
         stat['nextOpenPrice'] = f'{lowPrice:>.5f}'
-        tb = pt.PrettyTable( ["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
+        tb = pt.PrettyTable(["Price", "Symbol", "Volume", "PlaceOrderId", "ClosedPrice", "CloseOrderId", "Status"])
         cost = Decimal(0)
         fLoss = Decimal(0)
         for p in self.openedPositions:
             tb.add_row([p['price'], p['symbol'], p['volume'], p['placeOrderId'], p['closedPrice'], p['closeOrderId'], p['status']])
             cost += Decimal(p['price']) * Decimal(p['volume'])
-            fLoss += (Decimal(self.lastPrice) - Decimal(p['price'])) * Decimal(p['volume'])
+            fLoss += (Decimal(self.lastTick['bidPrice']) - Decimal(p['price'])) * Decimal(p['volume'])
         print(tb)
         profit = Decimal(0)
         for p in closedPosition:
@@ -260,6 +296,7 @@ class GridTrader(object):
         stat['Profit'] = f'{profit:>.5f}'
         stat['Cost'] = f'{cost:>.5f}'
         stat['FloatingLoss'] = f'{fLoss:>.5f}'
+        stat['lastTickTime'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.lastTick['recvTime']))
         logging.info(json.dumps(stat, indent=4))
 
     def _pricePrecision(self, price):
@@ -276,10 +313,10 @@ if __name__ == "__main__":
     secret = input("Input secret: ")
     ex = BitMax(apiKey, secret)
     #symbols = ['BTMX-USDT', 'ETH-USDT', 'ELF-USDT', 'BCH-USDT', 'QTUM-USDT']
-    symbols = ['QTUM-USDT', 'ELF-USDT']
+    symbols = ['ONT-USDT']
     db = Session()
     q = Queue()
-    traders = [GridTrader('1', ex, s, 5.1, db) for s in symbols]
+    traders = [GridTrader('1', ex, s, db) for s in symbols]
     threads = [BtmxWsThread(apiKey, secret, s, ex.account_group, q) for s in symbols]
     [t.start() for t in threads]
     count = 0

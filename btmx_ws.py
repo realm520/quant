@@ -68,7 +68,7 @@ class BtmxWsDepth(object):
 class BtmxWsThread(Thread):
     def __init__(self, apiKey, secret, symbol, group, q):
         Thread.__init__(self)
-        self.url = f"wss://btmx.com/{group}/api/stream/{symbol}"
+        self.url = f"wss://btmx.io/{group}/api/stream/{symbol}"
         self.apiKey = apiKey
         self.secret = secret
         self.symbol = symbol

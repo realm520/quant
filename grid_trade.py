@@ -7,7 +7,8 @@ import prettytable as pt
 from decimal import Decimal
 from queue import Queue
 from btmx import BitMax
-from models import BtmxCompletedPosition, BtmxTradeHistory, Session
+from models import BtmxCompletedPosition, BtmxOrderHistory, BtmxGridConfig
+from models import BtmxGridTable, Session
 from btmx_ws import BtmxWsThread
 
 
@@ -17,7 +18,7 @@ for name in logging.Logger.manager.loggerDict.keys():
     logger.setLevel(logging.WARNING)
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s',
-                    datefmt = '%Y-%m-%d  %H:%M:%S %a'
+                    datefmt='%Y-%m-%d  %H:%M:%S %a'
                     )
 fhDebug = logging.handlers.TimedRotatingFileHandler('grid-trade.debug.log', when="H", interval=1, backupCount=24)
 formatter = logging.Formatter("%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
@@ -30,7 +31,7 @@ logger.addHandler(fhDebug)
 class GridTrader(object):
     def __init__(self, sid, ex, symbol, db):
         self.sid = sid
-        self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
+        # self.stateFile = f'./grid_trade_{symbol}_{sid}.json'
         self.ex = ex
         self.symbol = symbol
         self.stopPrice = Decimal(0)
@@ -39,19 +40,20 @@ class GridTrader(object):
         self.lastTick = None
         self.db = db
         self.count = 0
-        try:
-            with open(self.stateFile, 'r') as fp:
-                state = json.load(fp)
-                if 'openedPositions' in state:
-                    self.openedPositions = state['openedPositions']
-                if 'stopPrice' in state:
-                    self.stopPrice = Decimal(state['stopPrice'])
-                if 'positionAmount' in state:
-                    self.amount = Decimal(state['positionAmount'])
-        except Exception as e:
-            logging.exception(f"Fail to load position file.")
+        config = self.db.query(BtmxGridConfig).filter_by(symbol=self.symbol).first()
+        if config is None:
+            logging.exception(f"Fail to load configuration.")
             raise Exception(f"Cannot start grid trader for {self.symbol}")
+        else:
+            self.stopPrice = Decimal(config.upperLimit)
+            self.amount = Decimal(config.baseAmount)
+        self.refreshOpenPositions()
         self.checkOrderStatus()
+
+    def refreshOpenPositions(self):
+        self.openedPositions = self.db.query(BtmxGridTable)\
+            .filter_by(symbol=self.symbol.replace('-', '/'))\
+            .order_by(BtmxGridTable.pid).all()
 
     def save2Db(self, position):
         logging.info(f"Save position: {json.dumps(position)}")
@@ -60,8 +62,8 @@ class GridTrader(object):
             logging.error(f"Fail to get order status: {resp}")
         o = resp['data']
         profit = Decimal(o['filledQty']) * Decimal(o['avgPrice']) - Decimal(o['fee'])
-        db.query(BtmxTradeHistory).filter_by(coid=o['coid']).delete()
-        db.add(BtmxTradeHistory(
+        self.db.query(BtmxOrderHistory).filter_by(coid=o['coid']).delete()
+        self.db.add(BtmxOrderHistory(
             coid=o['coid'],
             accountCategory=o['accountCategory'],
             accountId=o['accountId'],
@@ -89,8 +91,8 @@ class GridTrader(object):
             logging.error(f"Fail to get order status: {resp['code']}")
         o = resp['data']
         profit -= Decimal(o['filledQty']) * Decimal(o['avgPrice']) + Decimal(o['fee'])
-        db.query(BtmxTradeHistory).filter_by(coid=o['coid']).delete()
-        db.add(BtmxTradeHistory(
+        self.db.query(BtmxOrderHistory).filter_by(coid=o['coid']).delete()
+        self.db.add(BtmxOrderHistory(
             coid=o['coid'],
             accountCategory=o['accountCategory'],
             accountId=o['accountId'],
@@ -113,13 +115,42 @@ class GridTrader(object):
             time=o['time'],
             userId=o['userId']
         ))
-        db.query(BtmxCompletedPosition).filter_by(openOrderId=position['placeOrderId']).delete()
-        db.add(BtmxCompletedPosition(
+        self.db.query(BtmxCompletedPosition).filter_by(openOrderId=position['placeOrderId']).delete()
+        self.db.add(BtmxCompletedPosition(
             symbol=position['symbol'], 
             openOrderId=position['placeOrderId'], 
             closeOrderId=position['closeOrderId'],
             profit=f"{profit:.8f}"))
-        db.commit()
+        self.db.commit()
+
+    def checkLastOrder(self):
+        if len(self.openPositions) == 0:
+            return
+        order = self.openedPositions[-1]
+        if order.status == 1:
+            logging.info(f"Remove order in status 1: {order}")
+            self.db.query(BtmxGridTable).filter_by(pid=order.pid).delete()
+            self.refreshOpenPositions()
+        elif order.status == 2:
+            res = self.ex.getOrderStatus(order.openCoid)
+            if res is not None and res['code'] == 0:
+                if res['data']['status'] == 'Filled':
+                    logging.info('buy order filled, place sell order')
+                    order.status = 3  # order is Filled
+                    closePrice = Decimal(order.price) * Decimal(1.01 + self.fee * 2)
+                    closePrice = self._pricePrecision(closePrice)
+                    res = self.ex.placeNewOrder(self.symbol, closePrice, order.volume, 'sell')
+                    if res is not None and res['data']['action'] == 'new':
+                        order.closeCoid = res['data']['coid']
+                        order.status = 4  # place close order
+                        order.closedPrice = closePrice
+                elif res['data']['status'] == 'Canceled':
+                    self.db.query(BtmxGridTable).filter_by(pid=order.pid).delete()
+                    self.refreshOpenPositions()
+                elif res['data']['status'] == 'New':
+                    if (Decimal(self.lastTick['bidPrice']) - Decimal(res['data']['orderPrice'])) / Decimal(res['data']['orderPrice']) > Decimal(0.02):
+                        self.ex.cancelOrder(order.placeOrderId, order['symbol'])
+        self.db.commit()
 
     def checkLastOrder(self):
         if len(self.openedPositions) == 0:
@@ -200,13 +231,14 @@ class GridTrader(object):
                 logging.debug(p['placeOrderId'])
                 if p['status'] == 2 and order['status'] == 'Filled':
                     logging.debug('buy order filled, place sell order')
-                    p['status'] = 3 # order is Filled
+                    p['status'] = 3  # order is Filled
                     closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
                     closePrice = self._pricePrecision(closePrice)
-                    res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
+                    res = self.ex.placeNewOrder(
+                            self.symbol, closePrice, p['volume'], 'sell')
                     if res is not None and res['data']['action'] == 'new':
                         p['closeOrderId'] = res['data']['coid']
-                        p['status'] = 4 # place close order
+                        p['status'] = 4  # place close order
                         p['closedPrice'] = closePrice
                 elif p['status'] == 2 and order['status'] == 'Canceled':
                     self.openedPositions.remove(p)
@@ -260,17 +292,32 @@ class GridTrader(object):
             'symbol': self.symbol.replace('-', '/'),
             'price': self._pricePrecision(openPrice),
             'volume': f"{volume:>.3f}",
-            'status': 1, # prepare to open position
-            'closedPrice': 0,
+            'status': 1,  # prepare to open position
+            'closedPrice': openPrice * Decimal(1.01 + self.fee * 2),
             'placeOrderId': '',
             'closeOrderId': ''
         }
-        res = self.ex.placeNewOrder(self.symbol, p['price'], p['volume'], 'buy')
-        if res is not None and res['code'] == 0 and res['data']['action'] == 'new':
+        res = self.ex.placeNewOrder(
+                self.symbol, p['price'], p['volume'], 'buy')
+        if res is not None and res['code'] == 0 and \
+                res['data']['action'] == 'new':
             p['placeOrderId'] = res['data']['coid']
-            p['status'] = 2 # order is new
-        self.openedPositions.append(p)
-        return True
+            p['status'] = 2  # order is new
+            newPosition = BtmxGridTable(
+                symbol=self.symbol.replace('-', '/'),
+                openCoid=res['data']['coid'],
+                openPrice=self._pricePrecision(openPrice),
+                volume=f"{volume:>.3f}",
+                closePrice=openPrice * Decimal(1.01 + self.fee * 2),
+                status=2
+            )
+            self.db.add(newPosition)
+            self.db.flush()
+            self.openedPositions.append(newPosition)
+            return True
+        else:
+            logging.warning(f"Place open order failure: {res}")
+            return False
 
     def savePositions(self):
         with open(self.stateFile, 'w') as fp:

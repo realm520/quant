@@ -152,32 +152,6 @@ class GridTrader(object):
                         self.ex.cancelOrder(order.placeOrderId, order['symbol'])
         self.db.commit()
 
-    def checkLastOrder(self):
-        if len(self.openedPositions) == 0:
-            return
-        order = self.openedPositions[-1]
-        if order['status'] == 1:
-            self.openedPositions.remove(order)
-        elif order['status'] == 2:
-            res = self.ex.getOrderStatus(order['placeOrderId'])
-            if res is not None and res['code'] == 0:
-                if res['data']['status'] == 'Filled':
-                    logging.info('buy order filled, place sell order')
-                    order['status'] = 3 # order is Filled
-                    closePrice = Decimal(order['price']) * Decimal(1.01 + self.fee * 2)
-                    closePrice = self._pricePrecision(closePrice)
-                    res = self.ex.placeNewOrder(self.symbol, closePrice, order['volume'], 'sell')
-                    if res is not None and res['data']['action'] == 'new':
-                        order['closeOrderId'] = res['data']['coid']
-                        order['status'] = 4 # place close order
-                        order['closedPrice'] = closePrice
-                elif res['data']['status'] == 'Canceled':
-                    self.openedPositions.remove(order)
-                elif res['data']['status'] == 'New':
-                    if (Decimal(self.lastTick['bidPrice']) - Decimal(res['data']['orderPrice'])) / Decimal(res['data']['orderPrice']) > Decimal(0.02):
-                        self.ex.cancelOrder(order['placeOrderId'], order['symbol'])
-                        self.openedPositions.remove(order)
-
     def checkOrderStatus(self):
         needRecheck = False
         removedPositions = []
@@ -191,13 +165,13 @@ class GridTrader(object):
                 if res is not None and res['code'] == 0:
                     if res['data']['status'] == 'Filled':
                         logging.info('buy order filled, place sell order')
-                        p['status'] = 3 # order is Filled
+                        p['status'] = 3  # order is Filled
                         closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
                         closePrice = self._pricePrecision(closePrice)
                         res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
                         if res is not None and res['data']['action'] == 'new':
                             p['closeOrderId'] = res['data']['coid']
-                            p['status'] = 4 # place close order
+                            p['status'] = 4  # place close order
                             p['closedPrice'] = closePrice
                     elif res['data']['status'] == 'Canceled':
                         removedPositions.append(p)

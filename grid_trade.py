@@ -10,6 +10,7 @@ from btmx import BitMax
 from models import BtmxCompletedPosition, BtmxOrderHistory, BtmxGridConfig
 from models import BtmxGridTable, Session
 from btmx_ws import BtmxWsThread
+from const import PositionStatus
 
 
 for name in logging.Logger.manager.loggerDict.keys():
@@ -117,8 +118,8 @@ class GridTrader(object):
         ))
         self.db.query(BtmxCompletedPosition).filter_by(openOrderId=position['placeOrderId']).delete()
         self.db.add(BtmxCompletedPosition(
-            symbol=position['symbol'], 
-            openOrderId=position['placeOrderId'], 
+            symbol=position['symbol'],
+            openOrderId=position['placeOrderId'],
             closeOrderId=position['closeOrderId'],
             profit=f"{profit:.8f}"))
         self.db.commit()
@@ -136,20 +137,22 @@ class GridTrader(object):
             if res is not None and res['code'] == 0:
                 if res['data']['status'] == 'Filled':
                     logging.info('buy order filled, place sell order')
-                    order.status = 3  # order is Filled
+                    order.status = PositionStatus.FILL_OPEN  # order is Filled
                     closePrice = Decimal(order.price) * Decimal(1.01 + self.fee * 2)
                     closePrice = self._pricePrecision(closePrice)
                     res = self.ex.placeNewOrder(self.symbol, closePrice, order.volume, 'sell')
                     if res is not None and res['data']['action'] == 'new':
                         order.closeCoid = res['data']['coid']
-                        order.status = 4  # place close order
+                        order.status = PositionStatus.ORDER_CLOSE  # place close order
                         order.closedPrice = closePrice
                 elif res['data']['status'] == 'Canceled':
                     self.db.query(BtmxGridTable).filter_by(pid=order.pid).delete()
                     self.refreshOpenPositions()
                 elif res['data']['status'] == 'New':
                     if (Decimal(self.lastTick['bidPrice']) - Decimal(res['data']['orderPrice'])) / Decimal(res['data']['orderPrice']) > Decimal(0.02):
-                        self.ex.cancelOrder(order.placeOrderId, order['symbol'])
+                        self.ex.cancelOrder(
+                            order.placeOrderId,
+                            order['symbol'])
         self.db.commit()
 
     def checkOrderStatus(self):
@@ -157,37 +160,37 @@ class GridTrader(object):
         removedPositions = []
         for p in self.openedPositions:
             logging.debug(p['status'])
-            if p['status'] == 1:
+            if p['status'] == PositionStatus.PREPARE_OPEN:
                 logging.info(f"Need to place open order...{p['price']}")
                 continue
-            elif p['status'] == 2:
+            elif p['status'] == PositionStatus.ORDER_OPEN:
                 res = self.ex.getOrderStatus(p['placeOrderId'])
                 if res is not None and res['code'] == 0:
                     if res['data']['status'] == 'Filled':
                         logging.info('buy order filled, place sell order')
-                        p['status'] = 3  # order is Filled
+                        p['status'] = PositionStatus.FILL_OPEN
                         closePrice = Decimal(p['price']) * Decimal(1.01 + self.fee * 2)
                         closePrice = self._pricePrecision(closePrice)
                         res = self.ex.placeNewOrder(self.symbol, closePrice, p['volume'], 'sell')
                         if res is not None and res['data']['action'] == 'new':
                             p['closeOrderId'] = res['data']['coid']
-                            p['status'] = 4  # place close order
+                            p['status'] = PositionStatus.ORDER_CLOSE
                             p['closedPrice'] = closePrice
                     elif res['data']['status'] == 'Canceled':
                         removedPositions.append(p)
-            elif p['status'] == 3:
+            elif p['status'] == PositionStatus.FILL_OPEN:
                 logging.info("Need to place close order...")
-            elif p['status'] == 4:
+            elif p['status'] == PositionStatus.ORDER_CLOSE:
                 res = self.ex.getOrderStatus(p['closeOrderId'])
                 logging.debug(f"closing order status: {res}")
                 if res is not None and res['code'] == 0:
                     if res['data']['status'] == 'Filled':
-                        p['status'] = 5
+                        p['status'] = PositionStatus.FILL_CLOSE
                         p['avgClosedPrice'] = res['data']['avgPrice']
                         self.save2Db(p)
                         removedPositions.append(p)
                     elif res['data']['status'] == 'Canceled':
-                        p['status'] = 2
+                        p['status'] = PositionStatus.ORDER_OPEN
                         needRecheck = True
         for p in removedPositions:
             self.openedPositions.remove(p)
@@ -197,7 +200,6 @@ class GridTrader(object):
 
     def updateOrder(self, order):
         logging.debug(f"order updated: {order}")
-        #logging.debug(self.symbol.replace('-', '/'))
         if self.symbol.replace('-', '/') != order['s']:
             return False
         for p in self.openedPositions:

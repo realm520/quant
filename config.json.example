@@ -1,0 +1,13 @@
+{
+    "exchange": {
+        "ZB": {
+            "access_key": "",
+            "secret_key": ""
+        }
+    },
+    "qyvx": {
+        "agentId": 0,
+        "corpId": "",
+        "secret": ""
+    }
+}

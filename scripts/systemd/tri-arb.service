@@ -1,0 +1,46 @@
+[Unit]
+Description=Triangle Arbitrage Trading System
+Documentation=https://github.com/yourusername/tri-arb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tri-arb
+Group=tri-arb
+WorkingDirectory=/opt/tri-arb
+ExecStart=/opt/tri-arb/tri-arb start --mode live
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+CPUQuota=200%
+MemoryLimit=4G
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tri-arb/data /opt/tri-arb/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+Environment="TRI_ARB_CONFIG=/opt/tri-arb/config/config.yaml"
+EnvironmentFile=-/opt/tri-arb/.env
+
+# Logging
+SyslogIdentifier=tri-arb
+
+[Install]
+WantedBy=multi-user.target

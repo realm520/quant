@@ -60,9 +60,9 @@ class TradingPair(BaseModel):
     Represents a currency pair (e.g., BTC/USDT) with exchange-specific constraints.
     """
 
-    base_currency: str = Field(..., min_length=2, max_length=10, description="Base currency symbol")
+    base_currency: str = Field(..., min_length=1, max_length=32, description="Base currency symbol")
     quote_currency: str = Field(
-        ..., min_length=2, max_length=10, description="Quote currency symbol"
+        ..., min_length=1, max_length=32, description="Quote currency symbol"
     )
     exchange: str = Field(..., min_length=1, description="Exchange identifier")
     min_order_size: Decimal = Field(..., gt=0, description="Minimum order size")

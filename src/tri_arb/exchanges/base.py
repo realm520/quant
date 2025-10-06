@@ -5,10 +5,11 @@ interface across different cryptocurrency exchanges.
 """
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
 
 from tri_arb.config.logging import get_logger
 from tri_arb.core.models import Order, OrderBook, Price, Trade, TradingPair
+
 
 logger = get_logger(__name__)
 
@@ -54,20 +55,46 @@ class BaseExchange(ABC):
         pass
 
     @abstractmethod
-    async def get_ticker(self, trading_pair: TradingPair) -> Price:
-        """Get current ticker price for a trading pair.
+    async def get_ticker(
+        self, trading_pair: TradingPair | None = None
+    ) -> Price | list[Price]:
+        """Get current ticker price for a trading pair or all markets.
+
+        Supports both single-pair queries and batch queries for all active markets.
 
         Args:
-            trading_pair: Trading pair to get ticker for
+            trading_pair: Trading pair to get ticker for. If None, returns all
+                         active markets (batch query). Default is None.
 
         Returns:
-            Current price information with bid/ask
+            - If trading_pair is provided: Single Price object
+            - If trading_pair is None: List of Price objects for all active markets
 
         Raises:
             ExchangeConnectionError: If exchange is not connected
             InvalidTradingPairError: If trading pair is not supported
+            NotImplementedError: If batch queries are not supported by this exchange
+
+        Examples:
+            Single pair query (backward compatible):
+                >>> ticker = await exchange.get_ticker(btc_usdt_pair)
+                >>> print(f"BTC/USDT: {ticker.bid_price}")
+
+            Batch query for all markets:
+                >>> tickers = await exchange.get_ticker(None)
+                >>> print(f"Retrieved {len(tickers)} markets")
         """
-        pass
+        # Default implementation for exchanges that don't support batch queries
+        if trading_pair is None:
+            raise NotImplementedError(
+                f"{self.name} exchange does not support batch ticker queries. "
+                "Please provide a specific trading pair or upgrade to an exchange "
+                "adapter that implements batch query support."
+            )
+        # Concrete implementations must override this method
+        raise NotImplementedError(
+            f"{self.name} exchange must implement get_ticker() method"
+        )
 
     @abstractmethod
     async def get_orderbook(
@@ -140,7 +167,7 @@ class BaseExchange(ABC):
     @abstractmethod
     async def get_trade_history(
         self, trading_pair: TradingPair, limit: int = 100
-    ) -> List[Trade]:
+    ) -> list[Trade]:
         """Get recent trade history for a trading pair.
 
         Args:
@@ -193,7 +220,7 @@ class BaseExchange(ABC):
         """
         pass
 
-    async def get_supported_pairs(self) -> List[TradingPair]:
+    async def get_supported_pairs(self) -> list[TradingPair]:
         """Get list of supported trading pairs on this exchange.
 
         Returns:
@@ -209,7 +236,7 @@ class BaseExchange(ABC):
         )
         return []
 
-    async def get_exchange_info(self) -> Dict[str, any]:
+    async def get_exchange_info(self) -> dict[str, any]:
         """Get exchange metadata and configuration.
 
         Returns:

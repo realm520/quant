@@ -124,19 +124,83 @@ class XTExchange(BaseExchange):
         self.is_connected = False
         logger.info("Disconnected from XT exchange", exchange=self.name)
 
-    async def get_ticker(self, trading_pair: TradingPair) -> Price:
-        """Get current ticker price for a trading pair.
+    async def get_ticker(
+        self, trading_pair: TradingPair | None = None
+    ) -> Price | list[Price]:
+        """Get current ticker price for a trading pair or all markets.
 
         Args:
-            trading_pair: Trading pair to get ticker for
+            trading_pair: Trading pair to get ticker for. If None, returns all
+                         active markets (batch query). Default is None.
 
         Returns:
-            Current price information with bid/ask
+            - If trading_pair is provided: Single Price object
+            - If trading_pair is None: List of Price objects for all active markets
 
         Raises:
             ValueError: If not connected or trading pair invalid
             httpx.HTTPStatusError: If API request fails
         """
+        # Batch query: Get all market tickers
+        if trading_pair is None:
+            response = await self._request(
+                method="GET",
+                path=f"/{self.API_VERSION}/public/ticker/book",
+                params=None,  # No symbol param for batch query
+                authenticated=False,
+            )
+
+            data = response.json()
+            result_raw = data.get("result", [])
+
+            # Result should be a list of tickers for batch query
+            if not isinstance(result_raw, list):
+                raise ValueError(
+                    f"Expected list result for batch query, got {type(result_raw)}"
+                )
+
+            # Parse each ticker to Price object
+            prices: list[Price] = []
+            failed_markets: list[str] = []
+            seen_symbols: set[str] = set()  # Track seen symbols for deduplication
+
+            for ticker_data in result_raw:
+                try:
+                    symbol = ticker_data.get("s", "unknown")
+                    
+                    # Skip duplicate symbols (XT API may return duplicates)
+                    if symbol in seen_symbols:
+                        logger.debug(
+                            "Skipping duplicate symbol in batch query",
+                            symbol=symbol,
+                        )
+                        continue
+                    
+                    seen_symbols.add(symbol)
+                    price = self._parse_ticker_to_price(ticker_data, trading_pair=None)
+                    prices.append(price)
+                except Exception as e:
+                    symbol = ticker_data.get("s", "unknown")
+                    failed_markets.append(symbol)
+                    logger.warning(
+                        "Failed to parse ticker",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+
+            # Log partial failures if any
+            if failed_markets:
+                logger.info(
+                    "Batch ticker query completed with partial failures",
+                    total_markets=len(result_raw),
+                    successful=len(prices),
+                    failed=len(failed_markets),
+                    failed_symbols=failed_markets[:10],  # Log first 10 failures
+                )
+
+            return prices
+
+        # Single pair query: Get specific ticker
         symbol = self._to_xt_symbol(trading_pair)
 
         response = await self._request(
@@ -160,25 +224,8 @@ class XTExchange(BaseExchange):
         else:
             result = result_raw
 
-        # TODO: Verify actual bid/ask field names in XT API response
-        # For now, using close price (c) as base and adding small spread for MVP
-        close_price = Decimal(str(result.get("c", result.get("p", "0"))))
-        volume = Decimal(str(result.get("v", "0")))
-
-        # Add small spread (0.01%) for bid/ask
-        spread = close_price * Decimal("0.0001")
-        bid_price = close_price - spread
-        ask_price = close_price + spread
-
-        return Price(
-            trading_pair=trading_pair,
-            bid_price=bid_price,
-            ask_price=ask_price,
-            bid_volume=volume / Decimal("2"),  # Distribute volume
-            ask_volume=volume / Decimal("2"),
-            timestamp=datetime.now(tz=datetime.now().astimezone().tzinfo),
-            exchange="xt",
-        )
+        # Use helper method to parse ticker data to Price object
+        return self._parse_ticker_to_price(result, trading_pair)
 
     async def get_orderbook(
         self, trading_pair: TradingPair, depth: int = 20
@@ -673,6 +720,116 @@ class XTExchange(BaseExchange):
         except httpx.TimeoutException:
             logger.error("XT API timeout", method=method, path=path)
             raise
+
+    def _parse_ticker_to_price(
+        self, ticker_data: dict[str, Any], trading_pair: TradingPair | None = None
+    ) -> Price:
+        """Parse XT API ticker data to Price object.
+
+        Extracts price information from XT API ticker response and converts
+        to internal Price model. Handles both single and batch query responses.
+
+        Args:
+            ticker_data: Raw ticker data from XT API (single ticker dict)
+                        Expected fields: bp (bid price), ap (ask price),
+                        bq (bid quantity), aq (ask quantity)
+            trading_pair: Optional trading pair. If None, will be created from
+                         ticker symbol using _create_minimal_trading_pair()
+
+        Returns:
+            Price object with bid/ask prices and volumes
+
+        Raises:
+            ValueError: If ticker data is missing required fields or has invalid prices
+            KeyError: If symbol field 's' is missing when trading_pair is None
+
+        Examples:
+            >>> ticker_data = {"s": "btc_usdt", "bp": "50000.00", "ap": "50001.00", "bq": "10.5", "aq": "8.3"}
+            >>> price = self._parse_ticker_to_price(ticker_data)
+            >>> print(price.bid_price)
+        """
+        # Create trading pair from symbol if not provided (batch query case)
+        if trading_pair is None:
+            symbol = ticker_data.get("s")
+            if not symbol:
+                raise ValueError("Ticker data missing symbol field 's'")
+            trading_pair = self._create_minimal_trading_pair(symbol)
+
+        # Extract price data from XT API fields
+        # XT API /v4/public/ticker/book returns:
+        # - bp: bid price (best buy price)
+        # - ap: ask price (best sell price)
+        # - bq: bid quantity (volume at best bid)
+        # - aq: ask quantity (volume at best ask)
+        bid_price_raw = ticker_data.get("bp")
+        ask_price_raw = ticker_data.get("ap")
+        bid_volume_raw = ticker_data.get("bq")
+        ask_volume_raw = ticker_data.get("aq")
+
+        # Handle null values (some trading pairs may have null prices)
+        if bid_price_raw is None or ask_price_raw is None:
+            raise ValueError(
+                f"Missing price data for {trading_pair.base_currency}/"
+                f"{trading_pair.quote_currency}: bp={bid_price_raw}, ap={ask_price_raw}"
+            )
+
+        # Convert to Decimal for precise arithmetic
+        bid_price = Decimal(str(bid_price_raw))
+        ask_price = Decimal(str(ask_price_raw))
+        bid_volume = Decimal(str(bid_volume_raw or "0"))
+        ask_volume = Decimal(str(ask_volume_raw or "0"))
+
+        # Validate price data
+        if bid_price <= 0 or ask_price <= 0:
+            raise ValueError(
+                f"Invalid price for {trading_pair.base_currency}/"
+                f"{trading_pair.quote_currency}: bid={bid_price}, ask={ask_price}"
+            )
+
+        return Price(
+            trading_pair=trading_pair,
+            bid_price=bid_price,
+            ask_price=ask_price,
+            bid_volume=bid_volume,
+            ask_volume=ask_volume,
+            timestamp=datetime.now(tz=datetime.now().astimezone().tzinfo),
+            exchange="xt",
+        )
+
+    def _create_minimal_trading_pair(self, symbol: str) -> TradingPair:
+        """Create minimal TradingPair from XT symbol.
+
+        Creates a TradingPair object with minimal configuration for batch queries.
+        Real trading constraints (min/max order size, precision) should be fetched
+        from exchange info API for actual trading.
+
+        Args:
+            symbol: XT symbol format (e.g., "btc_usdt")
+
+        Returns:
+            TradingPair with minimal configuration
+
+        Raises:
+            ValueError: If symbol format is invalid
+
+        Examples:
+            >>> pair = self._create_minimal_trading_pair("btc_usdt")
+            >>> print(f"{pair.base_currency}/{pair.quote_currency}")
+            "BTC/USDT"
+        """
+        base, quote = self._from_xt_symbol(symbol)
+
+        return TradingPair(
+            base_currency=base,
+            quote_currency=quote,
+            exchange="xt",
+            # Use conservative defaults for batch queries
+            # These should be overridden with actual exchange info for trading
+            min_order_size=Decimal("0.001"),
+            max_order_size=Decimal("1000000"),
+            price_precision=8,
+            quantity_precision=8,
+        )
 
     def _to_xt_symbol(self, trading_pair: TradingPair) -> str:
         """Convert TradingPair to XT symbol format.

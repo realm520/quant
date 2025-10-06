@@ -1,0 +1,68 @@
+[project]
+name = "tri-arb"
+version = "0.1.0"
+description = "Cryptocurrency triangle arbitrage trading system scaffold"
+authors = [{name = "Tri-Arb Team"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "uvloop>=0.19.0",
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+    "aiosqlite>=0.19.0",
+    "cachetools>=5.3.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "typer>=0.9.0",
+    "structlog>=24.1.0",
+    "prometheus-client>=0.19.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "pytest-benchmark>=4.0.0",
+    "mypy>=1.8.0",
+    "ruff>=0.1.0",
+    "pyinstaller>=6.3.0",
+]
+
+[project.scripts]
+tri-arb = "tri_arb.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatchling.build.targets.wheel]
+packages = ["src/tri_arb"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src/tri_arb"]
+omit = ["tests/*", "src/tri_arb/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

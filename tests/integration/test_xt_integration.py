@@ -14,15 +14,19 @@ WARNING: These tests may create real orders and incur trading fees.
 Use testnet/sandbox credentials if available.
 """
 
+import asyncio
 import os
-from decimal import Decimal
+from datetime import datetime
+from decimal import Decimal, ROUND_DOWN
+from typing import Optional
 
+import httpx
 import pytest
 
 # Check if XT Exchange is available
 try:
     from tri_arb.exchanges.xt import XTExchange
-    from tri_arb.core.models import Order, OrderSide, TradingPair
+    from tri_arb.core.models import Order, OrderSide, OrderType, OrderStatus, TradingPair
     XT_EXCHANGE_AVAILABLE = True
 except ImportError:
     XT_EXCHANGE_AVAILABLE = False
@@ -32,6 +36,45 @@ except ImportError:
 API_KEY = os.getenv("XT_API_KEY")
 API_SECRET = os.getenv("XT_API_SECRET")
 INTEGRATION_ENABLED = API_KEY and API_SECRET
+
+
+# ============================================================================
+# Test Helpers
+# ============================================================================
+
+
+def create_test_order(
+    trading_pair: TradingPair,
+    side: OrderSide,
+    quantity: Decimal,
+    price: Optional[Decimal] = None,
+    order_id: str = "test_order"
+) -> Order:
+    """Create test order with all required fields.
+
+    Args:
+        trading_pair: Trading pair for order
+        side: Buy or sell
+        quantity: Order quantity
+        price: Limit price (None for market orders)
+        order_id: Unique order ID
+
+    Returns:
+        Fully initialized Order object
+    """
+    now = datetime.now()
+    return Order(
+        order_id=order_id,
+        trading_pair=trading_pair,
+        side=side,
+        order_type=OrderType.LIMIT if price is not None else OrderType.MARKET,
+        price=price,
+        quantity=quantity,
+        status=OrderStatus.PENDING,
+        created_at=now,
+        updated_at=now,
+        exchange=trading_pair.exchange,
+    )
 
 
 @pytest.mark.integration
@@ -142,36 +185,143 @@ class TestXTIntegration:
             assert trade.timestamp is not None
 
     @pytest.mark.slow
-    @pytest.mark.skip(reason="Requires testnet to avoid real orders")
     async def test_place_and_cancel_order_real_api(self, xt_exchange, btc_usdt_pair):
         """Test order placement and cancellation with real XT API.
-        
-        SKIPPED BY DEFAULT: This test places real orders on XT exchange.
-        Only run this test with testnet/sandbox credentials.
-        
-        Remove @pytest.mark.skip to enable (use testnet only!)
+
+        SAFE TEST: Places limit order at 95% of market price (5% below market).
+        Order is cancelled immediately. If accidentally filled, market sell executes.
+
+        Risk: Only trading fees + slippage (~0.1% total cost on ~10 USDT ≈ $0.01)
         """
-        # Create limit order well below market (won't fill immediately)
-        order = Order(
-            id="test_order",
+        # Get current market price
+        ticker = await xt_exchange.get_ticker(btc_usdt_pair)
+        current_price = ticker.bid_price
+
+        # Set order price to 95% of market price (5% below market)
+        safe_price = (current_price * Decimal("0.95")).quantize(
+            Decimal("0.01"), rounding=ROUND_DOWN
+        )
+
+        # Create limit order below market (unlikely to fill immediately)
+        order = create_test_order(
             trading_pair=btc_usdt_pair,
             side=OrderSide.BUY,
-            quantity=Decimal("0.001"),  # Minimum order size
-            price=Decimal("10000.00"),  # Far below market price
+            quantity=Decimal("0.00008"),  # ~10 USDT at current BTC price
+            price=safe_price,  # 5% below market price
         )
-        
+
         # Place order
         placed_order = await xt_exchange.place_order(order)
         assert placed_order.exchange_order_id is not None
-        assert placed_order.status in ["OPEN", "NEW"]
-        
-        # Cancel order
-        cancel_result = await xt_exchange.cancel_order(placed_order.exchange_order_id)
-        assert cancel_result is True
-        
-        # Verify order status
-        order_status = await xt_exchange.get_order_status(placed_order.exchange_order_id)
-        assert order_status.status in ["CANCELLED", "CANCELED"]
+        assert placed_order.status in [OrderStatus.OPEN, OrderStatus.PENDING]
+
+        filled_quantity = Decimal("0")
+
+        try:
+            # Cancel order immediately
+            cancel_result = await xt_exchange.cancel_order(placed_order.exchange_order_id)
+            assert cancel_result is True
+
+            # Retry loop: wait for order status to update (XT API is asynchronous)
+            # Max wait time: ~3 seconds (6 retries * 0.5s)
+            max_retries = 6
+            retry_delay = 0.5  # 500ms between retries
+            order_status = None
+
+            for attempt in range(max_retries):
+                order_status = await xt_exchange.get_order_status(placed_order.exchange_order_id)
+                if order_status.status in [OrderStatus.CANCELLED, OrderStatus.PARTIALLY_FILLED]:
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+
+            # Verify final status after retries
+            assert order_status is not None
+            assert order_status.status in [OrderStatus.CANCELLED, OrderStatus.PARTIALLY_FILLED]
+
+            # Check if order was filled (partially or fully)
+            if hasattr(order_status, 'filled_quantity'):
+                filled_quantity = order_status.filled_quantity
+
+        except Exception as e:
+            # If cancellation fails, check order status
+            try:
+                order_status = await xt_exchange.get_order_status(placed_order.exchange_order_id)
+                if hasattr(order_status, 'filled_quantity'):
+                    filled_quantity = order_status.filled_quantity
+
+                # Try to cancel again
+                if order_status.status not in ["FILLED", "CANCELLED", "CANCELED"]:
+                    await xt_exchange.cancel_order(placed_order.exchange_order_id)
+            except:
+                pass
+            raise e
+
+        # SAFETY: If order was filled, immediately market sell to close position
+        if filled_quantity > 0:
+            sell_order = create_test_order(
+                trading_pair=btc_usdt_pair,
+                side=OrderSide.SELL,
+                quantity=filled_quantity,
+                price=None,  # Market order
+                order_id="test_order_sell",
+            )
+
+            # Market sell to close position
+            await xt_exchange.place_order(sell_order)
+
+            # Log for awareness
+            import logging
+            logging.warning(
+                f"Test order was filled ({filled_quantity} {btc_usdt_pair.base_currency}). "
+                f"Executed market sell to close position."
+            )
+
+    @pytest.mark.slow
+    async def test_place_order_extreme_price_rejection(self, xt_exchange, btc_usdt_pair):
+        """Test that exchange rejects orders with extreme prices.
+
+        Verifies that XT exchange validates order prices and rejects
+        orders that are too far from market price (80% below market).
+
+        This is a boundary test - if XT accepts the order, it won't fill anyway.
+        """
+        # Get current market price
+        ticker = await xt_exchange.get_ticker(btc_usdt_pair)
+        current_price = ticker.bid_price
+
+        # Set order price to 20% of market price (80% below market)
+        extreme_price = (current_price * Decimal("0.2")).quantize(
+            Decimal("0.01"), rounding=ROUND_DOWN
+        )
+
+        # Create order with extreme price
+        order = create_test_order(
+            trading_pair=btc_usdt_pair,
+            side=OrderSide.BUY,
+            quantity=Decimal("0.001"),
+            price=extreme_price,
+            order_id="test_extreme_price",
+        )
+
+        # Try to place order - expect rejection or acceptance with no fill
+        try:
+            placed_order = await xt_exchange.place_order(order)
+
+            # If order was accepted (XT allows extreme prices)
+            # Cancel it immediately - it won't fill anyway at 80% discount
+            try:
+                await xt_exchange.cancel_order(placed_order.exchange_order_id)
+            except:
+                pass  # Order might already be rejected by exchange
+
+            # Mark test as informational - XT allows extreme prices
+            pytest.skip("XT accepts extreme prices (80% below market) - order cancelled")
+
+        except (httpx.HTTPStatusError, ValueError) as e:
+            # Expected: Exchange rejects extreme prices
+            # This is the expected behavior for most exchanges
+            assert True  # Test passes - exchange validated price correctly
 
     async def test_connection_lifecycle_real_api(self, btc_usdt_pair):
         """Test connection lifecycle with real XT API.

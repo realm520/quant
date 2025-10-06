@@ -170,6 +170,9 @@ class Order(BaseModel):
     """
 
     order_id: str = Field(..., min_length=1, description="Unique order identifier")
+    exchange_order_id: Optional[str] = Field(
+        None, description="Exchange-specific order ID (from API response)"
+    )
     trading_pair: TradingPair = Field(..., description="Trading pair for order")
     side: OrderSide = Field(..., description="Buy or sell")
     order_type: OrderType = Field(..., description="Market, limit, etc.")

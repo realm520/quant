@@ -4,11 +4,11 @@ Provides factory pattern implementation for creating exchange instances
 with a registration system for extensibility.
 """
 
-from typing import Dict, Optional, Type
 
 from tri_arb.config.logging import get_logger
 from tri_arb.core.exceptions import ExchangeConnectionError
 from tri_arb.exchanges.base import BaseExchange
+
 
 logger = get_logger(__name__)
 
@@ -25,10 +25,10 @@ class ExchangeFactory:
 
     def __init__(self) -> None:
         """Initialize exchange factory with empty registry."""
-        self._registry: Dict[str, Type[BaseExchange]] = {}
+        self._registry: dict[str, type[BaseExchange]] = {}
         logger.info("ExchangeFactory initialized")
 
-    def register(self, name: str, exchange_class: Type[BaseExchange]) -> None:
+    def register(self, name: str, exchange_class: type[BaseExchange]) -> None:
         """Register an exchange implementation.
 
         Args:
@@ -135,7 +135,7 @@ class ExchangeFactory:
 exchange_factory = ExchangeFactory()
 
 
-def register_exchange(name: str, exchange_class: Type[BaseExchange]) -> None:
+def register_exchange(name: str, exchange_class: type[BaseExchange]) -> None:
     """Convenience function to register exchange with global factory.
 
     Args:

@@ -4,14 +4,15 @@ Provides stub implementation of OKX exchange integration for MVP scaffold.
 This is a placeholder that returns mock data and logs operations.
 """
 
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import AsyncIterator, List
 from uuid import uuid4
 
 from tri_arb.config.logging import get_logger
 from tri_arb.core.models import Order, OrderBook, OrderSide, OrderStatus, Price, Trade, TradingPair
 from tri_arb.exchanges.base import BaseExchange
+
 
 logger = get_logger(__name__)
 
@@ -101,7 +102,7 @@ class OKXExchange(BaseExchange):
             bid_volume=Decimal("12.0"),
             ask_volume=Decimal("18.0"),
             exchange=self.name,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
         logger.debug(
@@ -141,7 +142,7 @@ class OKXExchange(BaseExchange):
             bids=bids,
             asks=asks,
             exchange=self.name,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
         logger.debug("Returning placeholder order book", bids_count=1, asks_count=1)
@@ -170,7 +171,7 @@ class OKXExchange(BaseExchange):
         order.exchange_order_id = f"okx_{uuid4().hex[:16]}"
         order.status = OrderStatus.FILLED
         order.filled_quantity = order.quantity
-        order.updated_at = datetime.now(timezone.utc)
+        order.updated_at = datetime.now(UTC)
 
         logger.debug(
             "Order placed (placeholder)",
@@ -236,7 +237,7 @@ class OKXExchange(BaseExchange):
 
     async def get_trade_history(
         self, trading_pair: TradingPair, limit: int = 100
-    ) -> List[Trade]:
+    ) -> list[Trade]:
         """Get trade history (placeholder).
 
         Args:

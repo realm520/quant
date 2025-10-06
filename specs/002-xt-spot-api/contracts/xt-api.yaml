@@ -1,0 +1,761 @@
+openapi: 3.0.3
+info:
+  title: XT Exchange REST API
+  description: |
+    XT Exchange REST API v4 specification for tri-arb integration.
+    
+    **Note**: This specification is based on reverse-engineering the existing 
+    `xt_spot_api.py` implementation. Field names and behaviors marked with TODO 
+    require verification against official XT API documentation.
+    
+    **Authentication**: All authenticated endpoints require HMAC-SHA256 signature 
+    in custom headers (validate-* headers).
+  version: 4.0.0
+  contact:
+    name: Tri-Arb Development Team
+  license:
+    name: MIT
+
+servers:
+  - url: https://sapi.xt.com
+    description: XT Exchange Production API
+
+tags:
+  - name: Market Data
+    description: Public market data endpoints (no authentication required)
+  - name: Trading
+    description: Order placement and management (authentication required)
+  - name: Account
+    description: Account information and balances (authentication required)
+
+paths:
+  /v4/public/ticker/price:
+    get:
+      tags:
+        - Market Data
+      summary: Get latest ticker price
+      description: |
+        Retrieve latest ticker price for a specific trading pair.
+        Returns current price, 24h statistics, and volume information.
+      operationId: getTickerPrice
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          description: Trading pair symbol (lowercase with underscore, e.g., "btc_usdt")
+          schema:
+            type: string
+            pattern: '^[a-z]+_[a-z]+$'
+            example: btc_usdt
+      responses:
+        '200':
+          description: Successful response with ticker data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                # ACTUAL API RESPONSE: result is an ARRAY, not an object
+                result:
+                  - s: btc_usdt
+                    t: 1696348800000
+                    c: 50024.00
+                    o: 50000.00
+                    h: 50500.00
+                    l: 49500.00
+                    v: 248.5
+                    q: 12450000.00
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v4/public/depth:
+    get:
+      tags:
+        - Market Data
+      summary: Get order book depth
+      description: |
+        Retrieve order book with bids and asks up to specified depth.
+        Returns sorted price levels with quantities.
+      operationId: getOrderBookDepth
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          description: Trading pair symbol
+          schema:
+            type: string
+            example: btc_usdt
+        - name: limit
+          in: query
+          required: false
+          description: Number of price levels to return (default 20, max 500)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 20
+      responses:
+        '200':
+          description: Successful response with order book data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                result:
+                  s: btc_usdt
+                  t: 1696348800000
+                  bids:
+                    - ["50000.00", "1.5"]
+                    - ["49995.00", "2.3"]
+                  asks:
+                    - ["50010.00", "2.0"]
+                    - ["50015.00", "1.8"]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v4/public/ticker/24h:
+    get:
+      tags:
+        - Market Data
+      summary: Get 24-hour ticker statistics
+      description: Get 24-hour price change statistics for a symbol
+      operationId: get24hTicker
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            example: btc_usdt
+      responses:
+        '200':
+          description: 24-hour ticker data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+
+  /v4/balances:
+    get:
+      tags:
+        - Account
+      summary: Get account balances
+      description: |
+        Retrieve account balances for all assets.
+        **Requires authentication** with API key and signature.
+      operationId: getBalances
+      security:
+        - XTAuth: []
+      parameters:
+        - name: currency
+          in: query
+          required: false
+          description: Filter by specific currency (optional)
+          schema:
+            type: string
+            example: usdt
+      responses:
+        '200':
+          description: Successful response with balance data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                result:
+                  - currency: btc
+                    available: 1.5
+                    locked: 0.5
+                  - currency: usdt
+                    available: 50000.00
+                    locked: 10000.00
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v4/order:
+    post:
+      tags:
+        - Trading
+      summary: Place new order
+      description: |
+        Create a new order (LIMIT or MARKET).
+        **Requires authentication** with API key and signature.
+      operationId: placeOrder
+      security:
+        - XTAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderRequest'
+            example:
+              symbol: btc_usdt
+              side: BUY
+              type: LIMIT
+              timeInForce: GTC
+              bizType: SPOT
+              quantity: 0.1
+              price: 50000.00
+      responses:
+        '200':
+          description: Order placed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                result:
+                  orderId: xt_abc123def456
+                  clientOrderId: null
+                  # NOTE: POST /v4/order response does NOT include state/status field
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v4/open-order:
+    get:
+      tags:
+        - Trading
+      summary: Get open orders
+      description: Retrieve all open orders or filter by symbol
+      operationId: getOpenOrders
+      security:
+        - XTAuth: []
+      parameters:
+        - name: currency
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: symbol
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: bizType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SPOT]
+            default: SPOT
+      responses:
+        '200':
+          description: List of open orders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    delete:
+      tags:
+        - Trading
+      summary: Cancel all open orders
+      description: Cancel all open orders for a symbol
+      operationId: cancelAllOrders
+      security:
+        - XTAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - symbol
+                - bizType
+              properties:
+                symbol:
+                  type: string
+                  example: btc_usdt
+                bizType:
+                  type: string
+                  enum: [SPOT]
+                  default: SPOT
+      responses:
+        '200':
+          description: Orders cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v4/trade:
+    get:
+      tags:
+        - Trading
+      summary: Get trade history
+      description: Retrieve historical trades for account
+      operationId: getTradeHistory
+      security:
+        - XTAuth: []
+      parameters:
+        - name: bizType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [SPOT]
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [PREV, NEXT]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: startTime
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: Start timestamp (milliseconds)
+        - name: endTime
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: End timestamp (milliseconds)
+      responses:
+        '200':
+          description: List of trades
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                # ACTUAL API RESPONSE: result can be null if no trades
+                result: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    XTAuth:
+      type: apiKey
+      in: header
+      name: validate-signature
+      description: |
+        XT Exchange uses HMAC-SHA256 signature authentication with different
+        signature formats for different HTTP methods.
+
+        **Required headers:**
+        - validate-algorithms: HmacSHA256
+        - validate-appkey: API key
+        - validate-timestamp: Current timestamp (milliseconds)
+        - validate-recvwindow: Request validity window (default 5000ms)
+        - validate-signature: HMAC-SHA256 signature
+
+        **Signature Generation:**
+
+        **Header Sorting (All Methods):**
+        - Sort header keys alphabetically (ASCII order, case-sensitive)
+        - Format: `key1=value1&key2=value2&...`
+        - Standard order: `validate-algorithms=...&validate-appkey=...&validate-recvwindow=...&validate-timestamp=...`
+
+        **Query Parameter Sorting (GET/DELETE):**
+        - Sort query parameter keys alphabetically
+        - URL-encode values if needed
+        - Format: `key1=value1&key2=value2&...`
+        - Example: `bizType=SPOT&orderId=123` (bizType < orderId alphabetically)
+
+        **JSON Body Field Order (POST/DELETE):**
+        - **CRITICAL**: Field order in JSON body affects signature calculation
+        - Use consistent field order for same endpoint (see examples below)
+        - Python: Preserve dictionary insertion order (Python 3.7+)
+        - Different field order = Different JSON string = Different signature = 401 Error
+
+        **For GET requests:**
+        - Build X string with sorted headers: `validate-algorithms=HmacSHA256&validate-appkey={key}&validate-recvwindow={window}&validate-timestamp={ts}`
+        - Signature data: `{X}#GET#{path}[#{sorted_query}][#{body}]`
+        - Signature: HMAC-SHA256 hexdigest in **lowercase**
+
+        **For POST/DELETE requests:**
+        - Build headers string (already sorted): `validate-algorithms=HmacSHA256&validate-appkey={key}&validate-recvwindow={window}&validate-timestamp={ts}`
+        - Build components: `#{method}#{path}[#{sorted_query}][#{json_body}]`
+        - Signature data: `{sorted_headers}{components}`
+        - Signature: HMAC-SHA256 hexdigest in **UPPERCASE**
+
+        **Example GET signature (with query):**
+        ```
+        X = "validate-algorithms=HmacSHA256&validate-appkey=xxx&validate-recvwindow=5000&validate-timestamp=1234567890000"
+        query = "bizType=SPOT&orderId=123"  # Sorted alphabetically
+        sig_data = f"{X}#GET#/v4/order#{query}"
+        signature = hmac_sha256(sig_data).hexdigest()  # lowercase
+        ```
+
+        **Example POST signature (with body):**
+        ```
+        headers = "validate-algorithms=HmacSHA256&validate-appkey=xxx&validate-recvwindow=5000&validate-timestamp=1234567890000"
+        body = '{"symbol": "btc_usdt", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "bizType": "SPOT", "quantity": "0.1", "price": "50000.00"}'
+        components = "#POST#/v4/order#{body}"
+        sig_data = f"{headers}{components}"
+        signature = hmac_sha256(sig_data).hexdigest().upper()  # UPPERCASE
+        ```
+
+        **Standardized Field Orders by Endpoint:**
+
+        **POST /v4/order (place order):**
+        ```json
+        {
+          "symbol": "btc_usdt",
+          "side": "BUY",
+          "type": "LIMIT",
+          "timeInForce": "GTC",
+          "bizType": "SPOT",
+          "quantity": "0.1",
+          "price": "50000.00"
+        }
+        ```
+        **Note**: This specific field order is required. Do NOT alphabetize or reorder.
+
+  schemas:
+    XTResponse:
+      type: object
+      description: Generic XT API response wrapper
+      required:
+        - rc
+        - mc
+        - ma
+      properties:
+        rc:
+          type: integer
+          description: Response code (0 = success, non-zero = error)
+          example: 0
+        mc:
+          type: string
+          description: Message code (SUCCESS, ERROR, etc.)
+          example: SUCCESS
+        ma:
+          type: array
+          description: Message arguments (usually empty)
+          items:
+            type: string
+          example: []
+        result:
+          description: |
+            Response data payload (structure varies by endpoint).
+
+            ACTUAL API BEHAVIOR:
+            - /v4/public/ticker/price: Returns ARRAY of TickerData (single element for single symbol)
+            - /v4/trade: Returns NULL if no trades, ARRAY of TradeData otherwise
+            - /v4/balances: Returns ARRAY of BalanceData
+            - /v4/order: Returns OrderData object
+          oneOf:
+            - $ref: '#/components/schemas/TickerData'
+            - $ref: '#/components/schemas/DepthData'
+            - $ref: '#/components/schemas/OrderData'
+            - type: array
+              items: {}
+            - type: object
+            - type: "null"
+
+    TickerData:
+      type: object
+      description: Ticker price data
+      required:
+        - s
+        - t
+        - c
+      properties:
+        s:
+          type: string
+          description: Symbol
+          example: btc_usdt
+        t:
+          type: integer
+          format: int64
+          description: Timestamp (milliseconds)
+          example: 1696348800000
+        c:
+          type: number
+          format: decimal
+          description: Close price (last traded price)
+          example: 50024.00
+        o:
+          type: number
+          format: decimal
+          description: Open price (24h)
+          example: 50000.00
+        h:
+          type: number
+          format: decimal
+          description: High price (24h)
+          example: 50500.00
+        l:
+          type: number
+          format: decimal
+          description: Low price (24h)
+          example: 49500.00
+        v:
+          type: number
+          format: decimal
+          description: Volume (base currency)
+          example: 248.5
+        q:
+          type: number
+          format: decimal
+          description: Quote volume (quote currency)
+          example: 12450000.00
+        # TODO: Verify bid/ask fields from XT documentation
+        # Possible fields: ap (average price), bp (bid), sp (ask/sell)
+
+    DepthData:
+      type: object
+      description: Order book depth data
+      required:
+        - s
+        - t
+        - bids
+        - asks
+      properties:
+        s:
+          type: string
+          description: Symbol
+          example: btc_usdt
+        t:
+          type: integer
+          format: int64
+          description: Timestamp (milliseconds)
+          example: 1696348800000
+        bids:
+          type: array
+          description: Bid levels [[price, quantity], ...]
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ["50000.00", "1.5"]
+            - ["49995.00", "2.3"]
+        asks:
+          type: array
+          description: Ask levels [[price, quantity], ...]
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ["50010.00", "2.0"]
+            - ["50015.00", "1.8"]
+
+    OrderRequest:
+      type: object
+      description: Order placement request
+      required:
+        - symbol
+        - side
+        - type
+        - timeInForce
+        - bizType
+        - quantity
+      properties:
+        symbol:
+          type: string
+          description: Trading pair symbol
+          example: btc_usdt
+        side:
+          type: string
+          enum: [BUY, SELL]
+          description: Order side
+        type:
+          type: string
+          enum: [LIMIT, MARKET]
+          description: Order type
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK]
+          description: Time in force
+          default: GTC
+        bizType:
+          type: string
+          enum: [SPOT]
+          description: Business type
+          default: SPOT
+        quantity:
+          type: number
+          format: decimal
+          description: Order quantity (base currency)
+          example: 0.1
+        price:
+          type: number
+          format: decimal
+          description: Limit price (required for LIMIT orders)
+          example: 50000.00
+        quoteQty:
+          type: number
+          format: decimal
+          description: Quote quantity (for MARKET buy orders)
+
+    OrderData:
+      type: object
+      description: |
+        Order response data
+
+        **IMPORTANT**: Field names differ between endpoints:
+        - POST /v4/order: Does NOT include status/state field (newly created orders)
+        - GET /v4/order: Uses 'state' field (not 'status') for order status
+      required:
+        - orderId
+        - symbol
+        - side
+        - type
+      properties:
+        orderId:
+          type: string
+          description: Exchange order ID
+          example: xt_abc123def456
+        symbol:
+          type: string
+          description: Trading pair symbol
+          example: btc_usdt
+        side:
+          type: string
+          enum: [BUY, SELL]
+          description: Order side
+        type:
+          type: string
+          enum: [LIMIT, MARKET]
+          description: Order type
+        price:
+          type: number
+          format: decimal
+          description: Order price
+        origQty:
+          type: number
+          format: decimal
+          description: Original quantity
+        executedQty:
+          type: number
+          format: decimal
+          description: Executed quantity
+        state:
+          type: string
+          enum: [NEW, FILLED, CANCELED, PARTIALLY_FILLED, REJECTED, EXPIRED]
+          description: |
+            Order status (GET /v4/order only - field name is 'state', not 'status')
+            POST /v4/order response does NOT include this field
+        transactTime:
+          type: integer
+          format: int64
+          description: Transaction timestamp (milliseconds)
+
+    Error:
+      type: object
+      description: Error response
+      properties:
+        rc:
+          type: integer
+          description: Error code (non-zero)
+        mc:
+          type: string
+          description: Error message code
+        ma:
+          type: array
+          description: Error message arguments
+          items:
+            type: string
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            rc: 400
+            mc: INVALID_PARAMETER
+            ma: ["symbol is required"]
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            rc: 401
+            mc: UNAUTHORIZED
+            ma: ["Invalid signature"]
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            rc: 500
+            mc: INTERNAL_ERROR
+            ma: []
+
+  parameters:
+    Symbol:
+      name: symbol
+      in: query
+      required: true
+      description: Trading pair symbol (lowercase with underscore)
+      schema:
+        type: string
+        pattern: '^[a-z]+_[a-z]+$'
+        example: btc_usdt
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Result limit
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20

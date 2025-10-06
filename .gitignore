@@ -66,3 +66,7 @@ tri_arb.db
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary test/debug scripts (root level only)
+/test_*.py
+/*_api.py

@@ -476,7 +476,261 @@ black src/tri_arb/exchanges/xt.py --check
 
 ---
 
-## Troubleshooting
+## Signature Troubleshooting
+
+### Common Signature Errors
+
+**Error**: `401 Unauthorized - Invalid signature`
+
+XT API signature generation is extremely sensitive to data ordering and formatting. Any deviation causes authentication failure.
+
+### Root Causes & Solutions
+
+#### 1. **Wrong field order in JSON body**
+
+**Symptom**: 401 error specifically on POST /v4/order or POST/DELETE requests
+
+**Diagnosis**:
+```python
+# Check your JSON body field order
+import json
+body = {
+    "symbol": "btc_usdt",
+    "side": "BUY",
+    "type": "LIMIT",
+    "timeInForce": "GTC",
+    "bizType": "SPOT",
+    "quantity": "0.1",
+    "price": "50000.00"
+}
+print(json.dumps(body))
+# Compare with documented order in specs/002-xt-spot-api/contracts/xt-api.yaml
+```
+
+**Fix**: Use exact field order documented in OpenAPI spec:
+1. symbol
+2. side
+3. type
+4. timeInForce
+5. bizType
+6. quantity
+7. price (if LIMIT order)
+
+**DON'T**: Alphabetize or reorder fields. Field order affects signature!
+
+#### 2. **Headers not sorted alphabetically**
+
+**Symptom**: 401 error on all authenticated requests (GET/POST/DELETE)
+
+**Diagnosis**:
+```python
+headers = {
+    'validate-timestamp': '123',
+    'validate-algorithms': 'HmacSHA256',
+    'validate-recvwindow': '5000',
+    'validate-appkey': 'key123'
+}
+# Check if sorted
+sorted_keys = sorted(headers.keys())
+print(sorted_keys)
+# Should be: ['validate-algorithms', 'validate-appkey', 'validate-recvwindow', 'validate-timestamp']
+```
+
+**Fix**: Always sort headers alphabetically:
+```python
+x = '&'.join([f"{key}={headers[key]}" for key in sorted(headers)])
+```
+
+#### 3. **Query parameters not sorted**
+
+**Symptom**: 401 error on GET/DELETE requests with query parameters
+
+**Diagnosis**:
+```python
+params = {"orderId": "123", "bizType": "SPOT"}
+# Check order
+query = urllib.parse.urlencode(params)
+print(query)
+# Should be: bizType=SPOT&orderId=123 (alphabetically sorted)
+```
+
+**Fix**: Sort parameters before encoding:
+```python
+sorted_items = sorted(params.items())
+query = urllib.parse.urlencode(sorted_items)
+```
+
+#### 4. **Timestamp out of sync**
+
+**Symptom**: "Timestamp expired" or "Invalid timestamp" error
+
+**Diagnosis**:
+```bash
+# Check system time
+date
+# Should be within ±5 seconds of XT server time
+```
+
+**Fix**: Sync system time with NTP:
+```bash
+# macOS
+sudo sntp -sS time.apple.com
+
+# Linux
+sudo ntpdate pool.ntp.org
+```
+
+#### 5. **Wrong signature case**
+
+**Symptom**: 401 error with correct field order and sorting
+
+**Diagnosis**:
+```python
+# Check signature case
+print(f"GET signature: {signature_get}")    # Should be lowercase
+print(f"POST signature: {signature_post}")  # Should be UPPERCASE
+```
+
+**Fix**:
+- **GET requests**: lowercase `.hexdigest()`
+- **POST/DELETE requests**: UPPERCASE `.hexdigest().upper()`
+
+#### 6. **JSON serialization inconsistency**
+
+**Symptom**: Intermittent 401 errors on same endpoint
+
+**Diagnosis**:
+```python
+import json
+body = {"symbol": "btc_usdt", "side": "BUY"}
+
+# Check serialization
+default_json = json.dumps(body)
+compact_json = json.dumps(body, separators=(',', ':'))
+
+print(f"Default: {default_json}")   # '{"symbol": "btc_usdt", "side": "BUY"}'
+print(f"Compact: {compact_json}")   # '{"symbol":"btc_usdt","side":"BUY"}'
+# Different strings → Different signatures!
+```
+
+**Fix**: Always use default `json.dumps()` without custom separators:
+```python
+body_string = json.dumps(body)  # Use default formatting
+```
+
+### Verification Steps
+
+**Step 1: Print signature components**
+```python
+print(f"Headers string: {headers_str}")
+print(f"Query string: {query_str}")
+print(f"Body string: {body_str}")
+print(f"Signature data: {sig_data}")
+print(f"Signature: {signature}")
+```
+
+**Step 2: Compare with working example**
+- Reference: `xt_spot_api.py` (existing working implementation)
+- Match field order exactly
+- Use same JSON serialization format
+
+**Step 3: Test with minimal request**
+```python
+# Start simple (no auth)
+async def test_minimal():
+    response = await client.get('/v4/public/ticker/price', params={'symbol': 'btc_usdt'})
+    print(response.json())
+
+# Then authenticated GET
+async def test_auth_get():
+    response = await client.get('/v4/balances')  # With signature
+    print(response.json())
+
+# Finally POST
+async def test_auth_post():
+    response = await client.post('/v4/order', json=body)  # With signature
+    print(response.json())
+```
+
+**Step 4: Enable debug logging**
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Or use structlog
+from tri_arb.config.logging import get_logger
+logger = get_logger(__name__)
+logger.setLevel(logging.DEBUG)
+```
+
+### Quick Debug Checklist
+
+Before reporting signature issues, verify:
+
+- [ ] ✅ Headers sorted alphabetically (`validate-algorithms` < `validate-appkey` < `validate-recvwindow` < `validate-timestamp`)
+- [ ] ✅ Query params sorted alphabetically
+- [ ] ✅ JSON body field order matches documented order
+- [ ] ✅ Timestamp within 5-second window
+- [ ] ✅ Correct signature case (lowercase GET, UPPERCASE POST/DELETE)
+- [ ] ✅ Default JSON serialization (no custom separators)
+- [ ] ✅ System time synchronized with NTP
+- [ ] ✅ API credentials are correct and active
+- [ ] ✅ No extra whitespace in signature string
+
+### Example: Debugging a Failed Order
+
+```python
+import logging
+from tri_arb.exchanges.xt import XTExchange
+from tri_arb.core.models import TradingPair, Order, OrderSide, OrderType
+from decimal import Decimal
+import asyncio
+
+logging.basicConfig(level=logging.DEBUG)
+
+async def debug_order():
+    exchange = XTExchange(
+        name="xt",
+        api_key="your_key",
+        api_secret="your_secret"
+    )
+
+    trading_pair = TradingPair(
+        base_currency="BTC",
+        quote_currency="USDT",
+        exchange="xt",
+        min_order_size=Decimal("0.001"),
+        max_order_size=Decimal("1000"),
+        price_precision=2,
+        quantity_precision=8
+    )
+
+    order = Order(
+        order_id="test",
+        trading_pair=trading_pair,
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.001"),
+        price=Decimal("50000.00")
+    )
+
+    try:
+        await exchange.connect()
+        # Logs will show signature generation details
+        placed_order = await exchange.place_order(order)
+        print(f"Success: {placed_order.exchange_order_id}")
+    except Exception as e:
+        print(f"Error: {e}")
+        # Check logs for signature components
+    finally:
+        await exchange.disconnect()
+
+asyncio.run(debug_order())
+```
+
+---
+
+## General Troubleshooting
 
 ### Issue: "XTExchange not yet implemented"
 
@@ -488,6 +742,7 @@ black src/tri_arb/exchanges/xt.py --check
 1. Verify API key and secret are correct
 2. Check XT API key permissions (trading enabled)
 3. Ensure system time is synchronized (signature validation)
+4. **Review signature troubleshooting section above** ⬆️
 
 ### Issue: "Rate limit exceeded"
 

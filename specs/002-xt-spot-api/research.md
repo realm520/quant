@@ -681,6 +681,281 @@ dev = [
 
 ---
 
-**Document Status**: Complete  
-**All NEEDS CLARIFICATION Resolved**: Yes (marked as TODO where documentation needed)  
+---
+
+## 17. Signature Generation: Sorting Requirements
+
+### Overview
+XT API signature generation is **highly sensitive** to data ordering. Incorrect ordering causes signature mismatch (401 Unauthorized errors). This section documents the precise sorting requirements for headers, query parameters, and JSON body fields.
+
+### Header Sorting
+**Rule**: Alphabetical by key name (ASCII order, case-sensitive)
+
+**Implementation**:
+```python
+headers = {
+    'validate-algorithms': 'HmacSHA256',
+    'validate-appkey': api_key,
+    'validate-recvwindow': str(recv_window),
+    'validate-timestamp': str(timestamp),
+}
+# Sort by key name alphabetically
+x = '&'.join([f"{key}={headers[key]}" for key in sorted(headers)])
+# Result: validate-algorithms=HmacSHA256&validate-appkey=...&validate-recvwindow=...&validate-timestamp=...
+```
+
+**Why it matters**: Headers are part of the signature string. Wrong order → different signature → rejected request.
+
+**Actual sort order**:
+1. `validate-algorithms` (alphabetically first)
+2. `validate-appkey`
+3. `validate-recvwindow`
+4. `validate-timestamp` (alphabetically last)
+
+### Query Parameter Sorting
+**Rule**: Alphabetical by parameter name
+
+**Implementation**:
+```python
+params = {'orderId': '123', 'bizType': 'SPOT'}
+sorted_items = sorted(params.items(), key=lambda x: x[0])
+query_string = urllib.parse.urlencode(sorted_items)
+# Result: bizType=SPOT&orderId=123 (bizType < orderId alphabetically)
+```
+
+**Edge cases**:
+- Empty values: `key=` (include empty string)
+- Special characters: URL-encode (`%20` for space, `%3D` for `=`, etc.)
+- Array values: JSON-encode first, then URL-encode
+- Null/None values: Omit from query string entirely
+
+**Common query parameter orders**:
+- `bizType=SPOT&orderId=123` (bizType < orderId)
+- `bizType=SPOT&limit=100&symbol=btc_usdt` (bizType < limit < symbol)
+
+### JSON Body Field Order
+**Rule**: **Preserve insertion order** (Python 3.7+ dict insertion order guarantee)
+
+**Why this is CRITICAL**:
+```python
+# These produce DIFFERENT signatures!
+body1 = {"symbol": "btc_usdt", "side": "BUY"}
+body2 = {"side": "BUY", "symbol": "btc_usdt"}
+
+json.dumps(body1)  # '{"symbol": "btc_usdt", "side": "BUY"}'
+json.dumps(body2)  # '{"side": "BUY", "symbol": "btc_usdt"}'
+# Different strings → Different HMAC → Signature mismatch → 401 Error!
+```
+
+**Implementation Pattern**:
+```python
+# CORRECT: Build dict in specific order
+body = {
+    "symbol": symbol,           # 1st
+    "side": side,               # 2nd
+    "type": order_type,         # 3rd
+    "timeInForce": "GTC",       # 4th
+    "bizType": "SPOT",          # 5th
+    "quantity": str(quantity),  # 6th
+}
+if order_type == "LIMIT":
+    body["price"] = str(price)  # 7th (conditional, added last)
+
+# WRONG: Alphabetical sorting
+body = dict(sorted(body.items()))  # ❌ Will fail signature verification!
+
+# WRONG: Random order
+body = {
+    "side": side,               # ❌ Wrong position
+    "symbol": symbol,
+    "type": order_type,
+    # ...
+}
+```
+
+**Standardized Field Orders by Endpoint**:
+
+**POST /v4/order** (place order):
+```python
+# Required field order (DO NOT CHANGE):
+{
+    "symbol": "btc_usdt",       # 1. Trading pair symbol
+    "side": "BUY",              # 2. Order side (BUY/SELL)
+    "type": "LIMIT",            # 3. Order type (LIMIT/MARKET)
+    "timeInForce": "GTC",       # 4. Time in force
+    "bizType": "SPOT",          # 5. Business type
+    "quantity": "0.1",          # 6. Order quantity
+    "price": "50000.00"         # 7. Limit price (if type=LIMIT)
+}
+```
+
+**DELETE /v4/order** (cancel order):
+- Uses query parameters, not body
+- Query params sorted alphabetically: `bizType=SPOT&orderId=123`
+
+### JSON Serialization Details
+
+**Critical points**:
+1. **No extra whitespace**: `json.dumps()` default adds spaces after `:` and `,`
+2. **Consistent serialization**: Always use `json.dumps(body)` without custom separators
+3. **String encoding**: All numeric values should be strings in JSON (`"0.1"` not `0.1`)
+4. **No pretty printing**: Never use `json.dumps(body, indent=2)` for signatures
+
+**Example**:
+```python
+import json
+
+body = {
+    "symbol": "btc_usdt",
+    "side": "BUY",
+    "type": "LIMIT",
+    "timeInForce": "GTC",
+    "bizType": "SPOT",
+    "quantity": "0.00008",
+    "price": "117767.93"
+}
+
+# CORRECT serialization:
+body_string = json.dumps(body)
+# Result: '{"symbol": "btc_usdt", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "bizType": "SPOT", "quantity": "0.00008", "price": "117767.93"}'
+
+# WRONG: Custom separators
+body_string = json.dumps(body, separators=(',', ':'))  # ❌ Missing spaces
+# Result: '{"symbol":"btc_usdt","side":"BUY",...}'  # Different signature!
+```
+
+### Debugging Signature Issues
+
+**Symptoms**:
+- 401 Unauthorized
+- Error: "Invalid signature" or "SIGNATURE_ERROR"
+- Signature verification fails
+
+**Diagnosis Checklist**:
+1. ✅ **Headers sorted alphabetically?**
+   - Check: `sorted(headers.keys())`
+   - Log: Print `x` variable (sorted headers string)
+
+2. ✅ **Query params sorted alphabetically?**
+   - Check: `sorted(params.items())`
+   - Log: Print query string before signature
+
+3. ✅ **JSON body field order matches reference?**
+   - Check: Compare with `xt_spot_api.py` or this documentation
+   - Log: Print exact JSON string used in signature
+
+4. ✅ **Timestamp within 5-second window?**
+   - Check: `abs(server_time - timestamp) < 5000`
+   - Fix: Sync system time with NTP
+
+5. ✅ **Correct signature case?**
+   - GET: lowercase `.hexdigest()`
+   - POST/DELETE: UPPERCASE `.hexdigest().upper()`
+
+6. ✅ **No extra spaces in JSON?**
+   - Check: Use default `json.dumps()`, no custom separators
+   - Log: Print byte length of body string
+
+**Logging Strategy**:
+```python
+logger.debug(
+    "Signature generation details",
+    method=method,
+    path=path,
+    headers_sorted=x,                    # Sorted header string
+    query_sorted=query,                  # Sorted query string
+    body_exact=body_string,              # Exact JSON string
+    sig_data=sig_data,                   # Complete signature data
+    signature=signature[:8] + "..." + signature[-8:]  # Truncated signature
+)
+```
+
+**Comparison with reference implementation**:
+```bash
+# Compare your signature components with xt_spot_api.py
+python -c "
+import xt_spot_api
+client = xt_spot_api.Client(api_key='...', api_secret='...')
+# Set breakpoint in create_sign() method
+# Compare x, y, sig_data values
+"
+```
+
+### Common Mistakes
+
+**Mistake 1**: Alphabetizing JSON body fields
+```python
+# ❌ WRONG
+body = {"symbol": "btc_usdt", "side": "BUY", "quantity": "0.1"}
+body = dict(sorted(body.items()))  # Alphabetizes: bizType, quantity, side, symbol
+```
+
+**Mistake 2**: Inconsistent JSON serialization
+```python
+# ❌ WRONG - Different separators
+body1 = json.dumps(body, separators=(',', ':'))   # No spaces
+body2 = json.dumps(body)                          # Default spaces
+# These produce different signatures!
+```
+
+**Mistake 3**: Not sorting query parameters
+```python
+# ❌ WRONG - Using dict order (might not be alphabetical)
+params = {"orderId": "123", "bizType": "SPOT"}
+query = urllib.parse.urlencode(params)  # Might produce orderId=123&bizType=SPOT
+
+# ✅ CORRECT - Explicit sorting
+sorted_params = sorted(params.items())
+query = urllib.parse.urlencode(sorted_params)  # Always produces bizType=SPOT&orderId=123
+```
+
+**Mistake 4**: Wrong signature case
+```python
+# ❌ WRONG - Lowercase for POST
+signature = hmac.new(...).hexdigest()  # GET case for POST request
+
+# ✅ CORRECT - Uppercase for POST/DELETE
+signature = hmac.new(...).hexdigest().upper()  # POST/DELETE case
+```
+
+### Testing Signature Generation
+
+**Unit test template**:
+```python
+def test_signature_field_order():
+    """Verify JSON body field order affects signature."""
+    body1 = {"symbol": "btc_usdt", "side": "BUY"}
+    body2 = {"side": "BUY", "symbol": "btc_usdt"}
+
+    sig1 = generate_signature(json.dumps(body1))
+    sig2 = generate_signature(json.dumps(body2))
+
+    assert sig1 != sig2, "Different field orders should produce different signatures"
+
+def test_query_parameter_sorting():
+    """Verify query parameters are sorted alphabetically."""
+    params = {"orderId": "123", "bizType": "SPOT"}
+    query = build_sorted_query(params)
+
+    assert query == "bizType=SPOT&orderId=123", "Query params must be alphabetically sorted"
+
+def test_header_sorting():
+    """Verify headers are sorted alphabetically."""
+    headers = {
+        'validate-timestamp': '123',
+        'validate-algorithms': 'HmacSHA256',
+        'validate-recvwindow': '5000',
+        'validate-appkey': 'key123'
+    }
+
+    sorted_str = build_sorted_headers(headers)
+    expected = "validate-algorithms=HmacSHA256&validate-appkey=key123&validate-recvwindow=5000&validate-timestamp=123"
+
+    assert sorted_str == expected, "Headers must be alphabetically sorted"
+```
+
+---
+
+**Document Status**: Complete
+**All NEEDS CLARIFICATION Resolved**: Yes (marked as TODO where documentation needed)
 **Ready for Phase 1**: ✅ Yes

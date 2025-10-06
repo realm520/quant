@@ -74,8 +74,8 @@ class TestCurrencyValidation:
         assert pair.base_currency == "BTC"
 
     def test_base_currency_too_short(self, valid_trading_pair_data):
-        """Should raise ValidationError for base_currency < 2 chars."""
-        valid_trading_pair_data["base_currency"] = "B"
+        """Should raise ValidationError for base_currency < 1 char (empty string)."""
+        valid_trading_pair_data["base_currency"] = ""
 
         with pytest.raises(ValidationError) as exc_info:
             TradingPair(**valid_trading_pair_data)

@@ -26,7 +26,7 @@ import pytest
 # Check if XT Exchange is available
 try:
     from tri_arb.exchanges.xt import XTExchange
-    from tri_arb.core.models import Order, OrderSide, OrderType, OrderStatus, TradingPair
+    from tri_arb.core.models import Order, OrderSide, OrderType, OrderStatus, TradingPair, Price
     XT_EXCHANGE_AVAILABLE = True
 except ImportError:
     XT_EXCHANGE_AVAILABLE = False
@@ -386,6 +386,82 @@ class TestXTIntegrationPlaceholder:
         # Check for WARNING in module docstring
         assert "WARNING" in __doc__, \
             "Integration tests should have safety warnings"
+
+
+# ============================================================================
+# Feature 003: Batch Ticker Integration Tests
+# ============================================================================
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE,
+    reason="XTExchange not yet implemented"
+)
+@pytest.mark.skipif(
+    not INTEGRATION_ENABLED,
+    reason="XT API credentials not configured (set XT_API_KEY and XT_API_SECRET)"
+)
+class TestXTBatchTickerIntegration:
+    """Integration tests for batch ticker functionality with real XT API (Feature 003)."""
+
+    @pytest.fixture
+    async def xt_exchange(self):
+        """Create and connect XT exchange instance with real credentials."""
+        exchange = XTExchange(
+            name="xt",
+            api_key=API_KEY,
+            api_secret=API_SECRET
+        )
+        await exchange.connect()
+        yield exchange
+        await exchange.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_get_all_tickers_real_api(self, xt_exchange):
+        """Test get_ticker(None) with real XT API.
+
+        Scenario from quickstart.md lines 61-86.
+
+        Verifies:
+        - Returns List[Price]
+        - Returns ≥10 markets
+        - All Price objects valid
+        - Response time <1s
+        """
+        import time
+
+        # Measure performance
+        start = time.perf_counter()
+        prices = await xt_exchange.get_ticker(None)  # type: ignore
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        # Verify return type
+        assert isinstance(prices, list), "Must return list"
+        assert all(isinstance(p, Price) for p in prices), "All items must be Price objects"
+
+        # Verify market count (XT should have many markets)
+        market_count = len(prices)
+        assert market_count >= 10, f"Should return ≥10 markets, got {market_count}"
+
+        # Verify all Price objects valid
+        for price in prices:
+            assert price.bid_price > 0, f"Invalid bid for {price.trading_pair}"
+            assert price.ask_price > 0, f"Invalid ask for {price.trading_pair}"
+            assert price.bid_volume >= 0, f"Negative bid volume for {price.trading_pair}"
+            assert price.ask_volume >= 0, f"Negative ask volume for {price.trading_pair}"
+            assert price.exchange == "xt", "Exchange name should be 'xt'"
+
+        # Verify performance (NFR-001: <1s target)
+        print(f"Batch ticker query: {elapsed_ms:.2f}ms for {market_count} markets")
+
+        # Relaxed for real API (network latency varies)
+        # Target is <1s, but allow up to 2s for slower networks
+        assert elapsed_ms < 2000, f"Batch query took {elapsed_ms:.2f}ms (>2s)"
+
+        # Log performance warning if >1s
+        if elapsed_ms > 1000:
+            import logging
+            logging.warning(f"Batch query exceeded 1s target: {elapsed_ms:.2f}ms")
 
 
 # TODO: Add more integration tests

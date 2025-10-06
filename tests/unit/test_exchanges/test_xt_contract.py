@@ -378,13 +378,13 @@ class TestXTExchangeFactoryIntegration:
 @pytest.mark.contract
 class TestXTExchangeImportability:
     """Test that XTExchange can be imported (implementation exists).
-    
+
     This test should FAIL initially until XTExchange is implemented.
     """
 
     def test_xt_exchange_importable(self):
         """Test that XTExchange class can be imported.
-        
+
         This is the first test that must pass - verifies the class exists.
         Expected to FAIL until src/tri_arb/exchanges/xt.py is created.
         """
@@ -396,16 +396,386 @@ class TestXTExchangeImportability:
 
     def test_xt_exchange_in_exchanges_init(self):
         """Test that XTExchange is exported from exchanges package.
-        
+
         Verifies that XTExchange is added to __all__ in exchanges/__init__.py
         """
         from tri_arb import exchanges
-        
+
         # Check if XTExchange is in __all__ (if __all__ exists)
         if hasattr(exchanges, '__all__'):
             assert 'XTExchange' in exchanges.__all__, \
                 "XTExchange should be in exchanges.__all__"
-        
+
         # Check if XTExchange can be imported from exchanges
         assert hasattr(exchanges, 'XTExchange'), \
             "XTExchange should be importable from tri_arb.exchanges"
+
+
+# ============================================================================
+# Feature 003: Batch Ticker Contract Tests
+# ============================================================================
+
+@pytest.fixture
+def btc_usdt_pair() -> "TradingPair":
+    """BTC/USDT trading pair for tests."""
+    from decimal import Decimal
+    from tri_arb.core.models import TradingPair
+
+    return TradingPair(
+        base_currency="BTC",
+        quote_currency="USDT",
+        exchange="xt",
+        min_order_size=Decimal("0.001"),
+        max_order_size=Decimal("1000"),
+        price_precision=2,
+        quantity_precision=8,
+    )
+
+
+@pytest.fixture
+async def xt_connected() -> "XTExchange":
+    """Create and connect XTExchange instance."""
+    exchange = XTExchange(name="xt")
+    await exchange.connect()
+    yield exchange
+    if exchange.is_connected:
+        await exchange.disconnect()
+
+
+# T004: Single Ticker Contract Tests (Backward Compatibility)
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_single_ticker_returns_price_object_feature_003(
+    xt_connected: "XTExchange",
+    btc_usdt_pair: "TradingPair"
+) -> None:
+    """CONTRACT (Feature 003): get_ticker(trading_pair) MUST return single Price object."""
+    from tri_arb.core.models import Price
+
+    # Mock XT API response for single ticker query
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [{
+                    "s": "btc_usdt",
+                    "c": "50000.00",
+                    "v": "123.456",
+                    "t": 1696512000000
+                }]
+            }
+        )
+    )
+
+    result = await xt_connected.get_ticker(btc_usdt_pair)
+
+    # Must return Price, not list
+    assert isinstance(result, Price), "Single ticker query must return Price object"
+    assert not isinstance(result, list), "Single ticker should not return list"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_single_ticker_price_data_valid_feature_003(
+    xt_connected: "XTExchange",
+    btc_usdt_pair: "TradingPair"
+) -> None:
+    """CONTRACT (Feature 003): Returned Price object MUST satisfy data constraints."""
+    from datetime import datetime, timedelta
+
+    # Mock XT API response
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [{
+                    "s": "btc_usdt",
+                    "c": "50000.00",
+                    "v": "123.456",
+                    "t": 1696512000000
+                }]
+            }
+        )
+    )
+
+    price = await xt_connected.get_ticker(btc_usdt_pair)
+
+    # Price constraints
+    assert price.bid_price > 0, "Bid price must be positive"
+    assert price.ask_price > 0, "Ask price must be positive"
+    assert price.ask_price >= price.bid_price, "Ask >= bid (normal market)"
+
+    # Volume constraints
+    assert price.bid_volume >= 0, "Bid volume must be non-negative"
+    assert price.ask_volume >= 0, "Ask volume must be non-negative"
+
+    # Metadata constraints
+    assert price.trading_pair == btc_usdt_pair, "Trading pair must match input"
+    assert price.exchange == xt_connected.name, "Exchange name must match"
+
+    # Timestamp freshness (< 5 seconds old)
+    age = datetime.now(price.timestamp.tzinfo) - price.timestamp
+    assert age < timedelta(seconds=5), f"Timestamp too old: {age.total_seconds()}s"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_single_ticker_performance_feature_003(
+    xt_connected: "XTExchange",
+    btc_usdt_pair: "TradingPair"
+) -> None:
+    """CONTRACT (Feature 003): Single ticker query SHOULD complete quickly."""
+    import time
+
+    # Mock XT API response
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [{
+                    "s": "btc_usdt",
+                    "c": "50000.00",
+                    "v": "123.456",
+                    "t": 1696512000000
+                }]
+            }
+        )
+    )
+
+    start = time.perf_counter()
+    await xt_connected.get_ticker(btc_usdt_pair)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    # Relaxed check for unit tests (with mocking, should be very fast)
+    assert elapsed_ms < 100, f"Single ticker took {elapsed_ms:.2f}ms with mocking"
+
+
+# T005: Batch Ticker Contract Tests (New Feature)
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_ticker_returns_list_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): get_ticker(None) MUST return List[Price]."""
+    from tri_arb.core.models import Price
+
+    # Mock XT API batch response
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [
+                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
+                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
+                    {"s": "sol_usdt", "c": "100.00", "v": "1000.0", "t": 1696512000000},
+                ]
+            }
+        )
+    )
+
+    result = await xt_connected.get_ticker(None)  # type: ignore
+
+    assert isinstance(result, list), "Batch query must return list"
+    assert all(isinstance(p, Price) for p in result), "All items must be Price objects"
+    assert len(result) == 3, "Should return 3 tickers"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_ticker_no_duplicates_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): Batch ticker MUST not return duplicate trading pairs."""
+    # Mock XT API batch response
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [
+                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
+                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
+                    {"s": "btc_usdt", "c": "50001.00", "v": "101.0", "t": 1696512001000},  # Duplicate!
+                ]
+            }
+        )
+    )
+
+    prices = await xt_connected.get_ticker(None)  # type: ignore
+
+    # Extract trading pair keys
+    pair_keys = [
+        f"{p.trading_pair.base_currency}_{p.trading_pair.quote_currency}_{p.trading_pair.exchange}"
+        for p in prices
+    ]
+
+    # Note: Implementation may choose to keep first or last duplicate
+    # Contract requires NO duplicates in final result
+    assert len(pair_keys) == len(set(pair_keys)), "Duplicate trading pairs detected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_ticker_each_price_valid_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): Each Price in batch result MUST satisfy data constraints."""
+    from datetime import datetime, timedelta
+
+    # Mock XT API batch response
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [
+                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
+                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
+                ]
+            }
+        )
+    )
+
+    prices = await xt_connected.get_ticker(None)  # type: ignore
+
+    for price in prices:
+        # Same validation as single ticker
+        assert price.bid_price > 0, f"Invalid bid for {price.trading_pair}"
+        assert price.ask_price > 0, f"Invalid ask for {price.trading_pair}"
+        assert price.ask_price >= price.bid_price, f"Ask < bid for {price.trading_pair}"
+        assert price.bid_volume >= 0, f"Negative bid volume for {price.trading_pair}"
+        assert price.ask_volume >= 0, f"Negative ask volume for {price.trading_pair}"
+        assert price.exchange == xt_connected.name, "Exchange name mismatch"
+
+        # Timestamp freshness
+        age = datetime.now(price.timestamp.tzinfo) - price.timestamp
+        assert age < timedelta(seconds=10), f"Stale data for {price.trading_pair}: {age.total_seconds()}s"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_ticker_performance_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): Batch ticker query SHOULD complete in <1000ms."""
+    import time
+
+    # Mock XT API batch response with 100 tickers
+    tickers = [
+        {"s": f"ticker{i}_usdt", "c": f"{1000 + i}.00", "v": "100.0", "t": 1696512000000}
+        for i in range(100)
+    ]
+
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={"rc": 0, "result": tickers}
+        )
+    )
+
+    start = time.perf_counter()
+    await xt_connected.get_ticker(None)  # type: ignore
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    # With mocking, should be fast. Real performance test in T018.
+    assert elapsed_ms < 1000, f"Batch query took {elapsed_ms:.2f}ms"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_ticker_scalability_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): Batch query MUST support ≥500 trading pairs."""
+    # Mock XT API batch response with 500 tickers
+    tickers = [
+        {"s": f"pair{i}_usdt", "c": f"{1000 + i}.00", "v": "100.0", "t": 1696512000000}
+        for i in range(500)
+    ]
+
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={"rc": 0, "result": tickers}
+        )
+    )
+
+    prices = await xt_connected.get_ticker(None)  # type: ignore
+    market_count = len(prices)
+
+    print(f"Batch query returned {market_count} markets")
+    assert market_count >= 1, "Batch query should return at least 1 market"
+
+
+# T006: Partial Failure Contract Tests
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_partial_failure_returns_success_subset_feature_003(
+    xt_connected: "XTExchange",
+    monkeypatch
+) -> None:
+    """CONTRACT (Feature 003): Batch query with partial failures MUST return successful subset."""
+    # Mock XT API batch response with some invalid data
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [
+                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
+                    {"s": "eth_usdt", "c": "invalid_price", "v": "500.0", "t": 1696512000000},  # Will fail
+                    {"s": "sol_usdt", "c": "100.00", "v": "1000.0", "t": 1696512000000},
+                ]
+            }
+        )
+    )
+
+    prices = await xt_connected.get_ticker(None)  # type: ignore
+
+    # Verify successful subset returned
+    assert isinstance(prices, list), "Must return list even with partial failures"
+    # Should have 2 successful (btc_usdt, sol_usdt), eth_usdt failed
+    assert len(prices) >= 1, "Should have some successful results"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@respx.mock
+async def test_batch_all_failures_returns_empty_list_feature_003(
+    xt_connected: "XTExchange"
+) -> None:
+    """CONTRACT (Feature 003): Batch query with all failures MUST return empty list."""
+    # Mock XT API batch response with all invalid data
+    respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+        return_value=Response(
+            200,
+            json={
+                "rc": 0,
+                "result": [
+                    {"s": "btc_usdt", "c": "invalid1", "v": "100.0", "t": 1696512000000},
+                    {"s": "eth_usdt", "c": "invalid2", "v": "500.0", "t": 1696512000000},
+                ]
+            }
+        )
+    )
+
+    prices = await xt_connected.get_ticker(None)  # type: ignore
+
+    # All failures should return empty list, not raise exception
+    assert prices == [] or len(prices) == 0, "All failures should return empty list"

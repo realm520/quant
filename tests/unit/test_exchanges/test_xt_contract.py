@@ -183,9 +183,9 @@ class TestXTExchangeMethodReturnTypes:
     def mock_xt_api(self):
         """Mock XT API responses."""
         with respx.mock:
-            # Mock ticker endpoint
-            respx.get("https://sapi.xt.com/v4/public/ticker/price").mock(
-                return_value=Response(200, json={"rc": 0, "result": {"c": "50000.00", "v": "100.5"}})
+            # Mock ticker endpoint (using /ticker/book as per implementation)
+            respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
+                return_value=Response(200, json={"rc": 0, "result": [{"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"}]})
             )
             # Mock orderbook endpoint
             respx.get("https://sapi.xt.com/v4/public/depth").mock(
@@ -462,9 +462,10 @@ async def test_single_ticker_returns_price_object_feature_003(
                 "rc": 0,
                 "result": [{
                     "s": "btc_usdt",
-                    "c": "50000.00",
-                    "v": "123.456",
-                    "t": 1696512000000
+                    "bp": "49950.00",
+                    "ap": "50050.00",
+                    "bq": "10.5",
+                    "aq": "8.3"
                 }]
             }
         )
@@ -495,9 +496,10 @@ async def test_single_ticker_price_data_valid_feature_003(
                 "rc": 0,
                 "result": [{
                     "s": "btc_usdt",
-                    "c": "50000.00",
-                    "v": "123.456",
-                    "t": 1696512000000
+                    "bp": "49950.00",
+                    "ap": "50050.00",
+                    "bq": "10.5",
+                    "aq": "8.3"
                 }]
             }
         )
@@ -541,9 +543,10 @@ async def test_single_ticker_performance_feature_003(
                 "rc": 0,
                 "result": [{
                     "s": "btc_usdt",
-                    "c": "50000.00",
-                    "v": "123.456",
-                    "t": 1696512000000
+                    "bp": "49950.00",
+                    "ap": "50050.00",
+                    "bq": "10.5",
+                    "aq": "8.3"
                 }]
             }
         )
@@ -575,9 +578,9 @@ async def test_batch_ticker_returns_list_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
-                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
-                    {"s": "sol_usdt", "c": "100.00", "v": "1000.0", "t": 1696512000000},
+                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
+                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
+                    {"s": "sol_usdt", "bp": "99.50", "ap": "100.50", "bq": "100.8", "aq": "95.3"},
                 ]
             }
         )
@@ -604,9 +607,9 @@ async def test_batch_ticker_no_duplicates_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
-                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
-                    {"s": "btc_usdt", "c": "50001.00", "v": "101.0", "t": 1696512001000},  # Duplicate!
+                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
+                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
+                    {"s": "btc_usdt", "bp": "49960.00", "ap": "50060.00", "bq": "10.6", "aq": "8.4"},  # Duplicate!
                 ]
             }
         )
@@ -641,8 +644,8 @@ async def test_batch_ticker_each_price_valid_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
-                    {"s": "eth_usdt", "c": "3000.00", "v": "500.0", "t": 1696512000000},
+                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
+                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
                 ]
             }
         )
@@ -675,7 +678,7 @@ async def test_batch_ticker_performance_feature_003(
 
     # Mock XT API batch response with 100 tickers
     tickers = [
-        {"s": f"ticker{i}_usdt", "c": f"{1000 + i}.00", "v": "100.0", "t": 1696512000000}
+        {"s": f"ticker{i}_usdt", "bp": f"{1000 + i}.00", "ap": f"{1000 + i + 1}.00", "bq": "10.5", "aq": "8.3"}
         for i in range(100)
     ]
 
@@ -703,7 +706,7 @@ async def test_batch_ticker_scalability_feature_003(
     """CONTRACT (Feature 003): Batch query MUST support ≥500 trading pairs."""
     # Mock XT API batch response with 500 tickers
     tickers = [
-        {"s": f"pair{i}_usdt", "c": f"{1000 + i}.00", "v": "100.0", "t": 1696512000000}
+        {"s": f"pair{i}_usdt", "bp": f"{1000 + i}.00", "ap": f"{1000 + i + 1}.00", "bq": "10.5", "aq": "8.3"}
         for i in range(500)
     ]
 
@@ -738,9 +741,9 @@ async def test_batch_partial_failure_returns_success_subset_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "c": "50000.00", "v": "100.0", "t": 1696512000000},
-                    {"s": "eth_usdt", "c": "invalid_price", "v": "500.0", "t": 1696512000000},  # Will fail
-                    {"s": "sol_usdt", "c": "100.00", "v": "1000.0", "t": 1696512000000},
+                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
+                    {"s": "eth_usdt", "bp": "invalid_price", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},  # Will fail
+                    {"s": "sol_usdt", "bp": "99.50", "ap": "100.50", "bq": "100.8", "aq": "95.3"},
                 ]
             }
         )
@@ -768,8 +771,8 @@ async def test_batch_all_failures_returns_empty_list_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "c": "invalid1", "v": "100.0", "t": 1696512000000},
-                    {"s": "eth_usdt", "c": "invalid2", "v": "500.0", "t": 1696512000000},
+                    {"s": "btc_usdt", "bp": "invalid1", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
+                    {"s": "eth_usdt", "bp": "invalid2", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
                 ]
             }
         )

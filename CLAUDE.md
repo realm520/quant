@@ -71,7 +71,10 @@ Python 3.11+ (required for performance improvements and modern typing features):
 ### Common Pitfalls
 - **Trading pair format**: Must use lowercase with underscore (`btc_usdt`), not uppercase or hyphen
 - **Timestamp**: XT uses milliseconds, not seconds - `int(time.time() * 1000)`
-- **Signature order**: Must be exactly X#METHOD#PATH[#QUERY][#BODY]
+- **Signature case sensitivity**: 🚨 **CRITICAL** - GET uses lowercase, POST/DELETE use UPPERCASE hexdigest
+- **Signature format differences**:
+  - GET: `X#METHOD#PATH[#QUERY][#BODY]` (X = auth params string)
+  - POST/DELETE: `{sorted_headers}#METHOD#PATH[#QUERY][#BODY]` (headers sorted alphabetically)
 - **Connection state**: Must call `connect()` before any operations, `disconnect()` after
 - **Decimal precision**: Always use `Decimal` type, never float for money/quantities
 

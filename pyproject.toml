@@ -20,6 +20,7 @@ dependencies = [
     "prometheus-client>=0.19.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0.0",
+    "tenacity>=8.2.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,7 @@ dev = [
     "mypy>=1.8.0",
     "ruff>=0.1.0",
     "pyinstaller>=6.3.0",
+    "respx>=0.20.0",
 ]
 
 [project.scripts]

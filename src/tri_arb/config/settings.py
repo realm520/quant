@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     binance_enabled: bool = Field(default=False, description="Enable Binance exchange")
     okx_enabled: bool = Field(default=False, description="Enable OKX exchange")
 
+    # XT Exchange Configuration
+    # Note: Environment variables are auto-mapped (case_sensitive=False)
+    # xt_api_key -> XT_API_KEY, xt_api_secret -> XT_API_SECRET
+    xt_api_key: str = Field(default="", description="XT API key")
+    xt_api_secret: str = Field(default="", description="XT API secret")
+
 
 # Global settings instance
 settings = Settings()

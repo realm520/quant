@@ -58,15 +58,16 @@ paths:
                 rc: 0
                 mc: SUCCESS
                 ma: []
+                # ACTUAL API RESPONSE: result is an ARRAY, not an object
                 result:
-                  s: btc_usdt
-                  t: 1696348800000
-                  c: 50024.00
-                  o: 50000.00
-                  h: 50500.00
-                  l: 49500.00
-                  v: 248.5
-                  q: 12450000.00
+                  - s: btc_usdt
+                    t: 1696348800000
+                    c: 50024.00
+                    o: 50000.00
+                    h: 50500.00
+                    l: 49500.00
+                    v: 248.5
+                    q: 12450000.00
         '400':
           $ref: '#/components/responses/BadRequest'
         '500':
@@ -225,14 +226,8 @@ paths:
                 ma: []
                 result:
                   orderId: xt_abc123def456
-                  symbol: btc_usdt
-                  side: BUY
-                  type: LIMIT
-                  price: 50000.00
-                  origQty: 0.1
-                  executedQty: 0.0
-                  status: NEW
-                  transactTime: 1696348800000
+                  clientOrderId: null
+                  # NOTE: POST /v4/order response does NOT include state/status field
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -367,6 +362,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/XTResponse'
+              example:
+                rc: 0
+                mc: SUCCESS
+                ma: []
+                # ACTUAL API RESPONSE: result can be null if no trades
+                result: null
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -379,13 +380,78 @@ components:
       in: header
       name: validate-signature
       description: |
-        XT Exchange uses HMAC-SHA256 signature authentication.
-        Required headers:
+        XT Exchange uses HMAC-SHA256 signature authentication with different
+        signature formats for different HTTP methods.
+
+        **Required headers:**
         - validate-algorithms: HmacSHA256
         - validate-appkey: API key
         - validate-timestamp: Current timestamp (milliseconds)
         - validate-recvwindow: Request validity window (default 5000ms)
         - validate-signature: HMAC-SHA256 signature
+
+        **Signature Generation:**
+
+        **Header Sorting (All Methods):**
+        - Sort header keys alphabetically (ASCII order, case-sensitive)
+        - Format: `key1=value1&key2=value2&...`
+        - Standard order: `validate-algorithms=...&validate-appkey=...&validate-recvwindow=...&validate-timestamp=...`
+
+        **Query Parameter Sorting (GET/DELETE):**
+        - Sort query parameter keys alphabetically
+        - URL-encode values if needed
+        - Format: `key1=value1&key2=value2&...`
+        - Example: `bizType=SPOT&orderId=123` (bizType < orderId alphabetically)
+
+        **JSON Body Field Order (POST/DELETE):**
+        - **CRITICAL**: Field order in JSON body affects signature calculation
+        - Use consistent field order for same endpoint (see examples below)
+        - Python: Preserve dictionary insertion order (Python 3.7+)
+        - Different field order = Different JSON string = Different signature = 401 Error
+
+        **For GET requests:**
+        - Build X string with sorted headers: `validate-algorithms=HmacSHA256&validate-appkey={key}&validate-recvwindow={window}&validate-timestamp={ts}`
+        - Signature data: `{X}#GET#{path}[#{sorted_query}][#{body}]`
+        - Signature: HMAC-SHA256 hexdigest in **lowercase**
+
+        **For POST/DELETE requests:**
+        - Build headers string (already sorted): `validate-algorithms=HmacSHA256&validate-appkey={key}&validate-recvwindow={window}&validate-timestamp={ts}`
+        - Build components: `#{method}#{path}[#{sorted_query}][#{json_body}]`
+        - Signature data: `{sorted_headers}{components}`
+        - Signature: HMAC-SHA256 hexdigest in **UPPERCASE**
+
+        **Example GET signature (with query):**
+        ```
+        X = "validate-algorithms=HmacSHA256&validate-appkey=xxx&validate-recvwindow=5000&validate-timestamp=1234567890000"
+        query = "bizType=SPOT&orderId=123"  # Sorted alphabetically
+        sig_data = f"{X}#GET#/v4/order#{query}"
+        signature = hmac_sha256(sig_data).hexdigest()  # lowercase
+        ```
+
+        **Example POST signature (with body):**
+        ```
+        headers = "validate-algorithms=HmacSHA256&validate-appkey=xxx&validate-recvwindow=5000&validate-timestamp=1234567890000"
+        body = '{"symbol": "btc_usdt", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "bizType": "SPOT", "quantity": "0.1", "price": "50000.00"}'
+        components = "#POST#/v4/order#{body}"
+        sig_data = f"{headers}{components}"
+        signature = hmac_sha256(sig_data).hexdigest().upper()  # UPPERCASE
+        ```
+
+        **Standardized Field Orders by Endpoint:**
+
+        **POST /v4/order (place order):**
+        ```json
+        {
+          "symbol": "btc_usdt",
+          "side": "BUY",
+          "type": "LIMIT",
+          "timeInForce": "GTC",
+          "bizType": "SPOT",
+          "quantity": "0.1",
+          "price": "50000.00"
+        }
+        ```
+        **Note**: This specific field order is required. Do NOT alphabetize or reorder.
 
   schemas:
     XTResponse:
@@ -411,7 +477,14 @@ components:
             type: string
           example: []
         result:
-          description: Response data payload (structure varies by endpoint)
+          description: |
+            Response data payload (structure varies by endpoint).
+
+            ACTUAL API BEHAVIOR:
+            - /v4/public/ticker/price: Returns ARRAY of TickerData (single element for single symbol)
+            - /v4/trade: Returns NULL if no trades, ARRAY of TradeData otherwise
+            - /v4/balances: Returns ARRAY of BalanceData
+            - /v4/order: Returns OrderData object
           oneOf:
             - $ref: '#/components/schemas/TickerData'
             - $ref: '#/components/schemas/DepthData'
@@ -419,6 +492,7 @@ components:
             - type: array
               items: {}
             - type: object
+            - type: "null"
 
     TickerData:
       type: object
@@ -563,13 +637,17 @@ components:
 
     OrderData:
       type: object
-      description: Order response data
+      description: |
+        Order response data
+
+        **IMPORTANT**: Field names differ between endpoints:
+        - POST /v4/order: Does NOT include status/state field (newly created orders)
+        - GET /v4/order: Uses 'state' field (not 'status') for order status
       required:
         - orderId
         - symbol
         - side
         - type
-        - status
       properties:
         orderId:
           type: string
@@ -599,10 +677,12 @@ components:
           type: number
           format: decimal
           description: Executed quantity
-        status:
+        state:
           type: string
           enum: [NEW, FILLED, CANCELED, PARTIALLY_FILLED, REJECTED, EXPIRED]
-          description: Order status
+          description: |
+            Order status (GET /v4/order only - field name is 'state', not 'status')
+            POST /v4/order response does NOT include this field
         transactTime:
           type: integer
           format: int64

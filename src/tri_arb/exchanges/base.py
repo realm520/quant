@@ -6,6 +6,7 @@ interface across different cryptocurrency exchanges.
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Any
 
 from tri_arb.config.logging import get_logger
 from tri_arb.core.models import Order, OrderBook, Price, Trade, TradingPair
@@ -236,7 +237,7 @@ class BaseExchange(ABC):
         )
         return []
 
-    async def get_exchange_info(self) -> dict[str, any]:
+    async def get_exchange_info(self) -> dict[str, Any]:
         """Get exchange metadata and configuration.
 
         Returns:
@@ -254,3 +255,46 @@ class BaseExchange(ABC):
             "name": self.name,
             "is_connected": self.is_connected,
         }
+
+    @abstractmethod
+    async def get_trading_pair_info(
+        self, trading_pair: TradingPair | None = None
+    ) -> TradingPair | list[TradingPair]:
+        """Get detailed trading pair information from exchange.
+
+        Retrieves complete trading pair configuration including precision,
+        trading limits, fees, and filters. Essential for validating orders
+        before submission.
+
+        Args:
+            trading_pair: Trading pair to get info for. If None, returns all
+                         supported trading pairs (batch query). Default is None.
+
+        Returns:
+            - If trading_pair is provided: Single TradingPair object with full info
+            - If trading_pair is None: List of TradingPair objects for all supported pairs
+
+        Raises:
+            ExchangeConnectionError: If exchange is not connected
+            InvalidTradingPairError: If trading pair is not supported
+            NotImplementedError: If batch queries are not supported by this exchange
+
+        Examples:
+            Single pair query:
+                >>> pair_info = await exchange.get_trading_pair_info(btc_usdt_pair)
+                >>> print(f"Maker fee: {pair_info.maker_fee}")
+
+            Batch query for all pairs:
+                >>> all_pairs = await exchange.get_trading_pair_info(None)
+                >>> print(f"Exchange supports {len(all_pairs)} trading pairs")
+
+        Note:
+            The returned TradingPair objects include optional fields populated
+            from exchange API:
+            - maker_fee, taker_fee: Fee rates
+            - price_min, price_max, price_step: Price constraints
+            - quantity_min, quantity_max, quantity_step: Quantity constraints
+            - min_notional: Minimum order value
+            - trading_state: Current trading status
+        """
+        pass

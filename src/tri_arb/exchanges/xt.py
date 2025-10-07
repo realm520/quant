@@ -698,7 +698,7 @@ class XTExchange(BaseExchange):
             # Log response for debugging API format mismatches
             try:
                 response_data = response.json()
-                logger.info(
+                logger.debug(
                     "XT API response received",
                     method=method,
                     path=path,

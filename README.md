@@ -80,6 +80,43 @@ uv pip install -e ".[dev]"
 
 ## 🚀 Quick Start
 
+### Arbitrage Monitoring (Feature 004)
+
+Monitor triangular arbitrage opportunities across trading pairs:
+
+```bash
+# Single scan (default configuration)
+tri-arb monitor
+
+# Custom profit threshold (only show opportunities >= 1%)
+tri-arb monitor --min-profit 1.0
+
+# Filter by base currency (e.g., USDT only)
+tri-arb monitor --base-currencies USDT
+
+# Realtime monitoring mode (refresh every 10 seconds)
+tri-arb monitor --mode realtime --refresh-interval 10
+
+# Debug mode (show all filtered opportunities)
+tri-arb monitor --debug
+```
+
+**Example Output**:
+```
+[2025-10-06 10:00:00] 开始扫描市场...
+[2025-10-06 10:00:01] 已获取 500 个市场价格
+
+发现 2 条套利机会（按收益率排序）:
+┏━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
+┃ 序号 ┃             路径             ┃ 收益率   ┃ 建议金额 ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━┩
+│  1   │ USDT → BTC → ETH → USDT      │  1.25%   │  1000    │
+│  2   │ USDT → BNB → ETH → USDT      │  0.80%   │  1000    │
+└──────┴──────────────────────────────┴──────────┴──────────┘
+```
+
+See [specs/004-xt-get-ticker/quickstart.md](specs/004-xt-get-ticker/quickstart.md) for detailed usage examples.
+
 ### Basic Commands
 ```bash
 # Show version

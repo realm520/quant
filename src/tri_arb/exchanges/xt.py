@@ -32,6 +32,7 @@ from tri_arb.core.models import (
     Trade,
     TradingPair,
 )
+from tri_arb.data.cache import cache_manager
 from tri_arb.exchanges.base import BaseExchange
 
 
@@ -63,6 +64,7 @@ class XTExchange(BaseExchange):
     BASE_URL: str = "https://sapi.xt.com"
     API_VERSION: str = "v4"
     RECV_WINDOW: int = 5000  # milliseconds
+    CACHE_KEY_PREFIX: str = "xt:trading_pair:"  # Cache key prefix for trading pairs
 
     def __init__(
         self,
@@ -81,6 +83,7 @@ class XTExchange(BaseExchange):
         self.api_key = api_key
         self.api_secret = api_secret
         self._client: httpx.AsyncClient | None = None
+        self._trading_pairs_cache: dict[str, TradingPair] = {}  # In-memory cache
 
         logger.info(
             "XTExchange initialized",
@@ -89,9 +92,10 @@ class XTExchange(BaseExchange):
         )
 
     async def connect(self) -> None:
-        """Establish connection to XT exchange.
+        """Establish connection to XT exchange and load trading pair information.
 
-        Creates HTTP client with connection pooling and timeout configuration.
+        Creates HTTP client with connection pooling and timeout configuration,
+        then loads and caches all trading pair information for optimal performance.
 
         Raises:
             ValueError: If already connected
@@ -107,6 +111,38 @@ class XTExchange(BaseExchange):
 
         self.is_connected = True
         logger.info("Connected to XT exchange", exchange=self.name)
+
+        # Load and cache all trading pair information
+        try:
+            logger.info("Loading trading pair information from XT exchange")
+            result = await self.get_trading_pair_info(None)  # Get all pairs
+
+            # Type assertion: batch query returns list
+            if not isinstance(result, list):
+                raise ValueError(f"Expected list from batch query, got {type(result)}")
+            trading_pairs = result
+
+            # Cache to memory
+            for pair in trading_pairs:
+                symbol = self._to_xt_symbol(pair)
+                self._trading_pairs_cache[symbol] = pair
+
+                # Cache to LRU cache (long-term storage)
+                cache_key = f"{self.CACHE_KEY_PREFIX}{symbol}"
+                await cache_manager.set_lru(cache_key, pair)
+
+            logger.info(
+                "Trading pair information loaded and cached",
+                count=len(trading_pairs),
+                exchange=self.name,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to load trading pair information",
+                error=str(e),
+                exchange=self.name,
+            )
+            # Don't fail connection - allow system to continue with degraded functionality
 
     async def disconnect(self) -> None:
         """Close connection to XT exchange.
@@ -124,9 +160,7 @@ class XTExchange(BaseExchange):
         self.is_connected = False
         logger.info("Disconnected from XT exchange", exchange=self.name)
 
-    async def get_ticker(
-        self, trading_pair: TradingPair | None = None
-    ) -> Price | list[Price]:
+    async def get_ticker(self, trading_pair: TradingPair | None = None) -> Price | list[Price]:
         """Get current ticker price for a trading pair or all markets.
 
         Args:
@@ -155,9 +189,7 @@ class XTExchange(BaseExchange):
 
             # Result should be a list of tickers for batch query
             if not isinstance(result_raw, list):
-                raise ValueError(
-                    f"Expected list result for batch query, got {type(result_raw)}"
-                )
+                raise ValueError(f"Expected list result for batch query, got {type(result_raw)}")
 
             # Parse each ticker to Price object
             prices: list[Price] = []
@@ -167,7 +199,7 @@ class XTExchange(BaseExchange):
             for ticker_data in result_raw:
                 try:
                     symbol = ticker_data.get("s", "unknown")
-                    
+
                     # Skip duplicate symbols (XT API may return duplicates)
                     if symbol in seen_symbols:
                         logger.debug(
@@ -175,7 +207,7 @@ class XTExchange(BaseExchange):
                             symbol=symbol,
                         )
                         continue
-                    
+
                     seen_symbols.add(symbol)
                     price = self._parse_ticker_to_price(ticker_data, trading_pair=None)
                     prices.append(price)
@@ -227,9 +259,7 @@ class XTExchange(BaseExchange):
         # Use helper method to parse ticker data to Price object
         return self._parse_ticker_to_price(result, trading_pair)
 
-    async def get_orderbook(
-        self, trading_pair: TradingPair, depth: int = 20
-    ) -> OrderBook:
+    async def get_orderbook(self, trading_pair: TradingPair, depth: int = 20) -> OrderBook:
         """Get order book for a trading pair.
 
         Args:
@@ -472,9 +502,7 @@ class XTExchange(BaseExchange):
             exchange="xt",
         )
 
-    async def get_trade_history(
-        self, trading_pair: TradingPair, limit: int = 100
-    ) -> list[Trade]:
+    async def get_trade_history(self, trading_pair: TradingPair, limit: int = 100) -> list[Trade]:
         """Get recent trade history for a trading pair.
 
         Args:
@@ -584,6 +612,257 @@ class XTExchange(BaseExchange):
             )
         raise NotImplementedError("XT WebSocket support coming in future iteration")
 
+    async def get_trading_pair_info(
+        self, trading_pair: TradingPair | None = None
+    ) -> TradingPair | list[TradingPair]:
+        """Get detailed trading pair information from XT exchange.
+
+        Calls XT API `/v4/public/symbol` endpoint to retrieve complete trading
+        pair configuration including precision, limits, fees, and filters.
+        Uses cache-first strategy for optimal performance.
+
+        Args:
+            trading_pair: Trading pair to get info for. If None, returns all
+                         supported trading pairs (batch query). Default is None.
+
+        Returns:
+            - If trading_pair is provided: Single TradingPair object with full info
+            - If trading_pair is None: List of TradingPair objects for all supported pairs
+
+        Raises:
+            ValueError: If not connected or trading pair invalid
+            httpx.HTTPStatusError: If API request fails
+
+        Examples:
+            >>> # Single pair query
+            >>> pair = TradingPair(base_currency="BTC", quote_currency="USDT", ...)
+            >>> info = await exchange.get_trading_pair_info(pair)
+            >>> print(f"Maker fee: {info.maker_fee}, Min qty: {info.quantity_min}")
+            >>>
+            >>> # Batch query for all pairs
+            >>> all_pairs = await exchange.get_trading_pair_info(None)
+            >>> print(f"XT supports {len(all_pairs)} trading pairs")
+        """
+        # Batch query: Return cached if available
+        if trading_pair is None:
+            if self._trading_pairs_cache:
+                logger.debug(
+                    "Trading pair cache hit (batch query)",
+                    count=len(self._trading_pairs_cache),
+                    exchange=self.name,
+                )
+                return list(self._trading_pairs_cache.values())
+
+            # Cache miss - fetch from API
+            response = await self._request(
+                method="GET",
+                path=f"/{self.API_VERSION}/public/symbol",
+                params=None,  # No params for batch query
+                authenticated=False,
+            )
+
+            data = response.json()
+            result = self._check_response(data)
+
+            # Result should be a list for batch query
+            if not isinstance(result, list):
+                raise ValueError(f"Expected list result for batch query, got {type(result)}")
+
+            # Parse each symbol info to TradingPair
+            trading_pairs: list[TradingPair] = []
+            failed_symbols: list[str] = []
+
+            for symbol_data in result:
+                try:
+                    pair_info = self._parse_symbol_info(symbol_data)
+                    trading_pairs.append(pair_info)
+                except Exception as e:
+                    symbol = symbol_data.get("symbol", "unknown")
+                    failed_symbols.append(symbol)
+                    logger.warning(
+                        "Failed to parse trading pair info",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+
+            # Log partial failures if any
+            if failed_symbols:
+                logger.info(
+                    "Batch trading pair query completed with partial failures",
+                    total_symbols=len(result),
+                    successful=len(trading_pairs),
+                    failed=len(failed_symbols),
+                    failed_symbols=failed_symbols[:10],  # Log first 10 failures
+                )
+
+            return trading_pairs
+
+        # Single pair query: Check caches first
+        symbol = self._to_xt_symbol(trading_pair)
+
+        # Check memory cache
+        if symbol in self._trading_pairs_cache:
+            logger.debug(
+                "Trading pair cache hit (memory)",
+                symbol=symbol,
+                exchange=self.name,
+            )
+            return self._trading_pairs_cache[symbol]
+
+        # Check LRU cache
+        cache_key = f"{self.CACHE_KEY_PREFIX}{symbol}"
+        cached = await cache_manager.get_lru(cache_key)
+        if cached:
+            # Type assertion: cached value should be TradingPair
+            if not isinstance(cached, TradingPair):
+                logger.warning(
+                    "Invalid cached type in LRU cache",
+                    symbol=symbol,
+                    cached_type=type(cached).__name__,
+                    exchange=self.name,
+                )
+            else:
+                logger.debug(
+                    "Trading pair cache hit (LRU)",
+                    symbol=symbol,
+                    exchange=self.name,
+                )
+                # Update memory cache
+                self._trading_pairs_cache[symbol] = cached
+                return cached
+
+        # Cache miss - fetch from API
+        logger.debug(
+            "Trading pair cache miss, fetching from API",
+            symbol=symbol,
+            exchange=self.name,
+        )
+
+        response = await self._request(
+            method="GET",
+            path=f"/{self.API_VERSION}/public/symbol",
+            params={"symbol": symbol},
+            authenticated=False,
+        )
+
+        data = response.json()
+        result = self._check_response(data)
+
+        # Handle XT API response format variations
+        # API may return result as list or dict
+        if isinstance(result, list):
+            if not result:
+                raise ValueError(f"Trading pair not found: {symbol}")
+            symbol_data = result[0]
+        else:
+            symbol_data = result
+
+        # Parse symbol info to TradingPair
+        pair_info = self._parse_symbol_info(symbol_data)
+
+        # Cache the result
+        self._trading_pairs_cache[symbol] = pair_info
+        cache_key = f"{self.CACHE_KEY_PREFIX}{symbol}"
+        await cache_manager.set_lru(cache_key, pair_info)
+
+        logger.debug(
+            "Trading pair info cached",
+            symbol=symbol,
+            exchange=self.name,
+        )
+
+        return pair_info
+
+    async def refresh_trading_pairs(self) -> int:
+        """Refresh trading pair cache by fetching latest data from XT exchange.
+
+        Forces a reload of all trading pair information from the exchange,
+        updating both in-memory and LRU caches. Useful for ensuring cache
+        consistency after exchange updates or when detecting stale data.
+
+        Returns:
+            Number of trading pairs loaded and cached
+
+        Raises:
+            ValueError: If not connected
+            httpx.HTTPStatusError: If API request fails
+
+        Examples:
+            >>> await exchange.connect()
+            >>> # ... later when cache might be stale
+            >>> count = await exchange.refresh_trading_pairs()
+            >>> print(f"Refreshed {count} trading pairs")
+
+        Note:
+            This method clears existing cache before loading new data to
+            ensure consistency. Consider rate limits when calling frequently.
+        """
+        if not self.is_connected:
+            raise ValueError("Exchange not connected. Call connect() first.")
+
+        logger.info("Refreshing trading pair cache", exchange=self.name)
+
+        # Clear existing cache
+        self._trading_pairs_cache.clear()
+
+        # Fetch all trading pairs (bypass cache)
+        response = await self._request(
+            method="GET",
+            path=f"/{self.API_VERSION}/public/symbol",
+            params=None,
+            authenticated=False,
+        )
+
+        data = response.json()
+        result = self._check_response(data)
+
+        if not isinstance(result, list):
+            raise ValueError(f"Expected list result for batch query, got {type(result)}")
+
+        # Parse and cache each trading pair
+        cached_count = 0
+        failed_symbols: list[str] = []
+
+        for symbol_data in result:
+            try:
+                pair_info = self._parse_symbol_info(symbol_data)
+                symbol = self._to_xt_symbol(pair_info)
+
+                # Cache to memory
+                self._trading_pairs_cache[symbol] = pair_info
+
+                # Cache to LRU
+                cache_key = f"{self.CACHE_KEY_PREFIX}{symbol}"
+                await cache_manager.set_lru(cache_key, pair_info)
+
+                cached_count += 1
+            except Exception as e:
+                symbol = symbol_data.get("symbol", "unknown")
+                failed_symbols.append(symbol)
+                logger.warning(
+                    "Failed to cache trading pair during refresh",
+                    symbol=symbol,
+                    error=str(e),
+                    exchange=self.name,
+                )
+
+        # Log refresh results
+        logger.info(
+            "Trading pair cache refreshed",
+            cached=cached_count,
+            failed=len(failed_symbols),
+            exchange=self.name,
+        )
+
+        if failed_symbols:
+            logger.debug(
+                "Failed symbols during refresh",
+                failed_symbols=failed_symbols[:10],
+                exchange=self.name,
+            )
+
+        return cached_count
+
     # Helper methods
 
     def _check_response(self, data: dict[str, Any]) -> Any:
@@ -608,10 +887,10 @@ class XTExchange(BaseExchange):
         if rc != 0:
             error_code = data.get("mc", "UNKNOWN")
             error_messages = data.get("ma", [])
-            error_detail = ", ".join(str(msg) for msg in error_messages) if error_messages else "No details"
-            raise ValueError(
-                f"XT API error [rc={rc}]: {error_code} - {error_detail}"
+            error_detail = (
+                ", ".join(str(msg) for msg in error_messages) if error_messages else "No details"
             )
+            raise ValueError(f"XT API error [rc={rc}]: {error_code} - {error_detail}")
 
         result = data.get("result")
         if result is None:
@@ -671,7 +950,7 @@ class XTExchange(BaseExchange):
                     method=method,
                     path=path,
                     content_length=len(body_string),
-                    content_bytes_length=len(body_string.encode('utf-8')),
+                    content_bytes_length=len(body_string.encode("utf-8")),
                     body_preview=body_string[:200] if len(body_string) > 200 else body_string,
                     headers_keys=list(headers.keys()),
                     all_headers=headers,
@@ -681,7 +960,7 @@ class XTExchange(BaseExchange):
                     method,
                     path,
                     params=params,
-                    content=body_string.encode('utf-8'),
+                    content=body_string.encode("utf-8"),
                     headers=headers,
                 )
             else:
@@ -829,6 +1108,144 @@ class XTExchange(BaseExchange):
             max_order_size=Decimal("1000000"),
             price_precision=8,
             quantity_precision=8,
+        )
+
+    def _parse_symbol_info(self, symbol_data: dict[str, Any]) -> TradingPair:
+        """Parse XT API symbol data to TradingPair object.
+
+        Extracts complete trading pair configuration from XT API `/v4/public/symbol`
+        response, including precision, limits, fees, and filters.
+
+        Args:
+            symbol_data: Raw symbol data from XT API
+                Expected fields:
+                - symbol: Trading pair symbol (e.g., "btc_usdt")
+                - pricePrecision: Price decimal places
+                - quantityPrecision: Quantity decimal places
+                - tradeFee: Fee structure {makerFeeRate, takerFeeRate}
+                - state: Trading state (ONLINE/OFFLINE/HALT)
+                - filters: Trading filters (PRICE_FILTER, LOT_SIZE, etc.)
+
+        Returns:
+            TradingPair object with complete configuration
+
+        Raises:
+            ValueError: If symbol data is missing required fields
+            KeyError: If critical fields are not found
+
+        Examples:
+            >>> symbol_data = {
+            ...     "symbol": "btc_usdt",
+            ...     "pricePrecision": 2,
+            ...     "quantityPrecision": 6,
+            ...     "tradeFee": {"makerFeeRate": "0.001", "takerFeeRate": "0.001"},
+            ...     "state": "ONLINE"
+            ... }
+            >>> pair = self._parse_symbol_info(symbol_data)
+            >>> print(f"Maker fee: {pair.maker_fee}")
+        """
+        # Extract basic symbol info
+        symbol = symbol_data.get("symbol")
+        if not symbol:
+            raise ValueError("Symbol data missing 'symbol' field")
+
+        base, quote = self._from_xt_symbol(symbol)
+
+        # Extract precision
+        price_precision = symbol_data.get("pricePrecision", 8)
+        quantity_precision = symbol_data.get("quantityPrecision", 8)
+
+        # Extract fee structure
+        trade_fee = symbol_data.get("tradeFee", {})
+        maker_fee_str = trade_fee.get("makerFeeRate")
+        taker_fee_str = trade_fee.get("takerFeeRate")
+
+        maker_fee = Decimal(str(maker_fee_str)) if maker_fee_str else None
+        taker_fee = Decimal(str(taker_fee_str)) if taker_fee_str else None
+
+        # Extract trading state
+        trading_state = symbol_data.get("state")
+
+        # Extract filters
+        filters = symbol_data.get("filters", [])
+
+        # Parse PRICE_FILTER
+        price_filter = next((f for f in filters if f.get("filter") == "PRICE_FILTER"), None)
+        price_min = None
+        price_max = None
+        price_step = None
+        if price_filter:
+            price_min = (
+                Decimal(str(price_filter["minPrice"])) if price_filter.get("minPrice") else None
+            )
+            price_max = (
+                Decimal(str(price_filter["maxPrice"])) if price_filter.get("maxPrice") else None
+            )
+            price_step = (
+                Decimal(str(price_filter["tickSize"])) if price_filter.get("tickSize") else None
+            )
+
+        # Parse LOT_SIZE filter
+        lot_size_filter = next((f for f in filters if f.get("filter") == "LOT_SIZE"), None)
+        quantity_min = None
+        quantity_max = None
+        quantity_step = None
+        min_order_size = Decimal("0.001")  # Default
+        max_order_size = Decimal("1000000")  # Default
+
+        if lot_size_filter:
+            quantity_min = (
+                Decimal(str(lot_size_filter["minQty"])) if lot_size_filter.get("minQty") else None
+            )
+            quantity_max = (
+                Decimal(str(lot_size_filter["maxQty"])) if lot_size_filter.get("maxQty") else None
+            )
+            quantity_step = (
+                Decimal(str(lot_size_filter["stepSize"]))
+                if lot_size_filter.get("stepSize")
+                else None
+            )
+
+            # Use quantity_min as min_order_size if available
+            if quantity_min:
+                min_order_size = quantity_min
+            if quantity_max:
+                max_order_size = quantity_max
+
+        # Parse MIN_NOTIONAL filter
+        min_notional_filter = next((f for f in filters if f.get("filter") == "MIN_NOTIONAL"), None)
+        min_notional = None
+        if min_notional_filter:
+            min_notional = (
+                Decimal(str(min_notional_filter["minNotional"]))
+                if min_notional_filter.get("minNotional")
+                else None
+            )
+
+        # Create TradingPair with complete configuration
+        return TradingPair(
+            base_currency=base,
+            quote_currency=quote,
+            exchange="xt",
+            # Basic constraints
+            min_order_size=min_order_size,
+            max_order_size=max_order_size,
+            price_precision=price_precision,
+            quantity_precision=quantity_precision,
+            # Fee structure
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
+            # Trading constraints
+            min_notional=min_notional,
+            trading_state=trading_state,
+            # Price filter
+            price_min=price_min,
+            price_max=price_max,
+            price_step=price_step,
+            # Quantity filter
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            quantity_step=quantity_step,
         )
 
     def _to_xt_symbol(self, trading_pair: TradingPair) -> str:
@@ -1019,28 +1436,32 @@ class XTExchange(BaseExchange):
         """
         # Create headers dict (matching xt_spot_api.py line 286-291)
         headers = {
-            'validate-algorithms': 'HmacSHA256',
-            'validate-appkey': api_key,
-            'validate-recvwindow': str(recv_window),
-            'validate-timestamp': str(timestamp),
+            "validate-algorithms": "HmacSHA256",
+            "validate-appkey": api_key,
+            "validate-recvwindow": str(recv_window),
+            "validate-timestamp": str(timestamp),
         }
 
         # Sort headers by key and build x string (matching line 32)
-        x = '&'.join([f"{key}={headers[key]}" for key in sorted(headers)])
+        x = "&".join([f"{key}={headers[key]}" for key in sorted(headers)])
 
         # Build y string with non-empty components (matching line 31)
         components = [i for i in [method, path, query, body] if i]
-        y = '#' + '#'.join(components)
+        y = "#" + "#".join(components)
 
         # Combine x and y
         sig_data = f"{x}{y}"
 
         # Generate uppercase signature
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            sig_data.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest().upper()
+        signature = (
+            hmac.new(
+                self.api_secret.encode("utf-8"),
+                sig_data.encode("utf-8"),
+                hashlib.sha256,
+            )
+            .hexdigest()
+            .upper()
+        )
 
         logger.debug(
             "Generated POST/DELETE signature",

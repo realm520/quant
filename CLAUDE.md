@@ -47,6 +47,10 @@ Python 3.11+ (required for performance improvements and modern typing features):
 - **Trading pair transformation**: `BTC/USDT` (internal) ↔ `btc_usdt` (XT format)
 - **Order status mapping**: XT statuses (NEW, FILLED, CANCELED) → Internal OrderStatus enum
 - **Error handling**: Retry transient errors (timeout, network), fail fast on auth/validation errors
+- **Two-tier caching**: In-memory dict + LRU cache for trading pair information
+  - Auto-loaded on `connect()` for optimal startup performance
+  - Cache-first reads to minimize API calls
+  - Manual refresh via `refresh_trading_pairs()` method
 
 ### Performance Requirements (NON-NEGOTIABLE)
 - Order execution: <50ms p95 (from signal to order submission)
@@ -82,6 +86,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
   - POST/DELETE: `{sorted_headers}#METHOD#PATH[#QUERY][#BODY]` (headers sorted alphabetically)
 - **Connection state**: Must call `connect()` before any operations, `disconnect()` after
 - **Decimal precision**: Always use `Decimal` type, never float for money/quantities
+- **Cache usage**: `get_trading_pair_info()` uses cache-first strategy, refresh cache via `refresh_trading_pairs()` if needed
 
 ### Quick Commands
 ```bash

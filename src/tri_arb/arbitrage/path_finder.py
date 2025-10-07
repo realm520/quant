@@ -7,8 +7,13 @@ Based on specs/004-xt-get-ticker/contracts/monitor_api.md.
 
 from collections import defaultdict
 
+import structlog
+
 from tri_arb.models.arbitrage import TradingPath
 from tri_arb.models.exchange import Ticker
+
+
+logger = structlog.get_logger(__name__)
 
 
 def find_arbitrage_paths(
@@ -37,18 +42,42 @@ def find_arbitrage_paths(
     
     # Build adjacency graph: currency -> list of (target_currency, pair_symbol)
     graph: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    
+    invalid_symbols = 0
+
     for ticker in tickers:
         # Parse trading pair (e.g., "BTC/USDT" -> base="BTC", quote="USDT")
         try:
             base, quote = ticker.symbol.split("/")
         except ValueError:
             # Skip invalid ticker symbols
+            invalid_symbols += 1
             continue
-        
+
         # Add both directions (buy and sell)
         graph[base].append((quote, ticker.symbol))  # Sell base, get quote
         graph[quote].append((base, ticker.symbol))  # Buy base with quote
+
+    # Log graph statistics
+    node_count = len(graph)
+    edge_count = len(tickers) - invalid_symbols
+    degree_distribution = {currency: len(neighbors) for currency, neighbors in graph.items()}
+    avg_degree = sum(degree_distribution.values()) / node_count if node_count > 0 else 0
+
+    # Find hub currencies (degree >= 10)
+    hubs = sorted(
+        [(curr, deg) for curr, deg in degree_distribution.items() if deg >= 10],
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]  # Top 5 hubs
+
+    logger.info(
+        "graph_built",
+        nodes=node_count,
+        edges=edge_count,
+        avg_degree=f"{avg_degree:.1f}",
+        top_hubs=[f"{curr}({deg})" for curr, deg in hubs],
+        invalid_symbols=invalid_symbols
+    )
     
     # Get all possible starting currencies
     if base_currencies:
@@ -58,8 +87,11 @@ def find_arbitrage_paths(
     
     # Find all triangular paths using DFS
     paths: list[TradingPath] = []
-    
+    paths_per_start: dict[str, int] = {}
+
     for start in start_currencies:
+        initial_path_count = len(paths)
+
         # DFS with depth limit of 3
         _dfs_find_paths(
             graph=graph,
@@ -71,7 +103,31 @@ def find_arbitrage_paths(
             max_depth=3,
             paths=paths
         )
-    
+
+        # Track paths found from this start
+        paths_found = len(paths) - initial_path_count
+        if paths_found > 0:
+            paths_per_start[start] = paths_found
+
+    # Log path discovery statistics
+    effective_starts = len(paths_per_start)
+    total_paths = len(paths)
+
+    # Top 5 starting currencies by path count
+    top_starts = sorted(
+        paths_per_start.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]
+
+    logger.info(
+        "path_discovery_complete",
+        total_starts_tried=len(start_currencies),
+        effective_starts=effective_starts,
+        total_paths=total_paths,
+        top_starts=[f"{curr}({count})" for curr, count in top_starts]
+    )
+
     return paths
 
 

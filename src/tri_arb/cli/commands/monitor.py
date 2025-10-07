@@ -498,6 +498,69 @@ def _calculate_step_details(
     return steps
 
 
+def _display_connectivity_report(tickers: dict, opportunities: list) -> None:
+    """Display market connectivity analysis report.
+
+    Args:
+        tickers: Dictionary mapping symbol to Ticker
+        opportunities: List of arbitrage opportunities
+    """
+    from collections import defaultdict
+
+    # Build currency graph
+    currency_pairs: dict[str, set[str]] = defaultdict(set)
+    total_pairs = len(tickers)
+
+    for symbol in tickers:
+        try:
+            base, quote = symbol.split("/")
+            currency_pairs[base].add(quote)
+            currency_pairs[quote].add(base)
+        except ValueError:
+            continue
+
+    # Calculate statistics
+    total_currencies = len(currency_pairs)
+    degree_counts = [len(neighbors) for neighbors in currency_pairs.values()]
+    avg_degree = sum(degree_counts) / total_currencies if total_currencies > 0 else 0
+
+    # Find hub currencies (degree >= 10)
+    hubs = sorted(
+        [(curr, len(neighbors)) for curr, neighbors in currency_pairs.items()],
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]
+
+    # Count currencies that can participate in arbitrage
+    arbitrage_currencies = set()
+    for opp in opportunities:
+        arbitrage_currencies.add(opp.path.start_currency)
+        for pair in opp.path.trading_pairs:
+            base, quote = pair.split("/")
+            arbitrage_currencies.add(base)
+            arbitrage_currencies.add(quote)
+
+    arbitrageable_count = len(arbitrage_currencies)
+    arbitrage_ratio = (arbitrageable_count / total_currencies * 100) if total_currencies > 0 else 0
+
+    # Count isolated currencies (degree == 1)
+    isolated_count = sum(1 for deg in degree_counts if deg == 1)
+
+    # Display report
+    console.print("\n[bold cyan]📊 市场连通性分析[/bold cyan]")
+    console.print(f"  总交易对: {total_pairs}")
+    console.print(f"  有效货币: {total_currencies}")
+    console.print(f"  平均连接数: {avg_degree:.1f}")
+    console.print(f"  可套利货币: {arbitrageable_count} ({arbitrage_ratio:.1f}%)")
+    console.print(f"  孤立货币: {isolated_count} (仅1个配对)")
+
+    if hubs:
+        hub_str = ", ".join([f"{curr}({deg})" for curr, deg in hubs])
+        console.print(f"  主要中心: {hub_str}")
+
+    console.print()
+
+
 def _display_opportunities(
     opportunities: list,
     min_profit: float,
@@ -518,22 +581,52 @@ def _display_opportunities(
         )
         return
 
-    # Create Rich table
-    table = Table(title=f"发现 {len(opportunities)} 条套利机会（按收益率排序）")
-    table.add_column("序号", justify="right", style="cyan", no_wrap=True)
-    table.add_column("路径", style="magenta")
-    table.add_column("收益率", justify="right", style="green")
-    table.add_column("最大安全金额", justify="right", style="yellow")
+    # Display market connectivity analysis if tickers available
+    if tickers:
+        _display_connectivity_report(tickers, opportunities)
 
-    # Pre-calculate safe amounts for main table
+    # Pre-calculate safe amounts and filter by value
+    min_display_amount = Decimal("1.0")  # Minimum amount to display (1 USDT)
     safe_amounts_map = {}
     liquidity_usage_rate = Decimal(str(liquidity_usage))
+    
     if tickers:
         for i, opp in enumerate(opportunities, 1):
             max_safe, _ = _calculate_max_safe_amount(opp, tickers, liquidity_usage_rate)
             safe_amounts_map[i] = max_safe
 
+    # Filter opportunities by tradeable value
+    high_value_opportunities = []
+    low_value_count = 0
+    
     for i, opp in enumerate(opportunities, 1):
+        max_safe = safe_amounts_map.get(i, opp.recommended_amount)
+        
+        if max_safe >= min_display_amount:
+            high_value_opportunities.append((i, opp, max_safe))
+        else:
+            low_value_count += 1
+            logger.debug(
+                "low_value_opportunity_filtered",
+                path=" → ".join([opp.path.start_currency] + list(opp.path.trading_pairs)),
+                amount=float(max_safe),
+                profit_rate=float(opp.expected_profit_rate)
+            )
+
+    # Create Rich table for high-value opportunities
+    if low_value_count > 0:
+        table_title = f"发现 {len(high_value_opportunities)} 条套利机会（已过滤 {low_value_count} 条低价值，按收益率排序）"
+    else:
+        table_title = f"发现 {len(high_value_opportunities)} 条套利机会（按收益率排序）"
+    
+    table = Table(title=table_title)
+    table.add_column("序号", justify="right", style="cyan", no_wrap=True)
+    table.add_column("路径", style="magenta")
+    table.add_column("收益率", justify="right", style="green")
+    table.add_column("最大安全金额", justify="right", style="yellow")
+
+    # Populate table with high-value opportunities only
+    for display_idx, (_original_idx, opp, max_safe) in enumerate(high_value_opportunities, 1):
         # Format path: USDT → BTC → ETH → USDT
         path_parts = []
         current = opp.path.start_currency
@@ -547,35 +640,32 @@ def _display_opportunities(
 
         path_str = " → ".join(path_parts)
 
-        # Use safe amount if available, otherwise use recommended
-        display_amount = safe_amounts_map.get(i, opp.recommended_amount)
-
         # Add row to table
         table.add_row(
-            str(i),
+            str(display_idx),
             path_str,
             f"{opp.expected_profit_rate:.2f}%",
-            f"{display_amount:.2f}",
+            f"{max_safe:.2f}",
         )
 
     console.print(table)
     
-    # Display detailed breakdown for each opportunity
+    # Display low-value opportunities statistics
+    if low_value_count > 0:
+        console.print(f"\n[dim]ℹ️  已过滤 {low_value_count} 条可成交金额 <1 USDT 的套利机会[/dim]")
+        logger.info("low_value_opportunities_filtered", count=low_value_count)
+    
+    # Display detailed breakdown for high-value opportunities only
     console.print()  # Empty line for spacing
     
-    for i, opp in enumerate(opportunities, 1):
-        # Calculate maximum safe amount based on liquidity constraints
-        if tickers:
-            max_safe_amount, _ = _calculate_max_safe_amount(opp, tickers, liquidity_usage_rate)
-        else:
-            max_safe_amount = opp.recommended_amount
-
+    # Display detailed breakdown for high-value opportunities only
+    for display_idx, (_original_idx, opp, max_safe_amount) in enumerate(high_value_opportunities, 1):
         # Calculate step details using safe amount
         steps = _calculate_step_details(opp, tickers or {}, max_safe_amount)
 
         # Create detail table for this opportunity
         detail_table = Table(
-            title=f"#{i} 交易路径详情",
+            title=f"#{display_idx} 交易路径详情",
             show_header=True,
             header_style="bold cyan",
             expand=False

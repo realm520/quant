@@ -19,9 +19,12 @@ from rich.table import Table
 from tri_arb.arbitrage import ArbitrageMonitor
 from tri_arb.arbitrage.config import MonitorConfig
 from tri_arb.arbitrage.exceptions import ArbitrageError, ConfigError, NetworkError
+from tri_arb.arbitrage.execution_config import ExecutionConfig
+from tri_arb.arbitrage.executor import ArbitrageExecutor
 from tri_arb.cli.app import app
 from tri_arb.config.logging import get_logger
 from tri_arb.models.exchange import Ticker
+from tri_arb.models.execution import ArbitrageExecution, ExecutionStatus
 
 
 logger = get_logger(__name__)
@@ -94,6 +97,16 @@ def monitor(
         "--liquidity-usage",
         help="流动性使用率（0.0-1.0，例如 0.3 表示 30%，1.0 表示 100%）",
     ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="自动执行发现的套利机会（使用市价单）",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="模拟执行（不真实下单，仅显示执行计划）",
+    ),
     debug: bool = typer.Option(
         False,
         "--debug",
@@ -132,6 +145,8 @@ def monitor(
                 refresh_interval=refresh_interval,
                 liquidity_usage=liquidity_usage,
                 debug=debug,
+                execute=execute,
+                dry_run=dry_run,
             )
         )
     except KeyboardInterrupt:
@@ -174,6 +189,8 @@ async def _async_monitor(
     refresh_interval: int,
     liquidity_usage: float,
     debug: bool,
+    execute: bool,
+    dry_run: bool,
 ) -> None:
     """Async monitor execution.
 
@@ -184,6 +201,8 @@ async def _async_monitor(
         refresh_interval: Refresh interval in seconds (realtime mode)
         liquidity_usage: Liquidity usage rate (0.0-1.0)
         debug: Enable debug mode
+        execute: Auto-execute discovered opportunities
+        dry_run: Simulate execution without placing real orders
     """
     # Parse base currencies
     base_list = []
@@ -245,7 +264,17 @@ async def _async_monitor(
                 tickers_list = await monitor._exchange.get_ticker(symbol=None)
                 tickers_dict = {t.symbol: t for t in tickers_list}
 
-                _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+                high_value_opps = _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+
+                # Execute opportunities if requested (only high-value ones)
+                if (execute or dry_run) and high_value_opps:
+                    # Extract actual opportunity objects (remove index and max_safe)
+                    filtered_opportunities = [opp for _, opp, _ in high_value_opps]
+                    await _execute_opportunities(
+                        opportunities=filtered_opportunities,
+                        exchange_adapter=exchange_adapter,
+                        dry_run=dry_run
+                    )
 
             except NetworkError as e:
                 raise ArbitrageError(f"Network error: {e}") from e
@@ -268,7 +297,17 @@ async def _async_monitor(
                     tickers_dict = {t.symbol: t for t in tickers_list}
 
                     console.print(f"\n[bold cyan]═══ 扫描 {iteration} ═══[/bold cyan]")
-                    _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+                    high_value_opps = _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+
+                    # Execute opportunities if requested (only high-value ones)
+                    if (execute or dry_run) and high_value_opps:
+                        # Extract actual opportunity objects (remove index and max_safe)
+                        filtered_opportunities = [opp for _, opp, _ in high_value_opps]
+                        await _execute_opportunities(
+                            opportunities=filtered_opportunities,
+                            exchange_adapter=exchange_adapter,
+                            dry_run=dry_run
+                        )
 
                     if not monitor._shutdown_requested:
                         console.print(
@@ -566,7 +605,7 @@ def _display_opportunities(
     min_profit: float,
     tickers: dict | None = None,
     liquidity_usage: float = 1.0,
-) -> None:
+) -> list:
     """Display arbitrage opportunities in a formatted table.
 
     Args:
@@ -574,12 +613,15 @@ def _display_opportunities(
         min_profit: Minimum profit threshold (for display context)
         tickers: Optional dictionary mapping symbol to Ticker (for liquidity display)
         liquidity_usage: Liquidity usage rate (0.0-1.0)
+
+    Returns:
+        List of tuples (original_index, opportunity, max_safe_amount) for high-value opportunities
     """
     if not opportunities:
         console.print(
             f"[yellow]未发现套利机会（阈值: {min_profit}%）[/yellow]"
         )
-        return
+        return []
 
     # Display market connectivity analysis if tickers available
     if tickers:
@@ -793,3 +835,156 @@ def _display_opportunities(
             console.print("\n".join(liquidity_summary_lines))
 
         console.print()  # Empty line between opportunities
+
+    # Return high-value opportunities for execution
+    return high_value_opportunities
+
+
+async def _execute_opportunities(
+    opportunities: list,
+    exchange_adapter,
+    dry_run: bool = False
+) -> None:
+    """Execute discovered arbitrage opportunities.
+
+    Args:
+        opportunities: List of ArbitrageOpportunity objects
+        exchange_adapter: Exchange adapter for order execution
+        dry_run: If True, simulate execution without placing real orders
+    """
+    if dry_run:
+        console.print("\n[bold yellow]🔍 模拟执行模式（不会真实下单）[/bold yellow]\n")
+    else:
+        console.print("\n[bold green]🚀 开始执行套利交易[/bold green]\n")
+
+    # Create execution config with 10 USDT minimum
+    exec_config = ExecutionConfig(min_initial_amount=Decimal("10"))
+
+    # Create executor
+    executor = ArbitrageExecutor(exchange=exchange_adapter, config=exec_config)
+
+    # Execute each opportunity sequentially
+    for i, opportunity in enumerate(opportunities, 1):
+        console.print(f"[bold cyan]═══ 执行机会 #{i} ═══[/bold cyan]")
+
+        # Display opportunity path
+        path_parts = [opportunity.path.start_currency]
+        for pair in opportunity.path.trading_pairs:
+            base, quote = pair.split("/")
+            current = path_parts[-1]
+            next_curr = quote if current == base else base
+            path_parts.append(next_curr)
+        path_str = " → ".join(path_parts)
+
+        console.print(f"路径: {path_str}")
+        console.print(f"预期收益率: {opportunity.expected_profit_rate:.2f}%")
+        console.print(f"建议金额: {opportunity.recommended_amount:.2f} {opportunity.path.start_currency}")
+
+        if dry_run:
+            # Simulate execution
+            _display_dry_run_execution(opportunity)
+        else:
+            # Real execution
+            try:
+                execution = await executor.execute_opportunity(opportunity)
+                _display_execution_result(execution)
+            except Exception as e:
+                console.print(f"[red]✗ 执行失败: {e}[/red]")
+                logger.error("Execution failed", opportunity_index=i, error=str(e), exc_info=True)
+
+        console.print()  # Empty line between executions
+
+
+def _display_dry_run_execution(opportunity) -> None:
+    """Display simulated execution plan.
+
+    Args:
+        opportunity: ArbitrageOpportunity object
+    """
+    console.print("\n[dim]模拟执行计划:[/dim]")
+
+    initial_amount = opportunity.recommended_amount
+    current_amount = initial_amount
+
+    for i, price_info in enumerate(opportunity.prices, 1):
+        trade_type = price_info["type"]
+        pair = price_info["pair"]
+        price = price_info["price"]
+
+        type_emoji = "🔴" if trade_type == "buy" else "🔵"
+        console.print(f"  步骤 {i}: {type_emoji} {trade_type.upper()} {pair} @ {price}")
+
+        # Simulate trade with 0.1% fee
+        fee_rate = Decimal("0.001")
+        if trade_type == "buy":
+            next_amount = (current_amount / price) * (Decimal("1") - fee_rate)
+        else:
+            next_amount = (current_amount * price) * (Decimal("1") - fee_rate)
+
+        console.print(f"          {current_amount:.6f} → {next_amount:.6f}")
+        current_amount = next_amount
+
+    # Display final result
+    profit = current_amount - initial_amount
+    profit_rate = (profit / initial_amount) * Decimal("100")
+
+    console.print(f"\n[yellow]预期结果:[/yellow]")
+    console.print(f"  初始: {initial_amount:.2f} {opportunity.path.start_currency}")
+    console.print(f"  最终: {current_amount:.2f} {opportunity.path.start_currency}")
+    console.print(f"  利润: {profit:+.2f} {opportunity.path.start_currency} ({profit_rate:+.2f}%)")
+
+
+def _display_execution_result(execution: ArbitrageExecution) -> None:
+    """Display execution result with detailed information.
+
+    Args:
+        execution: ArbitrageExecution object with execution results
+    """
+    # Status indicator
+    if execution.status == ExecutionStatus.COMPLETED:
+        status_str = "[green]✓ 执行成功[/green]"
+    elif execution.status == ExecutionStatus.FAILED:
+        status_str = "[red]✗ 执行失败[/red]"
+    elif execution.status == ExecutionStatus.PARTIAL:
+        status_str = "[yellow]⚠ 部分完成[/yellow]"
+    else:
+        status_str = f"[dim]{execution.status.value}[/dim]"
+
+    console.print(f"\n{status_str}")
+    console.print(f"会话 ID: {execution.session_id}")
+
+    # Display each step
+    if execution.steps:
+        console.print("\n[bold]执行步骤:[/bold]")
+        for step in execution.steps:
+            step_status = "✓" if step.status == "filled" else "✗"
+            console.print(
+                f"  {step_status} 步骤 {step.step_number}: "
+                f"{step.order.side.value.upper()} {step.order.trading_pair.base_currency}/"
+                f"{step.order.trading_pair.quote_currency}"
+            )
+            if step.filled_quantity:
+                console.print(f"     成交量: {step.filled_quantity}")
+            if step.filled_price:
+                console.print(f"     成交价: {step.filled_price}")
+
+    # Display profit/loss
+    if execution.status == ExecutionStatus.COMPLETED and execution.net_profit is not None:
+        console.print("\n[bold]盈亏结果:[/bold]")
+        console.print(f"  初始金额: {execution.initial_amount:.2f} USDT")
+        console.print(f"  最终金额: {execution.final_amount:.2f} USDT")
+
+        profit_color = "green" if execution.net_profit > 0 else "red"
+        console.print(
+            f"  [bold {profit_color}]净利润: {execution.net_profit:+.2f} USDT "
+            f"({execution.actual_profit_rate:+.2f}%)[/bold {profit_color}]"
+        )
+
+    # Display error if any
+    if execution.error_message:
+        console.print(f"\n[red]错误: {execution.error_message}[/red]")
+
+    # Display timestamps
+    if execution.completed_at:
+        duration = (execution.completed_at - execution.started_at).total_seconds()
+        console.print(f"\n执行时长: {duration:.2f} 秒")

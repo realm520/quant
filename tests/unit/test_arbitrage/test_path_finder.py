@@ -184,7 +184,19 @@ class TestPathFinderEdgeCases:
         assert isinstance(paths, list)
     
     def test_multiple_paths_for_same_currencies(self):
-        """Multiple valid paths should all be returned."""
+        """
+        Multiple paths with same trading pairs should be deduplicated.
+
+        Before deduplication: 6 paths (2 per starting currency × 3 currencies)
+        After deduplication: 1 path (same trading pair set)
+
+        Example:
+        - USDT→BTC→ETH→USDT uses {BTC/USDT, ETH/BTC, ETH/USDT}
+        - BTC→ETH→USDT→BTC uses {ETH/BTC, ETH/USDT, BTC/USDT} (same set)
+        - ETH→USDT→BTC→ETH uses {ETH/USDT, BTC/USDT, ETH/BTC} (same set)
+
+        All three use the same trading pairs, so only one is kept.
+        """
         tickers = [
             # Triangle 1: USDT -> BTC -> ETH -> USDT
             Ticker(
@@ -209,9 +221,15 @@ class TestPathFinderEdgeCases:
                 ask_volume=Decimal("1.0")
             )
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
-        
-        # Should find paths starting from different currencies
-        # (USDT->BTC->ETH->USDT, BTC->ETH->USDT->BTC, ETH->USDT->BTC->ETH)
-        assert len(paths) >= 3
+
+        # After deduplication, should return only 1 unique path
+        # (same trading pair set regardless of starting currency)
+        assert len(paths) == 1
+
+        # Verify the path uses the expected trading pairs
+        path = paths[0]
+        pair_set = set(path.trading_pairs)
+        expected_pairs = {"BTC/USDT", "ETH/USDT", "ETH/BTC"}
+        assert pair_set == expected_pairs

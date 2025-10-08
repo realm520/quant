@@ -53,9 +53,11 @@ def find_arbitrage_paths(
             invalid_symbols += 1
             continue
 
-        # Add both directions (buy and sell)
-        graph[base].append((quote, ticker.symbol))  # Sell base, get quote
-        graph[quote].append((base, ticker.symbol))  # Buy base with quote
+        # 为每个交易对添加双向边，支持买卖两个方向
+        # 这使得同一组交易对可以产生正向和反向套利路径
+        # 例如: BTC/USDT 会创建 BTC→USDT 和 USDT→BTC 两条边
+        graph[base].append((quote, ticker.symbol))  # 卖出方向: 卖出 base 得到 quote
+        graph[quote].append((base, ticker.symbol))  # 买入方向: 用 quote 买入 base
 
     # Log graph statistics
     node_count = len(graph)
@@ -109,10 +111,15 @@ def find_arbitrage_paths(
         if paths_found > 0:
             paths_per_start[start] = paths_found
 
+    # 路径去重：同一组交易对的不同起点路径只保留一个
+    # 例如: (USDT→BTC→ETH→USDT) 和 (BTC→ETH→USDT→BTC) 是相同的交易对集合
+    paths_before_dedup = len(paths)
+    unique_paths = _deduplicate_paths(paths)
+    paths_after_dedup = len(unique_paths)
+    
     # Log path discovery statistics
     effective_starts = len(paths_per_start)
-    total_paths = len(paths)
-
+    
     # Top 5 starting currencies by path count
     top_starts = sorted(
         paths_per_start.items(),
@@ -124,11 +131,59 @@ def find_arbitrage_paths(
         "path_discovery_complete",
         total_starts_tried=len(start_currencies),
         effective_starts=effective_starts,
-        total_paths=total_paths,
+        paths_before_dedup=paths_before_dedup,
+        paths_after_dedup=paths_after_dedup,
+        dedup_rate=f"{(1 - paths_after_dedup/paths_before_dedup)*100:.1f}%" if paths_before_dedup > 0 else "N/A",
         top_starts=[f"{curr}({count})" for curr, count in top_starts]
     )
 
-    return paths
+    return unique_paths
+
+
+def _normalize_path(path: TradingPath) -> frozenset[str]:
+    """
+    将路径规范化为交易对集合，用于去重。
+    
+    同一组交易对的不同起点路径会被规范化为相同的集合。
+    例如:
+    - USDT→BTC→ETH→USDT (BTC/USDT, ETH/BTC, ETH/USDT)
+    - BTC→ETH→USDT→BTC (ETH/BTC, ETH/USDT, BTC/USDT)
+    - ETH→USDT→BTC→ETH (ETH/USDT, BTC/USDT, ETH/BTC)
+    以上三条路径会被规范化为同一个集合: {BTC/USDT, ETH/BTC, ETH/USDT}
+    
+    Args:
+        path: 交易路径
+    
+    Returns:
+        交易对集合（frozenset）
+    """
+    return frozenset(path.trading_pairs)
+
+
+def _deduplicate_paths(paths: list[TradingPath]) -> list[TradingPath]:
+    """
+    对路径列表进行去重，移除使用相同交易对集合的重复路径。
+    
+    去重策略:
+    - 使用交易对集合作为唯一键
+    - 对于重复的路径，保留第一个发现的路径
+    
+    Args:
+        paths: 原始路径列表
+    
+    Returns:
+        去重后的路径列表
+    """
+    seen_pairs: set[frozenset[str]] = set()
+    unique_paths: list[TradingPath] = []
+    
+    for path in paths:
+        pair_set = _normalize_path(path)
+        if pair_set not in seen_pairs:
+            seen_pairs.add(pair_set)
+            unique_paths.append(path)
+    
+    return unique_paths
 
 
 def _dfs_find_paths(

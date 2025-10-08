@@ -14,7 +14,7 @@ All models use pydantic for validation and type safety.
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -58,6 +58,7 @@ class TradingPair(BaseModel):
     """Trading pair configuration.
 
     Represents a currency pair (e.g., BTC/USDT) with exchange-specific constraints.
+    Includes trading rules, precision, and fee structure from exchange API.
     """
 
     base_currency: str = Field(..., min_length=1, max_length=32, description="Base currency symbol")
@@ -65,11 +66,51 @@ class TradingPair(BaseModel):
         ..., min_length=1, max_length=32, description="Quote currency symbol"
     )
     exchange: str = Field(..., min_length=1, description="Exchange identifier")
+
+    # Basic trading constraints
     min_order_size: Decimal = Field(..., gt=0, description="Minimum order size")
     max_order_size: Decimal = Field(..., gt=0, description="Maximum order size")
     price_precision: int = Field(..., ge=0, description="Number of decimal places for price")
     quantity_precision: int = Field(
         ..., ge=0, description="Number of decimal places for quantity"
+    )
+
+    # Fee structure (optional, from exchange API)
+    maker_fee: Decimal | None = Field(
+        default=None, ge=0, le=1, description="Maker fee rate (e.g., 0.001 for 0.1%)"
+    )
+    taker_fee: Decimal | None = Field(
+        default=None, ge=0, le=1, description="Taker fee rate (e.g., 0.001 for 0.1%)"
+    )
+
+    # Trading constraints (optional, from exchange API)
+    min_notional: Decimal | None = Field(
+        default=None, gt=0, description="Minimum notional value (price * quantity)"
+    )
+    trading_state: str | None = Field(
+        default=None, description="Trading state (e.g., ONLINE, OFFLINE, HALT)"
+    )
+
+    # Price filter (optional, from exchange API)
+    price_min: Decimal | None = Field(
+        default=None, gt=0, description="Minimum allowed price"
+    )
+    price_max: Decimal | None = Field(
+        default=None, gt=0, description="Maximum allowed price"
+    )
+    price_step: Decimal | None = Field(
+        default=None, gt=0, description="Price tick size (minimum price increment)"
+    )
+
+    # Quantity filter (optional, from exchange API)
+    quantity_min: Decimal | None = Field(
+        default=None, gt=0, description="Minimum allowed quantity"
+    )
+    quantity_max: Decimal | None = Field(
+        default=None, gt=0, description="Maximum allowed quantity"
+    )
+    quantity_step: Decimal | None = Field(
+        default=None, gt=0, description="Quantity step size (minimum quantity increment)"
     )
 
     @field_validator("base_currency", "quote_currency")
@@ -80,7 +121,7 @@ class TradingPair(BaseModel):
 
     @field_validator("max_order_size")
     @classmethod
-    def max_gte_min(cls, v: Decimal, info: any) -> Decimal:
+    def max_gte_min(cls, v: Decimal, info: Any) -> Decimal:
         """Validate max_order_size >= min_order_size."""
         if "min_order_size" in info.data and v < info.data["min_order_size"]:
             raise ValueError("max_order_size must be >= min_order_size")
@@ -101,13 +142,13 @@ class Price(BaseModel):
     timestamp: datetime = Field(..., description="When price was captured")
     exchange: str = Field(..., min_length=1, description="Source exchange")
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def mid_price(self) -> Decimal:
         """Mid price: (bid_price + ask_price) / 2."""
         return (self.bid_price + self.ask_price) / Decimal("2")
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_stale(self) -> bool:
         """Check if price is stale (> 5 minutes old)."""
@@ -115,7 +156,7 @@ class Price(BaseModel):
 
     @field_validator("ask_price")
     @classmethod
-    def ask_gt_bid(cls, v: Decimal, info: any) -> Decimal:
+    def ask_gt_bid(cls, v: Decimal, info: Any) -> Decimal:
         """Validate ask_price > bid_price."""
         if "bid_price" in info.data and v <= info.data["bid_price"]:
             raise ValueError("ask_price must be > bid_price")
@@ -129,10 +170,10 @@ class OrderBook(BaseModel):
     """
 
     trading_pair: TradingPair = Field(..., description="Associated trading pair")
-    bids: List[Tuple[Decimal, Decimal]] = Field(
+    bids: list[tuple[Decimal, Decimal]] = Field(
         default_factory=list, description="Bid levels (price, quantity)"
     )
-    asks: List[Tuple[Decimal, Decimal]] = Field(
+    asks: list[tuple[Decimal, Decimal]] = Field(
         default_factory=list, description="Ask levels (price, quantity)"
     )
     timestamp: datetime = Field(..., description="When snapshot was taken")
@@ -141,8 +182,8 @@ class OrderBook(BaseModel):
     @field_validator("bids")
     @classmethod
     def bids_descending(
-        cls, v: List[Tuple[Decimal, Decimal]]
-    ) -> List[Tuple[Decimal, Decimal]]:
+        cls, v: list[tuple[Decimal, Decimal]]
+    ) -> list[tuple[Decimal, Decimal]]:
         """Validate bids are sorted descending by price."""
         if len(v) > 1:
             for i in range(len(v) - 1):
@@ -153,8 +194,8 @@ class OrderBook(BaseModel):
     @field_validator("asks")
     @classmethod
     def asks_ascending(
-        cls, v: List[Tuple[Decimal, Decimal]]
-    ) -> List[Tuple[Decimal, Decimal]]:
+        cls, v: list[tuple[Decimal, Decimal]]
+    ) -> list[tuple[Decimal, Decimal]]:
         """Validate asks are sorted ascending by price."""
         if len(v) > 1:
             for i in range(len(v) - 1):
@@ -170,13 +211,13 @@ class Order(BaseModel):
     """
 
     order_id: str = Field(..., min_length=1, description="Unique order identifier")
-    exchange_order_id: Optional[str] = Field(
+    exchange_order_id: str | None = Field(
         None, description="Exchange-specific order ID (from API response)"
     )
     trading_pair: TradingPair = Field(..., description="Trading pair for order")
     side: OrderSide = Field(..., description="Buy or sell")
     order_type: OrderType = Field(..., description="Market, limit, etc.")
-    price: Optional[Decimal] = Field(None, gt=0, description="Limit price (None for market orders)")
+    price: Decimal | None = Field(None, gt=0, description="Limit price (None for market orders)")
     quantity: Decimal = Field(..., gt=0, description="Order quantity")
     status: OrderStatus = Field(default=OrderStatus.PENDING, description="Order status")
     created_at: datetime = Field(..., description="When order was created")
@@ -185,11 +226,10 @@ class Order(BaseModel):
 
     @field_validator("price")
     @classmethod
-    def limit_requires_price(cls, v: Optional[Decimal], info: any) -> Optional[Decimal]:
+    def limit_requires_price(cls, v: Decimal | None, info: Any) -> Decimal | None:
         """Validate limit orders must have a price."""
-        if "order_type" in info.data:
-            if info.data["order_type"] == OrderType.LIMIT and v is None:
-                raise ValueError("Limit orders must have a price")
+        if "order_type" in info.data and info.data["order_type"] == OrderType.LIMIT and v is None:
+            raise ValueError("Limit orders must have a price")
         return v
 
 
@@ -218,10 +258,10 @@ class ArbitrageOpportunity(BaseModel):
     """
 
     opportunity_id: str = Field(..., min_length=1, description="Unique identifier")
-    path: List[TradingPair] = Field(
+    path: list[TradingPair] = Field(
         ..., min_length=3, max_length=3, description="Three trading pairs forming the triangle"
     )
-    prices: List[Price] = Field(
+    prices: list[Price] = Field(
         ..., min_length=3, max_length=3, description="Current prices for each pair"
     )
     estimated_profit: Decimal = Field(..., ge=0, description="Expected profit (percentage)")
@@ -237,7 +277,7 @@ class ArbitrageOpportunity(BaseModel):
 
     @field_validator("path")
     @classmethod
-    def validate_triangle(cls, v: List[TradingPair]) -> List[TradingPair]:
+    def validate_triangle(cls, v: list[TradingPair]) -> list[TradingPair]:
         """Validate that pairs form a valid triangle.
 
         Note: This is a placeholder validation for MVP.

@@ -60,6 +60,7 @@ dmypy.json
 *.db
 *.sqlite
 *.log
+logs/
 .env
 tri_arb.db
 

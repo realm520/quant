@@ -6,6 +6,8 @@ Auto-generated from all feature plans. Last updated: 2025-10-05
 - Python 3.11+ (required for performance improvements and modern typing features) + uv (package management), uvloop (async optimization), httpx (HTTP client), websockets (WebSocket), aiosqlite (database), cachetools (caching), pydantic (validation), pydantic-settings (config), typer (CLI), structlog (logging), prometheus-client (metrics), PyInstaller (packaging) (001-python)
 - Python 3.11+ (required for performance and modern typing) + httpx (async HTTP client), pydantic (data validation), structlog (logging) (003-get-ticker-trading)
 - N/A (stateless API operation) (003-get-ticker-trading)
+- Python 3.11+ (required for performance and modern typing) + httpx (async HTTP), pydantic (validation), structlog (logging), colorama/rich (彩色输出), typer (CLI), asyncio (异步) (004-xt-get-ticker)
+- N/A (无持久化，仅内存计算和实时输出) (004-xt-get-ticker)
 
 ## Project Structure
 ```
@@ -20,9 +22,10 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11+ (required for performance improvements and modern typing features): Follow standard conventions
 
 ## Recent Changes
+- 005-usdt: Added automated arbitrage execution - ArbitrageExecutor engine with market order execution, sequential trade execution (USDT-only account), session ID tracking (UUID), profit/loss calculation, 10 USDT minimum initial amount, 30s order timeout with 0.5s polling, integrated into monitor command with --execute and --dry-run flags
+- 004-xt-get-ticker: Added Python 3.11+ (required for performance and modern typing) + httpx (async HTTP), pydantic (validation), structlog (logging), colorama/rich (彩色输出), typer (CLI), asyncio (异步)
 - 003-get-ticker-trading: Added Python 3.11+ (required for performance and modern typing) + httpx (async HTTP client), pydantic (data validation), structlog (logging)
 - 002-xt-spot-api: Added XT Exchange integration - XTExchange adapter implementing BaseExchange interface, async REST API client with httpx, HMAC-SHA256 authentication, trading pair transformation (BTC/USDT ↔ btc_usdt), contract tests (TDD), OpenAPI specification, performance targets (<50ms order execution, <2s price retrieval)
-- 001-python: Added Python 3.11+ (required for performance improvements and modern typing features) + uv (package management), uvloop (async optimization), httpx (HTTP client), websockets (WebSocket), aiosqlite (database), cachetools (caching), pydantic (validation), pydantic-settings (config), typer (CLI), structlog (logging), prometheus-client (metrics), PyInstaller (packaging)
 
 <!-- MANUAL ADDITIONS START -->
 ## XT Exchange Integration (Feature 002)
@@ -45,6 +48,10 @@ Python 3.11+ (required for performance improvements and modern typing features):
 - **Trading pair transformation**: `BTC/USDT` (internal) ↔ `btc_usdt` (XT format)
 - **Order status mapping**: XT statuses (NEW, FILLED, CANCELED) → Internal OrderStatus enum
 - **Error handling**: Retry transient errors (timeout, network), fail fast on auth/validation errors
+- **Two-tier caching**: In-memory dict + LRU cache for trading pair information
+  - Auto-loaded on `connect()` for optimal startup performance
+  - Cache-first reads to minimize API calls
+  - Manual refresh via `refresh_trading_pairs()` method
 
 ### Performance Requirements (NON-NEGOTIABLE)
 - Order execution: <50ms p95 (from signal to order submission)
@@ -80,6 +87,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
   - POST/DELETE: `{sorted_headers}#METHOD#PATH[#QUERY][#BODY]` (headers sorted alphabetically)
 - **Connection state**: Must call `connect()` before any operations, `disconnect()` after
 - **Decimal precision**: Always use `Decimal` type, never float for money/quantities
+- **Cache usage**: `get_trading_pair_info()` uses cache-first strategy, refresh cache via `refresh_trading_pairs()` if needed
 
 ### Quick Commands
 ```bash
@@ -101,4 +109,106 @@ ruff check src/tri_arb/exchanges/xt.py
 black src/tri_arb/exchanges/xt.py
 ```
 <!-- MANUAL ADDITIONS END -->
+
+## Automated Arbitrage Execution (Feature 005)
+
+### Technical Stack
+- **Execution Engine**: ArbitrageExecutor (async, sequential order execution)
+- **Data Models**: ExecutionConfig, ExecutionStatus, ExecutionStep, ArbitrageExecution (Pydantic)
+- **Order Management**: Market orders only, asyncio polling for order fills
+- **Session Tracking**: UUID-based session IDs for complete arbitrage tracking
+- **Testing**: pytest + pytest-asyncio + AsyncMock (mock exchange)
+
+### Key Files
+- `src/tri_arb/arbitrage/executor.py` - Core execution engine
+- `src/tri_arb/arbitrage/execution_config.py` - Execution configuration model
+- `src/tri_arb/models/execution.py` - Execution data models (ExecutionStatus, ExecutionStep, ArbitrageExecution)
+- `src/tri_arb/cli/commands/monitor.py` - CLI integration with --execute and --dry-run flags
+- `tests/unit/test_arbitrage/test_executor.py` - Unit tests for executor
+- `specs/005-usdt/spec.md` - Complete functional specification (30 requirements)
+
+### Architecture Patterns
+- **Sequential Execution**: Complete one opportunity fully before moving to next (no parallelism)
+- **Market Orders**: Immediate execution at current market price (no limit orders)
+- **Order Polling**: Poll order status at 0.5s intervals with 30s timeout
+- **Session Tracking**: Unique UUID session ID for each arbitrage execution
+- **Three-Step Execution**: USDT → BTC → ETH → USDT (or similar triangular path)
+- **P&L Calculation**: Net profit = final amount - initial amount, profit rate = (profit / initial) * 100
+
+### Key Requirements (From spec.md)
+- **FR-001**: Market orders only (no limit orders)
+- **FR-002**: First trade amount ≥ 10 USDT minimum
+- **FR-003**: Sequential execution (complete current opportunity before next)
+- **FR-004**: Three sequential trades per opportunity
+- **FR-006**: Unique session ID (UUID v4) for tracking
+- **FR-007**: Session ID in all log messages
+- **FR-014**: Calculate net profit (final - initial)
+- **FR-015**: Calculate profit rate percentage
+- **FR-023**: 30-second order timeout per trade
+- **FR-024**: 0.5-second polling interval for order status
+
+### Execution Flow
+1. **Validation**: Check initial amount ≥ 10 USDT
+2. **Create Execution**: Generate session ID, initialize execution record
+3. **Step 1**: Submit market order → poll status → wait for fill → record results
+4. **Step 2**: Use filled quantity from Step 1 → submit order → poll → fill → record
+5. **Step 3**: Use filled quantity from Step 2 → submit order → poll → fill → record
+6. **Calculate P&L**: Final amount vs initial amount, calculate profit rate
+7. **Log Results**: Session ID, profit/loss, execution time
+
+### CLI Usage
+```bash
+# Monitor only (no execution)
+uv run tri-arb monitor
+
+# Monitor with dry-run (simulate execution)
+uv run tri-arb monitor --dry-run
+
+# Monitor with real execution
+uv run tri-arb monitor --execute
+
+# Real execution in realtime mode
+uv run tri-arb monitor --mode realtime --execute
+
+# Execution with profit filter
+uv run tri-arb monitor --min-profit 1.0 --execute
+```
+
+### Error Handling
+- **Below Minimum**: Raise ValueError if initial amount < 10 USDT
+- **Order Timeout**: Cancel order after 30s, raise TimeoutError
+- **Order Rejected**: Raise RuntimeError with order status
+- **Network Error**: Retry with exponential backoff (from exchange adapter)
+- **Partial Execution**: Mark execution as FAILED, preserve completed steps
+
+### Testing Strategy
+1. **Unit Tests**: Mock exchange, test success/failure scenarios
+2. **Integration Tests**: Real exchange API (future enhancement)
+3. **Test Coverage**: Success, timeout, rejection, partial execution, validation
+
+### Common Pitfalls
+- **Amount Propagation**: Must use filled_quantity from previous step for next step
+- **Currency Conversion**: Step 1 output currency must match Step 2 input currency
+- **Session ID**: Must be included in all log messages for traceability
+- **Market Orders**: price=None for market orders, quantity is in base currency
+- **Order Polling**: Must handle transient network errors during polling
+- **Execution State**: Mark status as FAILED on any exception, preserve completed steps
+
+### Quick Commands
+```bash
+# Run executor unit tests
+uv run pytest tests/unit/test_arbitrage/test_executor.py -v
+
+# Test with real exchange (requires credentials)
+export XT_API_KEY=your_key
+export XT_API_SECRET=your_secret
+uv run tri-arb monitor --execute
+
+# Dry-run test (no real orders)
+uv run tri-arb monitor --dry-run
+
+# Monitor and execute with debug logs
+uv run tri-arb monitor --execute --debug
+```
+
 - 所有python虚拟环境下的命令都要用uv来执行

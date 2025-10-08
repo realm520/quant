@@ -214,11 +214,6 @@ class XTExchange(BaseExchange):
                 except Exception as e:
                     symbol = ticker_data.get("s", "unknown")
                     failed_markets.append(symbol)
-                    logger.warning(
-                        "Failed to parse ticker",
-                        symbol=symbol,
-                        error=str(e),
-                    )
 
             # Log partial failures if any
             if failed_markets:

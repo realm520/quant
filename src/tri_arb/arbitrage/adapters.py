@@ -25,12 +25,16 @@ class XTExchangeAdapter:
     This adapter provides a lightweight conversion layer without caching.
     """
 
-    def __init__(self, api_key: str, api_secret: str):
+    def __init__(self, api_key: str = "", api_secret: str = ""):
         """Initialize XTExchange adapter.
 
         Args:
-            api_key: XT API key for authentication
-            api_secret: XT API secret for HMAC signature
+            api_key: XT API key (optional, required only for trading operations)
+            api_secret: XT API secret (optional, required only for trading operations)
+            
+        Note:
+            Public API operations (market data, ticker information) work without
+            credentials. Trading operations require valid API credentials.
         """
         self._xt = XTExchange(
             name="xt",

@@ -233,22 +233,42 @@ async def _async_monitor(
     exchange_adapter = None  # Track for cleanup
 
     if api_key and api_secret:
-        # Use real XT Exchange
+        # Mode 1: Authenticated mode (full functionality)
         from tri_arb.arbitrage.adapters import XTExchangeAdapter
 
-        console.print("[cyan]ℹ Connecting to XT Exchange...[/cyan]")
+        console.print("[green]✓ 使用 XT Exchange（认证模式 - 完整功能）[/green]")
         try:
             exchange_adapter = XTExchangeAdapter(api_key=api_key, api_secret=api_secret)
             await exchange_adapter.connect()
             monitor._exchange = exchange_adapter
-            console.print("[green]✓ Connected to XT Exchange[/green]")
+            logger.info("Connected to XT Exchange (authenticated mode)")
         except Exception as e:
-            console.print(f"[red]✗ Failed to connect to XT Exchange: {e}[/red]")
+            console.print(f"[red]✗ 连接 XT Exchange 失败: {e}[/red]")
             logger.error("XT Exchange connection failed", error=str(e))
             raise
+    elif execute and not dry_run:
+        # Mode 2: Trading requested but no credentials
+        console.print("[red]✗ 执行交易需要 API 凭证[/red]")
+        console.print("[yellow]请设置环境变量: XT_API_KEY 和 XT_API_SECRET[/yellow]")
+        console.print("[dim]提示: 注册 XT Exchange 账户即可免费获取 API 密钥[/dim]")
+        logger.error("Trading requires credentials but none provided")
+        raise typer.Exit(code=1)
     else:
-        console.print("[cyan]ℹ Using MockExchange (set XT_API_KEY and XT_API_SECRET for real data)[/cyan]")
-        monitor._exchange = MockExchange()
+        # Mode 3: Public mode (monitoring only, no credentials)
+        from tri_arb.arbitrage.adapters import XTExchangeAdapter
+
+        console.print("[cyan]ℹ 使用 XT Exchange（公开模式 - 仅监控功能）[/cyan]")
+        console.print("[dim]提示: 设置 XT_API_KEY 和 XT_API_SECRET 以启用交易功能[/dim]")
+        
+        try:
+            exchange_adapter = XTExchangeAdapter()  # No credentials
+            await exchange_adapter.connect()
+            monitor._exchange = exchange_adapter
+            logger.info("Connected to XT Exchange (public mode)")
+        except Exception as e:
+            console.print(f"[yellow]⚠️  无法连接 XT Exchange，使用模拟数据: {e}[/yellow]")
+            logger.warning("XT Exchange connection failed, falling back to MockExchange", error=str(e))
+            monitor._exchange = MockExchange()
 
     # Execute scan based on mode
     try:

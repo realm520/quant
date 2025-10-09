@@ -76,8 +76,12 @@ class XTExchange(BaseExchange):
 
         Args:
             name: Exchange identifier (default: "xt")
-            api_key: XT API key (empty for public endpoints only)
-            api_secret: XT API secret (empty for public endpoints only)
+            api_key: XT API key (optional, required only for trading operations)
+            api_secret: XT API secret (optional, required only for trading operations)
+            
+        Note:
+            Public API operations (get_ticker, get_orderbook, get_trading_pair_info)
+            work without credentials. Trading operations require valid credentials.
         """
         super().__init__(name)
         self.api_key = api_key
@@ -159,6 +163,22 @@ class XTExchange(BaseExchange):
         self._client = None
         self.is_connected = False
         logger.info("Disconnected from XT exchange", exchange=self.name)
+
+    def _require_credentials(self) -> None:
+        """Check if API credentials are available.
+        
+        Raises:
+            ValueError: If API key or secret is missing
+            
+        Note:
+            This method should be called at the start of all trading operations
+            (place_order, cancel_order, get_order_status, get_trade_history).
+        """
+        if not self.api_key or not self.api_secret:
+            raise ValueError(
+                "Trading operations require API credentials. "
+                "Please set XT_API_KEY and XT_API_SECRET environment variables."
+            )
 
     async def get_ticker(self, trading_pair: TradingPair | None = None) -> Price | list[Price]:
         """Get current ticker price for a trading pair or all markets.
@@ -311,6 +331,8 @@ class XTExchange(BaseExchange):
             ValueError: If not connected, invalid order, or missing credentials
             httpx.HTTPStatusError: If API request fails
         """
+        self._require_credentials()  # Check credentials before trading
+        
         symbol = self._to_xt_symbol(order.trading_pair)
 
         # Build request body for XT API
@@ -380,6 +402,8 @@ class XTExchange(BaseExchange):
             ValueError: If not connected or missing credentials
             httpx.HTTPStatusError: If API request fails
         """
+        self._require_credentials()  # Check credentials before trading
+        
         # XT API DELETE uses query parameters (similar to GET), not body
         params = {
             "orderId": order_id,
@@ -429,6 +453,8 @@ class XTExchange(BaseExchange):
             ValueError: If not connected or missing credentials
             httpx.HTTPStatusError: If API request fails or order not found
         """
+        self._require_credentials()  # Check credentials before querying orders
+        
         response = await self._request(
             method="GET",
             path=f"/{self.API_VERSION}/order",
@@ -511,6 +537,8 @@ class XTExchange(BaseExchange):
             ValueError: If not connected or missing credentials
             httpx.HTTPStatusError: If API request fails
         """
+        self._require_credentials()  # Check credentials before querying trade history
+        
         symbol = self._to_xt_symbol(trading_pair)
 
         response = await self._request(

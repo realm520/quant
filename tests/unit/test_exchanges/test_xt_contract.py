@@ -1,9 +1,9 @@
 """Contract test for XT Exchange adapter.
 
-Verifies that XTExchange correctly implements the BaseExchange interface
+Verifies that XTSpotExchange correctly implements the BaseExchange interface
 and adheres to contract requirements.
 
-These tests MUST FAIL initially (TDD requirement) until XTExchange is implemented.
+These tests MUST FAIL initially (TDD requirement) until XTSpotExchange is implemented.
 """
 
 import inspect
@@ -16,34 +16,34 @@ from tri_arb.exchanges.base import BaseExchange
 
 # This import will fail until XT Exchange is implemented
 try:
-    from tri_arb.exchanges.xt import XTExchange
+    from tri_arb.exchanges.xt_spot import XTSpotExchange
     XT_EXCHANGE_AVAILABLE = True
 except ImportError:
     XT_EXCHANGE_AVAILABLE = False
     # Create placeholder for type checking
-    class XTExchange:  # type: ignore
+    class XTSpotExchange:  # type: ignore
         pass
 
 
 @pytest.mark.contract
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
-class TestXTExchangeContract:
-    """Test that XTExchange implements BaseExchange contract."""
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+class TestXTSpotExchangeContract:
+    """Test that XTSpotExchange implements BaseExchange contract."""
 
     def test_exchange_inherits_base(self):
-        """Verify XTExchange inherits from BaseExchange.
+        """Verify XTSpotExchange inherits from BaseExchange.
 
-        XTExchange must inherit from BaseExchange to ensure consistent
+        XTSpotExchange must inherit from BaseExchange to ensure consistent
         interface across all exchange adapters.
         """
         assert issubclass(
-            XTExchange, BaseExchange
-        ), "XTExchange must inherit from BaseExchange"
+            XTSpotExchange, BaseExchange
+        ), "XTSpotExchange must inherit from BaseExchange"
 
     def test_exchange_implements_required_methods(self):
-        """Verify XTExchange implements all required abstract methods.
+        """Verify XTSpotExchange implements all required abstract methods.
 
-        XTExchange must implement all 10 abstract methods defined in
+        XTSpotExchange must implement all 10 abstract methods defined in
         BaseExchange for complete functionality.
         """
         # Get abstract methods from BaseExchange
@@ -53,20 +53,20 @@ class TestXTExchangeContract:
             if getattr(method, "__isabstractmethod__", False)
         }
 
-        # Get implemented methods from XTExchange
+        # Get implemented methods from XTSpotExchange
         implemented_methods = {
             name
-            for name, method in inspect.getmembers(XTExchange, inspect.isfunction)
+            for name, method in inspect.getmembers(XTSpotExchange, inspect.isfunction)
         }
 
         # Verify all abstract methods are implemented
         missing_methods = abstract_methods - implemented_methods
         assert (
             not missing_methods
-        ), f"XTExchange missing methods: {missing_methods}"
+        ), f"XTSpotExchange missing methods: {missing_methods}"
 
     def test_exchange_method_signatures(self):
-        """Verify XTExchange method signatures match BaseExchange.
+        """Verify XTSpotExchange method signatures match BaseExchange.
 
         All method signatures must match the base class interface to
         ensure type compatibility and correct usage.
@@ -87,10 +87,10 @@ class TestXTExchangeContract:
 
         for method_name, expected_params in expected_signatures.items():
             # Get method
-            method = getattr(XTExchange, method_name, None)
+            method = getattr(XTSpotExchange, method_name, None)
             assert (
                 method is not None
-            ), f"XTExchange missing method: {method_name}"
+            ), f"XTSpotExchange missing method: {method_name}"
 
             # Get method parameters
             sig = inspect.signature(method)
@@ -102,13 +102,13 @@ class TestXTExchangeContract:
             for expected_param in expected_params:
                 assert (
                     expected_param in params
-                ), f"XTExchange.{method_name} missing parameter: {expected_param}"
+                ), f"XTSpotExchange.{method_name} missing parameter: {expected_param}"
 
 
 @pytest.mark.contract
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
-class TestXTExchangeConnectionContract:
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+class TestXTSpotExchangeConnectionContract:
     """Test XT exchange connection lifecycle contract."""
 
     @pytest.fixture
@@ -116,9 +116,9 @@ class TestXTExchangeConnectionContract:
         """Create XT exchange instance for testing.
 
         Returns:
-            XTExchange instance with test credentials
+            XTSpotExchange instance with test credentials
         """
-        return XTExchange(
+        return XTSpotExchange(
             name="xt_test",
             api_key="test_key",
             api_secret="test_secret"
@@ -175,9 +175,9 @@ class TestXTExchangeConnectionContract:
 
 @pytest.mark.contract
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
-class TestXTExchangeMethodReturnTypes:
-    """Test that XTExchange methods return correct types."""
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+class TestXTSpotExchangeMethodReturnTypes:
+    """Test that XTSpotExchange methods return correct types."""
 
     @pytest.fixture
     def mock_xt_api(self):
@@ -247,7 +247,7 @@ class TestXTExchangeMethodReturnTypes:
     @pytest.fixture
     def xt_exchange(self, mock_xt_api):
         """Create connected XT exchange instance."""
-        return XTExchange(
+        return XTSpotExchange(
             name="xt_test",
             api_key="test_key",
             api_secret="test_secret"
@@ -342,73 +342,73 @@ class TestXTExchangeMethodReturnTypes:
 
 
 @pytest.mark.contract
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
-class TestXTExchangeFactoryIntegration:
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+class TestXTSpotExchangeFactoryIntegration:
     """Test XT exchange factory registration contract."""
 
     def test_factory_can_register_xt(self):
-        """Test that XTExchange can be registered with factory.
+        """Test that XTSpotExchange can be registered with factory.
 
         Verifies factory pattern compatibility.
         """
         from tri_arb.exchanges.factory import ExchangeFactory
 
         factory = ExchangeFactory()
-        factory.register("xt", XTExchange)
+        factory.register("xt", XTSpotExchange)
 
         assert factory.is_registered("xt")
 
     def test_factory_can_create_xt(self):
-        """Test that factory can create XTExchange instances.
+        """Test that factory can create XTSpotExchange instances.
 
         Verifies factory creates correct instance type.
         """
         from tri_arb.exchanges.factory import ExchangeFactory
 
         factory = ExchangeFactory()
-        factory.register("xt", XTExchange)
+        factory.register("xt", XTSpotExchange)
 
         xt = factory.create("xt", api_key="key", api_secret="secret")
-        assert isinstance(xt, XTExchange)
+        assert isinstance(xt, XTSpotExchange)
         assert xt.name == "xt"
         assert xt.api_key == "key"
         assert xt.api_secret == "secret"
 
 
 @pytest.mark.contract
-class TestXTExchangeImportability:
-    """Test that XTExchange can be imported (implementation exists).
+class TestXTSpotExchangeImportability:
+    """Test that XTSpotExchange can be imported (implementation exists).
 
-    This test should FAIL initially until XTExchange is implemented.
+    This test should FAIL initially until XTSpotExchange is implemented.
     """
 
     def test_xt_exchange_importable(self):
-        """Test that XTExchange class can be imported.
+        """Test that XTSpotExchange class can be imported.
 
         This is the first test that must pass - verifies the class exists.
-        Expected to FAIL until src/tri_arb/exchanges/xt.py is created.
+        Expected to FAIL until src/tri_arb/exchanges/xt_spot.py is created.
         """
         try:
-            from tri_arb.exchanges.xt import XTExchange
-            assert XTExchange is not None
+            from tri_arb.exchanges.xt_spot import XTSpotExchange
+            assert XTSpotExchange is not None
         except ImportError as e:
-            pytest.fail(f"XTExchange not yet implemented: {e}")
+            pytest.fail(f"XTSpotExchange not yet implemented: {e}")
 
     def test_xt_exchange_in_exchanges_init(self):
-        """Test that XTExchange is exported from exchanges package.
+        """Test that XTSpotExchange is exported from exchanges package.
 
-        Verifies that XTExchange is added to __all__ in exchanges/__init__.py
+        Verifies that XTSpotExchange is added to __all__ in exchanges/__init__.py
         """
         from tri_arb import exchanges
 
-        # Check if XTExchange is in __all__ (if __all__ exists)
+        # Check if XTSpotExchange is in __all__ (if __all__ exists)
         if hasattr(exchanges, '__all__'):
-            assert 'XTExchange' in exchanges.__all__, \
-                "XTExchange should be in exchanges.__all__"
+            assert 'XTSpotExchange' in exchanges.__all__, \
+                "XTSpotExchange should be in exchanges.__all__"
 
-        # Check if XTExchange can be imported from exchanges
-        assert hasattr(exchanges, 'XTExchange'), \
-            "XTExchange should be importable from tri_arb.exchanges"
+        # Check if XTSpotExchange can be imported from exchanges
+        assert hasattr(exchanges, 'XTSpotExchange'), \
+            "XTSpotExchange should be importable from tri_arb.exchanges"
 
 
 # ============================================================================
@@ -433,9 +433,9 @@ def btc_usdt_pair() -> "TradingPair":
 
 
 @pytest.fixture
-async def xt_connected() -> "XTExchange":
-    """Create and connect XTExchange instance."""
-    exchange = XTExchange(name="xt")
+async def xt_connected() -> "XTSpotExchange":
+    """Create and connect XTSpotExchange instance."""
+    exchange = XTSpotExchange(name="xt")
     await exchange.connect()
     yield exchange
     if exchange.is_connected:
@@ -445,10 +445,10 @@ async def xt_connected() -> "XTExchange":
 # T004: Single Ticker Contract Tests (Backward Compatibility)
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_single_ticker_returns_price_object_feature_003(
-    xt_connected: "XTExchange",
+    xt_connected: "XTSpotExchange",
     btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): get_ticker(trading_pair) MUST return single Price object."""
@@ -479,10 +479,10 @@ async def test_single_ticker_returns_price_object_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_single_ticker_price_data_valid_feature_003(
-    xt_connected: "XTExchange",
+    xt_connected: "XTSpotExchange",
     btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): Returned Price object MUST satisfy data constraints."""
@@ -526,10 +526,10 @@ async def test_single_ticker_price_data_valid_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_single_ticker_performance_feature_003(
-    xt_connected: "XTExchange",
+    xt_connected: "XTSpotExchange",
     btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): Single ticker query SHOULD complete quickly."""
@@ -563,10 +563,10 @@ async def test_single_ticker_performance_feature_003(
 # T005: Batch Ticker Contract Tests (New Feature)
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_ticker_returns_list_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): get_ticker(None) MUST return List[Price]."""
     from tri_arb.core.models import Price
@@ -594,10 +594,10 @@ async def test_batch_ticker_returns_list_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_ticker_no_duplicates_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): Batch ticker MUST not return duplicate trading pairs."""
     # Mock XT API batch response
@@ -629,10 +629,10 @@ async def test_batch_ticker_no_duplicates_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_ticker_each_price_valid_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): Each Price in batch result MUST satisfy data constraints."""
     from datetime import datetime, timedelta
@@ -668,10 +668,10 @@ async def test_batch_ticker_each_price_valid_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_ticker_performance_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): Batch ticker query SHOULD complete in <1000ms."""
     import time
@@ -698,10 +698,10 @@ async def test_batch_ticker_performance_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_ticker_scalability_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): Batch query MUST support ≥500 trading pairs."""
     # Mock XT API batch response with 500 tickers
@@ -727,10 +727,10 @@ async def test_batch_ticker_scalability_feature_003(
 # T006: Partial Failure Contract Tests
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_partial_failure_returns_success_subset_feature_003(
-    xt_connected: "XTExchange",
+    xt_connected: "XTSpotExchange",
     monkeypatch
 ) -> None:
     """CONTRACT (Feature 003): Batch query with partial failures MUST return successful subset."""
@@ -758,10 +758,10 @@ async def test_batch_partial_failure_returns_success_subset_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTExchange not yet implemented")
+@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
 @respx.mock
 async def test_batch_all_failures_returns_empty_list_feature_003(
-    xt_connected: "XTExchange"
+    xt_connected: "XTSpotExchange"
 ) -> None:
     """CONTRACT (Feature 003): Batch query with all failures MUST return empty list."""
     # Mock XT API batch response with all invalid data

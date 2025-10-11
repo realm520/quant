@@ -8,6 +8,8 @@ Auto-generated from all feature plans. Last updated: 2025-10-05
 - N/A (stateless API operation) (003-get-ticker-trading)
 - Python 3.11+ (required for performance and modern typing) + httpx (async HTTP), pydantic (validation), structlog (logging), colorama/rich (彩色输出), typer (CLI), asyncio (异步) (004-xt-get-ticker)
 - N/A (无持久化，仅内存计算和实时输出) (004-xt-get-ticker)
+- Python 3.11+ (已确定,项目要求) + httpx (async HTTP), pydantic (validation), structlog (logging), pytest (testing) (007-xtexhcnage-xtspotexchange-xt)
+- N/A (无存储变更) (007-xtexhcnage-xtspotexchange-xt)
 
 ## Project Structure
 ```
@@ -22,10 +24,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11+ (required for performance improvements and modern typing features): Follow standard conventions
 
 ## Recent Changes
+- 007-xtexhcnage-xtspotexchange-xt: Added Python 3.11+ (已确定,项目要求) + httpx (async HTTP), pydantic (validation), structlog (logging), pytest (testing)
 - 005-usdt: Added automated arbitrage execution - ArbitrageExecutor engine with market order execution, sequential trade execution (USDT-only account), session ID tracking (UUID), profit/loss calculation, 10 USDT minimum initial amount, 30s order timeout with 0.5s polling, integrated into monitor command with --execute and --dry-run flags
 - 004-xt-get-ticker: Added Python 3.11+ (required for performance and modern typing) + httpx (async HTTP), pydantic (validation), structlog (logging), colorama/rich (彩色输出), typer (CLI), asyncio (异步)
-- 003-get-ticker-trading: Added Python 3.11+ (required for performance and modern typing) + httpx (async HTTP client), pydantic (data validation), structlog (logging)
-- 002-xt-spot-api: Added XT Exchange integration - XTExchange adapter implementing BaseExchange interface, async REST API client with httpx, HMAC-SHA256 authentication, trading pair transformation (BTC/USDT ↔ btc_usdt), contract tests (TDD), OpenAPI specification, performance targets (<50ms order execution, <2s price retrieval)
 
 <!-- MANUAL ADDITIONS START -->
 ## XT Exchange Integration (Feature 002)
@@ -37,7 +38,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
 - **Testing**: pytest + pytest-asyncio + respx (httpx mocking)
 
 ### Key Files
-- `src/tri_arb/exchanges/xt.py` - XTExchange adapter (NOT YET IMPLEMENTED)
+- `src/tri_arb/exchanges/xt_spot.py` - XTSpotExchange adapter (NOT YET IMPLEMENTED)
 - `tests/unit/test_exchanges/test_xt_contract.py` - Contract tests (MUST FAIL until implementation)
 - `tests/integration/test_xt_integration.py` - Integration tests (requires XT_API_KEY, XT_API_SECRET)
 - `specs/002-xt-spot-api/` - Design documents (research.md, data-model.md, contracts/, quickstart.md)
@@ -91,7 +92,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
 
 ### Quick Commands
 ```bash
-# Run XT contract tests (will fail until XTExchange implemented)
+# Run XT contract tests (will fail until XTSpotExchange implemented)
 pytest tests/unit/test_exchanges/test_xt_contract.py -v
 
 # Run XT integration tests (requires credentials)
@@ -100,13 +101,13 @@ export XT_API_SECRET=your_secret
 pytest tests/integration/test_xt_integration.py --run-integration -v
 
 # Type check XT adapter
-mypy src/tri_arb/exchanges/xt.py --strict
+mypy src/tri_arb/exchanges/xt_spot.py --strict
 
 # Lint XT adapter
-ruff check src/tri_arb/exchanges/xt.py
+ruff check src/tri_arb/exchanges/xt_spot.py
 
 # Format XT adapter
-black src/tri_arb/exchanges/xt.py
+black src/tri_arb/exchanges/xt_spot.py
 ```
 <!-- MANUAL ADDITIONS END -->
 

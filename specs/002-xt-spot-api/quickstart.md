@@ -41,7 +41,7 @@ echo "XT_API_SECRET=your_xt_api_secret" >> .env
 ### 3. Verify Installation
 
 ```bash
-# Run contract tests to verify XTExchange is implemented
+# Run contract tests to verify XTSpotExchange is implemented
 pytest tests/unit/test_exchanges/test_xt_contract.py -v
 
 # Expected: All tests pass
@@ -59,13 +59,13 @@ pytest tests/unit/test_exchanges/test_xt_contract.py -v
 # Interactive Python session
 python3
 
->>> from tri_arb.exchanges.xt import XTExchange
+>>> from tri_arb.exchanges.xt_spot import XTSpotExchange
 >>> from tri_arb.core.models import TradingPair
 >>> from decimal import Decimal
 >>> import asyncio
 
 >>> # Create exchange instance
->>> exchange = XTExchange(
+>>> exchange = XTSpotExchange(
 ...     name="xt",
 ...     api_key="your_api_key",
 ...     api_secret="your_api_secret"
@@ -307,7 +307,7 @@ python3
 
 ```python
 >>> # Test with invalid credentials
->>> bad_exchange = XTExchange(
+>>> bad_exchange = XTSpotExchange(
 ...     name="xt_bad",
 ...     api_key="invalid_key",
 ...     api_secret="invalid_secret"
@@ -440,13 +440,13 @@ pytest tests/integration/test_xt_integration.py --run-integration -v
 
 ```bash
 # Type checking
-mypy src/tri_arb/exchanges/xt.py --strict
+mypy src/tri_arb/exchanges/xt_spot.py --strict
 
 # Linting
-ruff check src/tri_arb/exchanges/xt.py
+ruff check src/tri_arb/exchanges/xt_spot.py
 
 # Formatting
-black src/tri_arb/exchanges/xt.py --check
+black src/tri_arb/exchanges/xt_spot.py --check
 ```
 
 ---
@@ -681,7 +681,7 @@ Before reporting signature issues, verify:
 
 ```python
 import logging
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 from tri_arb.core.models import TradingPair, Order, OrderSide, OrderType
 from decimal import Decimal
 import asyncio
@@ -689,7 +689,7 @@ import asyncio
 logging.basicConfig(level=logging.DEBUG)
 
 async def debug_order():
-    exchange = XTExchange(
+    exchange = XTSpotExchange(
         name="xt",
         api_key="your_key",
         api_secret="your_secret"
@@ -732,9 +732,9 @@ asyncio.run(debug_order())
 
 ## General Troubleshooting
 
-### Issue: "XTExchange not yet implemented"
+### Issue: "XTSpotExchange not yet implemented"
 
-**Solution**: Ensure `src/tri_arb/exchanges/xt.py` exists and XTExchange class is implemented.
+**Solution**: Ensure `src/tri_arb/exchanges/xt_spot.py` exists and XTSpotExchange class is implemented.
 
 ### Issue: "Authentication failed"
 

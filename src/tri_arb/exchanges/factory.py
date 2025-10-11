@@ -199,14 +199,14 @@ def get_available_exchanges() -> list[str]:
 # Auto-register available exchanges
 def _register_default_exchanges() -> None:
     """Register default exchange implementations on module import."""
-    from tri_arb.exchanges.xt import XTExchange
-    
+    from tri_arb.exchanges.xt_spot import XTSpotExchange
+
     # Import environment variables for credentials
     import os
     from tri_arb.config.settings import settings
-    
+
     # Register XT Exchange
-    exchange_factory.register("xt", XTExchange)
+    exchange_factory.register("xt", XTSpotExchange)
     
     logger.info("Default exchanges registered", exchanges=["xt"])
 

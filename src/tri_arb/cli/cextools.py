@@ -386,8 +386,8 @@ def history(
             console.print(table)
 
             # Calculate summary
-            total_buy_qty = sum(t.quantity for t in trades if t.side.value == "BUY")
-            total_sell_qty = sum(t.quantity for t in trades if t.side.value == "SELL")
+            total_buy_qty = sum(t.quantity for t in trades if t.side.value == "buy")
+            total_sell_qty = sum(t.quantity for t in trades if t.side.value == "sell")
 
             # Group fees by currency
             from collections import defaultdict

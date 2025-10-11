@@ -550,24 +550,42 @@ class XTExchange(BaseExchange):
 
         data = response.json()
 
-        # Handle None or missing result (empty trade history)
-        trades_data = data.get("result") or []
+        # XT API returns: {"rc": 0, "result": {"hasPrev": false, "hasNext": false, "items": [...]}}
+        result = self._check_response(data)
+
+        # Extract items array from result dict
+        if isinstance(result, dict):
+            trades_data = result.get("items", [])
+        else:
+            # Fallback: if result is already a list (unexpected)
+            trades_data = result if isinstance(result, list) else []
+
+        logger.debug("Trade history retrieved", trade_count=len(trades_data))
 
         trades = []
         for trade_data in trades_data:
-            # Map order side
-            xt_side = trade_data.get("side", "BUY")
+            # XT API field mapping:
+            # - orderSide: BUY/SELL
+            # - tradeId: trade ID string
+            # - orderId: order ID string
+            # - price: trade price
+            # - quantity: trade quantity (base currency)
+            # - fee: transaction fee
+            # - feeCurrency: fee currency symbol
+            # - time: timestamp in milliseconds
+
+            xt_side = trade_data.get("orderSide", "BUY")
             side = OrderSide.BUY if xt_side == "BUY" else OrderSide.SELL
 
             trade = Trade(
-                trade_id=str(trade_data.get("id", "")),
+                trade_id=str(trade_data.get("tradeId", "")),
                 order_id=str(trade_data.get("orderId", "")),
                 trading_pair=trading_pair,
                 side=side,
                 price=Decimal(str(trade_data.get("price", "0"))),
-                quantity=Decimal(str(trade_data.get("qty", "0"))),
-                fee=Decimal(str(trade_data.get("commission", "0"))),
-                fee_currency=trade_data.get("commissionAsset", trading_pair.quote_currency),
+                quantity=Decimal(str(trade_data.get("quantity", "0"))),
+                fee=Decimal(str(trade_data.get("fee", "0"))),
+                fee_currency=trade_data.get("feeCurrency", trading_pair.quote_currency),
                 timestamp=datetime.fromtimestamp(
                     int(trade_data.get("time", 0)) / 1000,
                     tz=datetime.now().astimezone().tzinfo,
@@ -687,6 +705,11 @@ class XTExchange(BaseExchange):
             data = response.json()
             result = self._check_response(data)
 
+            # Handle XT API response format: may return dict with 'symbols' key or direct list
+            if isinstance(result, dict):
+                # Extract symbols array from dict
+                result = result.get("symbols", [])
+            
             # Result should be a list for batch query
             if not isinstance(result, list):
                 raise ValueError(f"Expected list result for batch query, got {type(result)}")
@@ -839,6 +862,10 @@ class XTExchange(BaseExchange):
         data = response.json()
         result = self._check_response(data)
 
+        # Handle XT API response format: may return dict with 'symbols' key or direct list
+        if isinstance(result, dict):
+            result = result.get("symbols", [])
+        
         if not isinstance(result, list):
             raise ValueError(f"Expected list result for batch query, got {type(result)}")
 

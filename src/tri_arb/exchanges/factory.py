@@ -147,14 +147,43 @@ def register_exchange(name: str, exchange_class: type[BaseExchange]) -> None:
 
 def create_exchange(name: str, **kwargs) -> BaseExchange:
     """Convenience function to create exchange from global factory.
+    
+    Automatically loads API credentials from environment variables if not provided:
+    - XT Exchange: XT_API_KEY, XT_API_SECRET
+    - Binance: BINANCE_API_KEY, BINANCE_API_SECRET
+    - OKX: OKX_API_KEY, OKX_API_SECRET
 
     Args:
         name: Exchange name identifier
-        **kwargs: Additional arguments to pass to exchange constructor
+        **kwargs: Additional arguments to pass to exchange constructor.
+                 If api_key/api_secret not provided, will attempt to load
+                 from environment variables.
 
     Returns:
         Exchange adapter instance
     """
+    import os
+    
+    # Auto-load credentials from environment if not provided
+    if "api_key" not in kwargs or "api_secret" not in kwargs:
+        env_prefix = name.upper()
+        api_key = os.getenv(f"{env_prefix}_API_KEY", "")
+        api_secret = os.getenv(f"{env_prefix}_API_SECRET", "")
+        
+        # Only set if found in environment
+        if api_key:
+            kwargs.setdefault("api_key", api_key)
+        if api_secret:
+            kwargs.setdefault("api_secret", api_secret)
+        
+        if api_key or api_secret:
+            logger.debug(
+                "Loaded credentials from environment",
+                exchange=name,
+                has_key=bool(api_key),
+                has_secret=bool(api_secret),
+            )
+    
     return exchange_factory.create(name, **kwargs)
 
 
@@ -165,3 +194,22 @@ def get_available_exchanges() -> list[str]:
         List of registered exchange identifiers
     """
     return exchange_factory.list_registered()
+
+
+# Auto-register available exchanges
+def _register_default_exchanges() -> None:
+    """Register default exchange implementations on module import."""
+    from tri_arb.exchanges.xt import XTExchange
+    
+    # Import environment variables for credentials
+    import os
+    from tri_arb.config.settings import settings
+    
+    # Register XT Exchange
+    exchange_factory.register("xt", XTExchange)
+    
+    logger.info("Default exchanges registered", exchanges=["xt"])
+
+
+# Register on module import
+_register_default_exchanges()

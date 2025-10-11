@@ -39,6 +39,7 @@ dev = [
 
 [project.scripts]
 tri-arb = "tri_arb.__main__:main"
+cextools = "tri_arb.cli.cextools:app"
 
 [build-system]
 requires = ["hatchling"]

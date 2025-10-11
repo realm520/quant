@@ -298,3 +298,130 @@ class BaseExchange(ABC):
             - trading_state: Current trading status
         """
         pass
+
+    # ============================================================================
+    # Helper Methods for CLI and String-based Queries
+    # ============================================================================
+
+    async def get_trading_pair_by_symbol(self, symbol: str) -> TradingPair:
+        """Convert symbol string to TradingPair object.
+
+        Helper method for CLI tools and string-based queries. Looks up the
+        trading pair from cached exchange information.
+
+        Args:
+            symbol: Trading pair symbol in format "BASE/QUOTE" (e.g., "BTC/USDT")
+
+        Returns:
+            TradingPair object with complete exchange information
+
+        Raises:
+            ValueError: If symbol format is invalid or trading pair not found
+            ExchangeConnectionError: If exchange is not connected
+
+        Examples:
+            >>> pair = await exchange.get_trading_pair_by_symbol("BTC/USDT")
+            >>> price = await exchange.get_ticker(pair)
+
+        Note:
+            This method uses cached trading pair information from connect().
+            If the trading pair list has changed, call refresh_trading_pairs()
+            or reconnect to the exchange.
+        """
+        if not self.is_connected:
+            raise ValueError(f"{self.name} exchange is not connected")
+
+        # Parse symbol
+        if "/" not in symbol:
+            raise ValueError(
+                f"Invalid symbol format: {symbol}. Expected format: BASE/QUOTE (e.g., BTC/USDT)"
+            )
+
+        base, quote = symbol.upper().split("/", 1)
+
+        # Get all trading pairs (should use cache from connect())
+        result = await self.get_trading_pair_info(None)
+
+        # Type assertion: batch query returns list
+        if not isinstance(result, list):
+            raise ValueError(f"Expected list from batch query, got {type(result)}")
+
+        all_pairs = result
+
+        # Find matching pair
+        for pair in all_pairs:
+            if pair.base_currency == base and pair.quote_currency == quote:
+                logger.debug(
+                    "Trading pair found",
+                    symbol=symbol,
+                    exchange=self.name,
+                )
+                return pair
+
+        # Not found
+        raise ValueError(
+            f"Trading pair not found: {symbol}. "
+            f"Use get_supported_pairs() to see available pairs on {self.name}."
+        )
+
+    async def get_ticker_by_symbol(self, symbol: str) -> Price:
+        """Get ticker by symbol string.
+
+        Convenience method for CLI tools. Converts symbol to TradingPair
+        and calls get_ticker().
+
+        Args:
+            symbol: Trading pair symbol in format "BASE/QUOTE" (e.g., "BTC/USDT")
+
+        Returns:
+            Price object with current market prices
+
+        Raises:
+            ValueError: If symbol invalid or trading pair not found
+            ExchangeConnectionError: If exchange is not connected
+
+        Examples:
+            >>> price = await exchange.get_ticker_by_symbol("BTC/USDT")
+            >>> print(f"Bid: {price.bid_price}, Ask: {price.ask_price}")
+
+        Note:
+            This is a convenience wrapper around get_ticker(). For batch queries
+            or performance-critical code, use get_ticker() directly.
+        """
+        pair = await self.get_trading_pair_by_symbol(symbol)
+        result = await self.get_ticker(pair)
+
+        # Type assertion: single pair query returns Price
+        if isinstance(result, list):
+            raise ValueError(
+                f"Unexpected batch result for single symbol query: {symbol}"
+            )
+
+        return result
+
+    async def get_orderbook_by_symbol(
+        self, symbol: str, depth: int = 20
+    ) -> OrderBook:
+        """Get order book by symbol string.
+
+        Convenience method for CLI tools. Converts symbol to TradingPair
+        and calls get_orderbook().
+
+        Args:
+            symbol: Trading pair symbol in format "BASE/QUOTE" (e.g., "BTC/USDT")
+            depth: Number of price levels to retrieve (default 20)
+
+        Returns:
+            OrderBook with bids and asks
+
+        Raises:
+            ValueError: If symbol invalid or trading pair not found
+            ExchangeConnectionError: If exchange is not connected
+
+        Examples:
+            >>> orderbook = await exchange.get_orderbook_by_symbol("BTC/USDT", depth=50)
+            >>> best_bid = orderbook.bids[0]
+            >>> print(f"Best bid: {best_bid[0]} @ {best_bid[1]}")
+        """
+        pair = await self.get_trading_pair_by_symbol(symbol)
+        return await self.get_orderbook(pair, depth)

@@ -283,6 +283,134 @@ def balance(
 # Register command groups
 app.add_typer(market_app, name="market")
 app.add_typer(trading_app, name="trading")
+@account_app.command("history")
+def history(
+    ctx: typer.Context,
+    symbol: str = typer.Argument(..., help="Trading pair symbol (e.g., BTC/USDT)"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of trades to retrieve (default: 50, max: 100)"),
+) -> None:
+    """Get recent trade history for a trading pair.
+
+    Requires API credentials set as environment variables:
+    - XT_API_KEY
+    - XT_API_SECRET
+
+    Examples:
+        # Get last 50 trades for BTC/USDT
+        cextools account history BTC/USDT
+
+        # Get last 100 trades
+        cextools account history BTC/USDT --limit 100
+
+        # Remote execution
+        uvx --from git+https://github.com/realm520/quant.git@006-api-xt \\
+            cextools account history BTC/USDT --limit 50
+    """
+    import asyncio
+    from rich.table import Table
+    from datetime import datetime
+
+    exchange_name = ctx.obj["exchange"]
+    verbose = ctx.obj["verbose"]
+
+    # Validate limit
+    if limit < 1 or limit > 100:
+        console.print("[red]Error: Limit must be between 1 and 100[/red]")
+        raise typer.Exit(code=1)
+
+    if verbose:
+        logger.info("Fetching trade history", exchange=exchange_name, symbol=symbol, limit=limit)
+
+    from tri_arb.exchanges.factory import create_exchange
+
+    async def fetch_history():
+        exchange = create_exchange(exchange_name)
+
+        # Check if credentials are available
+        if not exchange.api_key or not exchange.api_secret:
+            console.print("[red]Error: API credentials not found![/red]")
+            console.print("\nPlease set environment variables:")
+            console.print(f"  export {exchange_name.upper()}_API_KEY=your_api_key")
+            console.print(f"  export {exchange_name.upper()}_API_SECRET=your_api_secret")
+            raise typer.Exit(code=1)
+
+        try:
+            await exchange.connect()
+
+            # Get trading pair by symbol (uses helper method from BaseExchange)
+            trading_pair = await exchange.get_trading_pair_by_symbol(symbol)
+
+            # Fetch trade history
+            trades = await exchange.get_trade_history(trading_pair, limit=limit)
+
+            if not trades:
+                console.print(f"[yellow]No trade history found for {symbol}[/yellow]")
+                return
+
+            # Create table
+            table = Table(title=f"Trade History: {symbol} (Last {len(trades)} trades)", show_header=True)
+            table.add_column("Time", style="cyan")
+            table.add_column("Trade ID", style="dim")
+            table.add_column("Order ID", style="dim")
+            table.add_column("Side", style="white")
+            table.add_column("Price", style="yellow", justify="right")
+            table.add_column("Quantity", style="green", justify="right")
+            table.add_column("Fee", style="red", justify="right")
+            table.add_column("Fee Currency", style="dim")
+
+            # Add rows
+            for trade in trades:
+                # Format timestamp
+                time_str = trade.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+                # Color code side
+                side_color = "green" if trade.side.value == "BUY" else "red"
+                side_str = f"[{side_color}]{trade.side.value}[/{side_color}]"
+
+                # Format numbers
+                price_str = f"{trade.price:.8f}".rstrip('0').rstrip('.')
+                qty_str = f"{trade.quantity:.8f}".rstrip('0').rstrip('.')
+                fee_str = f"{trade.fee:.8f}".rstrip('0').rstrip('.')
+
+                table.add_row(
+                    time_str,
+                    trade.trade_id[:8] + "..." if len(trade.trade_id) > 8 else trade.trade_id,
+                    trade.order_id[:8] + "..." if len(trade.order_id) > 8 else trade.order_id,
+                    side_str,
+                    price_str,
+                    qty_str,
+                    fee_str,
+                    trade.fee_currency,
+                )
+
+            console.print(table)
+
+            # Calculate summary
+            total_buy_qty = sum(t.quantity for t in trades if t.side.value == "BUY")
+            total_sell_qty = sum(t.quantity for t in trades if t.side.value == "SELL")
+            total_fee = sum(t.fee for t in trades)
+
+            console.print(f"\n[cyan]Summary:[/cyan]")
+            console.print(f"  Total BUY:  {total_buy_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
+            console.print(f"  Total SELL: {total_sell_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
+            console.print(f"  Total Fee:  {total_fee:.8f} (mixed currencies)".rstrip('0').rstrip('.'))
+
+            if verbose:
+                logger.info("Trade history retrieved", trade_count=len(trades))
+
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+        except Exception as e:
+            logger.error("Failed to fetch trade history", error=str(e), exc_info=True)
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+        finally:
+            await exchange.disconnect()
+
+    asyncio.run(fetch_history())
+
+
 app.add_typer(account_app, name="account")
 
 

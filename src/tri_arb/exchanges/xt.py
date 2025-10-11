@@ -550,21 +550,23 @@ class XTExchange(BaseExchange):
 
         data = response.json()
 
-        # Debug: Log raw API response
-        logger.debug("XT API /v4/trade raw response",
+        # Debug: Log raw API response (using info level to ensure visibility)
+        logger.info("XT API /v4/trade response structure",
+                    data_type=type(data).__name__,
                     data_keys=list(data.keys()) if isinstance(data, dict) else None,
-                    data_sample=str(data)[:500])
+                    result_type=type(data.get("result")).__name__ if isinstance(data, dict) else None,
+                    full_response=data)
 
         # Handle None or missing result (empty trade history)
         trades_data = data.get("result") or []
 
-        # Debug: Check result structure
-        if trades_data:
-            logger.debug("Trades data structure",
-                        is_list=isinstance(trades_data, list),
-                        length=len(trades_data) if isinstance(trades_data, (list, str)) else None,
-                        first_item_type=type(trades_data[0]).__name__ if isinstance(trades_data, list) and trades_data else None,
-                        first_item_sample=str(trades_data[0])[:200] if isinstance(trades_data, list) and trades_data else str(trades_data)[:200])
+        # Debug: Check result structure (using info level)
+        logger.info("Trades data details",
+                    is_list=isinstance(trades_data, list),
+                    is_string=isinstance(trades_data, str),
+                    length=len(trades_data) if isinstance(trades_data, (list, str)) else None,
+                    first_item_type=type(trades_data[0]).__name__ if isinstance(trades_data, list) and trades_data else None,
+                    first_3_items=trades_data[:3] if isinstance(trades_data, list) else str(trades_data)[:300])
 
         trades = []
         for trade_data in trades_data:

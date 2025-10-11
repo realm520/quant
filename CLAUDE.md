@@ -38,7 +38,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
 - **Testing**: pytest + pytest-asyncio + respx (httpx mocking)
 
 ### Key Files
-- `src/tri_arb/exchanges/xt.py` - XTExchange adapter (NOT YET IMPLEMENTED)
+- `src/tri_arb/exchanges/xt_spot.py` - XTSpotExchange adapter (NOT YET IMPLEMENTED)
 - `tests/unit/test_exchanges/test_xt_contract.py` - Contract tests (MUST FAIL until implementation)
 - `tests/integration/test_xt_integration.py` - Integration tests (requires XT_API_KEY, XT_API_SECRET)
 - `specs/002-xt-spot-api/` - Design documents (research.md, data-model.md, contracts/, quickstart.md)
@@ -92,7 +92,7 @@ Python 3.11+ (required for performance improvements and modern typing features):
 
 ### Quick Commands
 ```bash
-# Run XT contract tests (will fail until XTExchange implemented)
+# Run XT contract tests (will fail until XTSpotExchange implemented)
 pytest tests/unit/test_exchanges/test_xt_contract.py -v
 
 # Run XT integration tests (requires credentials)
@@ -101,13 +101,13 @@ export XT_API_SECRET=your_secret
 pytest tests/integration/test_xt_integration.py --run-integration -v
 
 # Type check XT adapter
-mypy src/tri_arb/exchanges/xt.py --strict
+mypy src/tri_arb/exchanges/xt_spot.py --strict
 
 # Lint XT adapter
-ruff check src/tri_arb/exchanges/xt.py
+ruff check src/tri_arb/exchanges/xt_spot.py
 
 # Format XT adapter
-black src/tri_arb/exchanges/xt.py
+black src/tri_arb/exchanges/xt_spot.py
 ```
 <!-- MANUAL ADDITIONS END -->
 

@@ -39,7 +39,7 @@ from tri_arb.exchanges.base import BaseExchange
 logger = get_logger(__name__)
 
 
-class XTExchange(BaseExchange):
+class XTSpotExchange(BaseExchange):
     """XT Exchange adapter implementation.
 
     Provides async interface to XT Exchange REST API v4, conforming to
@@ -52,7 +52,7 @@ class XTExchange(BaseExchange):
         is_connected: Connection state flag
 
     Example:
-        >>> exchange = XTExchange(
+        >>> exchange = XTSpotExchange(
         ...     name="xt",
         ...     api_key="your_api_key",
         ...     api_secret="your_api_secret"
@@ -90,7 +90,7 @@ class XTExchange(BaseExchange):
         self._trading_pairs_cache: dict[str, TradingPair] = {}  # In-memory cache
 
         logger.info(
-            "XTExchange initialized",
+            "XTSpotExchange initialized",
             has_api_key=bool(api_key),
             has_api_secret=bool(api_secret),
         )
@@ -231,7 +231,7 @@ class XTExchange(BaseExchange):
                     seen_symbols.add(symbol)
                     price = self._parse_ticker_to_price(ticker_data, trading_pair=None)
                     prices.append(price)
-                except Exception as e:
+                except Exception:
                     symbol = ticker_data.get("s", "unknown")
                     failed_markets.append(symbol)
 

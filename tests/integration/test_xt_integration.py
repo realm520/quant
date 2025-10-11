@@ -25,7 +25,7 @@ import pytest
 
 # Check if XT Exchange is available
 try:
-    from tri_arb.exchanges.xt import XTExchange
+    from tri_arb.exchanges.xt_spot import XTSpotExchange
     from tri_arb.core.models import Order, OrderSide, OrderType, OrderStatus, TradingPair, Price
     XT_EXCHANGE_AVAILABLE = True
 except ImportError:
@@ -80,7 +80,7 @@ def create_test_order(
 @pytest.mark.integration
 @pytest.mark.skipif(
     not XT_EXCHANGE_AVAILABLE,
-    reason="XTExchange not yet implemented"
+    reason="XTSpotExchange not yet implemented"
 )
 @pytest.mark.skipif(
     not INTEGRATION_ENABLED,
@@ -97,9 +97,9 @@ class TestXTIntegration:
         """Create and connect XT exchange instance with real credentials.
         
         Yields:
-            Connected XTExchange instance
+            Connected XTSpotExchange instance
         """
-        exchange = XTExchange(
+        exchange = XTSpotExchange(
             name="xt",
             api_key=API_KEY,
             api_secret=API_SECRET
@@ -328,7 +328,7 @@ class TestXTIntegration:
         
         Verifies connect/disconnect work properly with real credentials.
         """
-        exchange = XTExchange(
+        exchange = XTSpotExchange(
             name="xt",
             api_key=API_KEY,
             api_secret=API_SECRET
@@ -353,7 +353,7 @@ class TestXTIntegration:
 @pytest.mark.integration
 @pytest.mark.skipif(
     not XT_EXCHANGE_AVAILABLE,
-    reason="XTExchange not yet implemented"
+    reason="XTSpotExchange not yet implemented"
 )
 class TestXTIntegrationPlaceholder:
     """Placeholder tests that run even without API credentials.
@@ -395,7 +395,7 @@ class TestXTIntegrationPlaceholder:
 @pytest.mark.integration
 @pytest.mark.skipif(
     not XT_EXCHANGE_AVAILABLE,
-    reason="XTExchange not yet implemented"
+    reason="XTSpotExchange not yet implemented"
 )
 @pytest.mark.skipif(
     not INTEGRATION_ENABLED,
@@ -407,7 +407,7 @@ class TestXTBatchTickerIntegration:
     @pytest.fixture
     async def xt_exchange(self):
         """Create and connect XT exchange instance with real credentials."""
-        exchange = XTExchange(
+        exchange = XTSpotExchange(
             name="xt",
             api_key=API_KEY,
             api_secret=API_SECRET

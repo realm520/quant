@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from tri_arb.config.logging import get_logger
 from tri_arb.core.models import Price, TradingPair
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 from tri_arb.models.exchange import Ticker
 
 
@@ -16,27 +16,27 @@ logger = get_logger(__name__)
 
 
 class XTExchangeAdapter:
-    """Adapter for XTExchange to ExchangeProtocol interface.
+    """Adapter for XTSpotExchange to ExchangeProtocol interface.
 
     Converts between:
-    - XTExchange (returns Price objects with TradingPair)
+    - XTSpotExchange (returns Price objects with TradingPair)
     - ExchangeProtocol (expects Ticker objects with symbol strings)
 
     This adapter provides a lightweight conversion layer without caching.
     """
 
     def __init__(self, api_key: str = "", api_secret: str = ""):
-        """Initialize XTExchange adapter.
+        """Initialize XTSpotExchange adapter.
 
         Args:
             api_key: XT API key (optional, required only for trading operations)
             api_secret: XT API secret (optional, required only for trading operations)
-            
+
         Note:
             Public API operations (market data, ticker information) work without
             credentials. Trading operations require valid API credentials.
         """
-        self._xt = XTExchange(
+        self._xt = XTSpotExchange(
             name="xt",
             api_key=api_key,
             api_secret=api_secret,

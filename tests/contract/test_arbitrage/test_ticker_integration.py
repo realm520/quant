@@ -2,7 +2,7 @@
 Contract tests for Feature 003 get_ticker() integration.
 
 These tests verify that ArbitrageMonitor correctly integrates with
-the existing XTExchange.get_ticker() method from Feature 003.
+the existing XTSpotExchange.get_ticker() method from Feature 003.
 
 IMPORTANT: These tests MUST FAIL until implementation is complete.
 """
@@ -14,7 +14,7 @@ import pytest
 # These imports will fail until implementation exists
 from tri_arb.arbitrage import ArbitrageMonitor
 from tri_arb.arbitrage.config import MonitorConfig
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 from tri_arb.models.exchange import Ticker
 
 
@@ -23,8 +23,8 @@ class TestGetTickerIntegration:
 
     @pytest.fixture
     async def exchange(self):
-        """Create XTExchange instance."""
-        exchange = XTExchange(
+        """Create XTSpotExchange instance."""
+        exchange = XTSpotExchange(
             api_key="test_key",
             api_secret="test_secret"
         )
@@ -34,7 +34,7 @@ class TestGetTickerIntegration:
 
     @pytest.mark.asyncio
     async def test_monitor_uses_get_ticker(self, exchange, mocker):
-        """Contract: ArbitrageMonitor uses XTExchange.get_ticker() to fetch prices."""
+        """Contract: ArbitrageMonitor uses XTSpotExchange.get_ticker() to fetch prices."""
         config = MonitorConfig(run_mode="once")
         monitor = ArbitrageMonitor(config=config, exchange_name="xt")
         

@@ -5,7 +5,7 @@ exchange connectivity and trading operations.
 """
 
 from tri_arb.exchanges.base import BaseExchange
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 
-__all__ = ["BaseExchange", "XTExchange"]
+__all__ = ["BaseExchange", "XTSpotExchange"]

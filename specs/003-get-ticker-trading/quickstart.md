@@ -30,13 +30,13 @@ uv pip install -e ".[dev]"
 import asyncio
 from decimal import Decimal
 from tri_arb.core.models import TradingPair
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 async def get_single_ticker():
     """Query price for a specific trading pair."""
 
     # Create exchange adapter
-    exchange = XTExchange(
+    exchange = XTSpotExchange(
         api_key="your_api_key",      # Optional for public endpoints
         api_secret="your_api_secret"
     )
@@ -82,12 +82,12 @@ BTC/USDT Price:
 ### 2. Batch Ticker Query (New Feature)
 ```python
 import asyncio
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 async def get_all_tickers():
     """Query prices for ALL active markets on exchange."""
 
-    exchange = XTExchange(
+    exchange = XTSpotExchange(
         api_key="your_api_key",
         api_secret="your_api_secret"
     )
@@ -133,12 +133,12 @@ Found 15 BTC markets
 ```python
 import asyncio
 import time
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 async def measure_batch_performance():
     """Measure batch query performance."""
 
-    exchange = XTExchange()
+    exchange = XTSpotExchange()
     await exchange.connect()
 
     try:
@@ -175,14 +175,14 @@ Batch Query Performance:
 ```python
 import asyncio
 from tri_arb.config.logging import get_logger
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 logger = get_logger(__name__)
 
 async def handle_partial_failures():
     """Demonstrate partial failure handling in batch queries."""
 
-    exchange = XTExchange()
+    exchange = XTSpotExchange()
     await exchange.connect()
 
     try:
@@ -214,12 +214,12 @@ asyncio.run(handle_partial_failures())
 import asyncio
 from typing import Union, List
 from tri_arb.core.models import Price, TradingPair
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 async def type_safe_query(trading_pair: TradingPair | None):
     """Demonstrate type-safe usage with type narrowing."""
 
-    exchange = XTExchange()
+    exchange = XTSpotExchange()
     await exchange.connect()
 
     try:
@@ -326,12 +326,12 @@ prices = await exchange.get_ticker(None)
 ```python
 import asyncio
 import statistics
-from tri_arb.exchanges.xt import XTExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 async def benchmark_batch_query(iterations=10):
     """Run batch query multiple times and analyze performance."""
 
-    exchange = XTExchange()
+    exchange = XTSpotExchange()
     await exchange.connect()
 
     try:

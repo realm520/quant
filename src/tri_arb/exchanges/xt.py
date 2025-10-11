@@ -687,6 +687,11 @@ class XTExchange(BaseExchange):
             data = response.json()
             result = self._check_response(data)
 
+            # Handle XT API response format: may return dict with 'symbols' key or direct list
+            if isinstance(result, dict):
+                # Extract symbols array from dict
+                result = result.get("symbols", [])
+            
             # Result should be a list for batch query
             if not isinstance(result, list):
                 raise ValueError(f"Expected list result for batch query, got {type(result)}")
@@ -839,6 +844,10 @@ class XTExchange(BaseExchange):
         data = response.json()
         result = self._check_response(data)
 
+        # Handle XT API response format: may return dict with 'symbols' key or direct list
+        if isinstance(result, dict):
+            result = result.get("symbols", [])
+        
         if not isinstance(result, list):
             raise ValueError(f"Expected list result for batch query, got {type(result)}")
 

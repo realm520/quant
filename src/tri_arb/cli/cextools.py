@@ -388,12 +388,21 @@ def history(
             # Calculate summary
             total_buy_qty = sum(t.quantity for t in trades if t.side.value == "BUY")
             total_sell_qty = sum(t.quantity for t in trades if t.side.value == "SELL")
-            total_fee = sum(t.fee for t in trades)
+
+            # Group fees by currency
+            from collections import defaultdict
+            fees_by_currency = defaultdict(float)
+            for trade in trades:
+                fees_by_currency[trade.fee_currency] += float(trade.fee)
 
             console.print(f"\n[cyan]Summary:[/cyan]")
             console.print(f"  Total BUY:  {total_buy_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
             console.print(f"  Total SELL: {total_sell_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
-            console.print(f"  Total Fee:  {total_fee:.8f} (mixed currencies)".rstrip('0').rstrip('.'))
+
+            console.print(f"\n  [cyan]Fees by Currency:[/cyan]")
+            for currency, fee_amount in sorted(fees_by_currency.items()):
+                fee_str = f"{fee_amount:.8f}".rstrip('0').rstrip('.')
+                console.print(f"    {currency}: {fee_str}")
 
             if verbose:
                 logger.info("Trade history retrieved", trade_count=len(trades))

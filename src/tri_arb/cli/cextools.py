@@ -58,8 +58,8 @@ def main(
 
 # Command groups
 market_app = typer.Typer(help="Market data commands")
-trading_app = typer.Typer(help="Trading commands")
-account_app = typer.Typer(help="Account commands")
+trading_app = typer.Typer(help="Trading commands (planned)")
+account_app = typer.Typer(help="Account management commands")
 
 
 @market_app.command("ticker")
@@ -201,6 +201,83 @@ def orderbook(
             await exchange.disconnect()
     
     asyncio.run(fetch_orderbook())
+
+
+@account_app.command("balance")
+def balance(
+    ctx: typer.Context,
+    currency: str = typer.Option(None, "--currency", "-c", help="Specific currency (e.g., BTC, USDT). If not provided, shows all."),
+) -> None:
+    """Get account balance for all currencies or a specific currency.
+    
+    Requires API credentials set as environment variables:
+    - XT_API_KEY
+    - XT_API_SECRET
+    
+    Examples:
+        # All balances
+        cextools account balance
+        
+        # Specific currency
+        cextools account balance --currency USDT
+    """
+    import asyncio
+    from rich.table import Table
+    
+    exchange_name = ctx.obj["exchange"]
+    verbose = ctx.obj["verbose"]
+    
+    if verbose:
+        logger.info("Fetching account balance", exchange=exchange_name, currency=currency or "all")
+    
+    from tri_arb.exchanges.factory import create_exchange
+    
+    async def fetch_balance():
+        exchange = create_exchange(exchange_name)
+        
+        # Check if credentials are available
+        if not exchange.api_key or not exchange.api_secret:
+            console.print("[red]Error: API credentials not found![/red]")
+            console.print("\nPlease set environment variables:")
+            console.print(f"  export {exchange_name.upper()}_API_KEY=your_api_key")
+            console.print(f"  export {exchange_name.upper()}_API_SECRET=your_api_secret")
+            raise typer.Exit(code=1)
+        
+        try:
+            await exchange.connect()
+            
+            # Note: BaseExchange doesn't have get_balance method yet
+            # This is a placeholder showing the expected interface
+            console.print("[yellow]Note: Account balance command is under development.[/yellow]")
+            console.print("\n[cyan]Expected API:[/cyan]")
+            console.print("  exchange.get_balance(currency=None) -> dict")
+            console.print("\n[cyan]Example output:[/cyan]")
+            
+            # Create example table
+            table = Table(title="Account Balance (Example)", show_header=True)
+            table.add_column("Currency", style="cyan")
+            table.add_column("Available", style="green", justify="right")
+            table.add_column("Frozen", style="yellow", justify="right")
+            table.add_column("Total", style="white", justify="right")
+            
+            table.add_row("USDT", "1000.50000000", "0.00000000", "1000.50000000")
+            table.add_row("BTC", "0.50000000", "0.10000000", "0.60000000")
+            table.add_row("ETH", "5.25000000", "0.00000000", "5.25000000")
+            
+            console.print(table)
+            console.print("\n[yellow]This feature requires implementing get_balance() method in BaseExchange.[/yellow]")
+            
+            if verbose:
+                logger.info("Balance command executed (placeholder)")
+                
+        except Exception as e:
+            logger.error("Failed to fetch balance", error=str(e))
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+        finally:
+            await exchange.disconnect()
+    
+    asyncio.run(fetch_balance())
 
 
 # Register command groups

@@ -285,6 +285,16 @@ class XTPerpExchange(BaseExchange):
             # Parse trading pair details
             min_order_size = Decimal(str(item.get("minOrderQuantity", "0")))
             max_order_size = Decimal(str(item.get("maxOrderQuantity", "0")))
+
+            # Use default values if API returns 0 (similar to XTSpotExchange)
+            # Some symbols may have 0 values which violate TradingPair validation (gt=0)
+            if min_order_size <= 0:
+                min_order_size = Decimal("0.001")
+                logger.debug("Using default min_order_size for symbol", symbol=symbol)
+            if max_order_size <= 0:
+                max_order_size = Decimal("1000000")
+                logger.debug("Using default max_order_size for symbol", symbol=symbol)
+
             price_precision = int(item.get("pricePrecision", 8))
             quantity_precision = int(item.get("quantityPrecision", 8))
             contract_size = Decimal(str(item.get("contractSize", "1")))

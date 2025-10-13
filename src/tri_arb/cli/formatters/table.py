@@ -83,10 +83,10 @@ def format_positions_table(positions: List[Any]) -> None:
 
         table.add_row(
             pos.symbol,
-            pos.position_side,
+            pos.side,
             f"{pos.quantity:.8f}",
             f"{pos.entry_price:.2f}",
-            f"{pos.current_price:.2f}",
+            f"{pos.mark_price:.2f}",
             format_pnl(pos.unrealized_pnl),
             format_percentage(roe),
             f"{pos.leverage}x",

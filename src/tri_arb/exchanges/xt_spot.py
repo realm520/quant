@@ -647,33 +647,43 @@ class XTSpotExchange(BaseExchange):
         # Parse balance data
         balances: dict[str, dict[str, Any]] = {}
 
-        # Result is a list of balance objects: [{currency, available, locked}, ...]
-        if isinstance(result, list):
-            logger.info("Parsing balance list", item_count=len(result))
-            for item in result:
-                currency = item.get("currency", "").upper()
-                available = Decimal(str(item.get("available", "0")))
-                frozen = Decimal(str(item.get("locked", "0")))
-                total = available + frozen
-
-                logger.info(
-                    "Processing balance item",
-                    currency=currency,
-                    available=str(available),
-                    frozen=str(frozen),
-                    total=str(total),
-                    will_include=total > 0
-                )
-
-                # Only include non-zero balances
-                if total > 0:
-                    balances[currency] = {
-                        "available": available,
-                        "frozen": frozen,
-                        "total": total,
-                    }
+        # Extract assets array from result
+        # XT API returns: {totalUsdtAmount, totalBtcAmount, assets: [...]}
+        if isinstance(result, dict):
+            assets = result.get("assets", [])
+            logger.info("Extracted assets from result dict", asset_count=len(assets))
+        elif isinstance(result, list):
+            # Direct array response (fallback)
+            assets = result
+            logger.info("Using result as direct array", asset_count=len(assets))
         else:
-            logger.warning("Result is not a list", result_type=type(result).__name__, result=result)
+            logger.error("Unexpected result type", result_type=type(result).__name__)
+            return balances
+
+        # Parse each asset: {currency, availableAmount, frozenAmount, ...}
+        for item in assets:
+            currency = item.get("currency", "").upper()
+            # XT uses 'availableAmount' and 'frozenAmount' (not 'available' and 'locked')
+            available = Decimal(str(item.get("availableAmount", "0")))
+            frozen = Decimal(str(item.get("frozenAmount", "0")))
+            total = available + frozen
+
+            logger.info(
+                "Processing balance item",
+                currency=currency,
+                available=str(available),
+                frozen=str(frozen),
+                total=str(total),
+                will_include=total > 0
+            )
+
+            # Only include non-zero balances
+            if total > 0:
+                balances[currency] = {
+                    "available": available,
+                    "frozen": frozen,
+                    "total": total,
+                }
 
         logger.info("Account balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances

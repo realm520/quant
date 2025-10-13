@@ -938,7 +938,7 @@ class XTPerpExchange(BaseExchange):
             for item in data:
                 symbol_str = item.get("symbol", "")
                 side = item.get("positionSide", "LONG")
-                quantity = Decimal(str(item.get("positionAmt", "0")))
+                quantity = Decimal(str(item.get("positionSize", "0")))
 
                 # Log every position item (including zero quantity)
                 logger.info(

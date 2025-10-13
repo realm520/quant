@@ -51,7 +51,7 @@ def main(
     ctx.ensure_object(dict)
     ctx.obj["exchange"] = exchange
     ctx.obj["verbose"] = verbose
-    
+
     if verbose:
         logger.info("CEX Tools initialized", exchange=exchange)
 
@@ -73,33 +73,32 @@ def ticker(
         cextools market ticker BTC/USDT
     """
     import asyncio
-    from decimal import Decimal
     from rich.table import Table
-    
+
     exchange_name = ctx.obj["exchange"]
     verbose = ctx.obj["verbose"]
-    
+
     if verbose:
         logger.info("Fetching ticker", exchange=exchange_name, symbol=symbol)
-    
+
     # Import exchange factory
     from tri_arb.exchanges.factory import create_exchange
-    
+
     async def fetch_ticker():
         # Create exchange instance
         exchange = create_exchange(exchange_name)
-        
+
         try:
             await exchange.connect()
-            
+
             # Use helper method to get ticker by symbol string
             price = await exchange.get_ticker_by_symbol(symbol)
-            
+
             # Create rich table for output
             table = Table(title=f"Ticker: {symbol}", show_header=True)
             table.add_column("Field", style="cyan")
             table.add_column("Value", style="green")
-            
+
             table.add_row("Exchange", exchange_name.upper())
             table.add_row("Symbol", symbol)
             table.add_row("Bid Price", f"{price.bid_price:.8f}")
@@ -110,19 +109,19 @@ def ticker(
             table.add_row("Bid Volume", f"{price.bid_volume:.8f}")
             table.add_row("Ask Volume", f"{price.ask_volume:.8f}")
             table.add_row("Timestamp", str(price.timestamp))
-            
+
             console.print(table)
-            
+
             if verbose:
                 logger.info("Ticker fetched successfully", symbol=symbol)
-                
+
         except Exception as e:
             logger.error("Failed to fetch ticker", error=str(e), symbol=symbol)
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
         finally:
             await exchange.disconnect()
-    
+
     # Run async function
     asyncio.run(fetch_ticker())
 
@@ -140,44 +139,44 @@ def orderbook(
     """
     import asyncio
     from rich.table import Table
-    
+
     exchange_name = ctx.obj["exchange"]
     verbose = ctx.obj["verbose"]
-    
+
     if verbose:
         logger.info("Fetching orderbook", exchange=exchange_name, symbol=symbol, depth=depth)
-    
+
     from tri_arb.exchanges.factory import create_exchange
-    
+
     async def fetch_orderbook():
         exchange = create_exchange(exchange_name)
-        
+
         try:
             await exchange.connect()
-            
+
             # Use helper method
             orderbook = await exchange.get_orderbook_by_symbol(symbol, depth)
-            
+
             # Create table for bids and asks
             table = Table(title=f"Order Book: {symbol}", show_header=True)
             table.add_column("Bid Price", style="green", justify="right")
             table.add_column("Bid Qty", style="green", justify="right")
             table.add_column("Ask Price", style="red", justify="right")
             table.add_column("Ask Qty", style="red", justify="right")
-            
+
             # Show top depth levels
             max_rows = min(depth, len(orderbook.bids), len(orderbook.asks))
-            
+
             for i in range(max_rows):
                 bid_price = f"{orderbook.bids[i][0]:.8f}" if i < len(orderbook.bids) else ""
                 bid_qty = f"{orderbook.bids[i][1]:.8f}" if i < len(orderbook.bids) else ""
                 ask_price = f"{orderbook.asks[i][0]:.8f}" if i < len(orderbook.asks) else ""
                 ask_qty = f"{orderbook.asks[i][1]:.8f}" if i < len(orderbook.asks) else ""
-                
+
                 table.add_row(bid_price, bid_qty, ask_price, ask_qty)
-            
+
             console.print(table)
-            
+
             # Show summary
             if orderbook.bids and orderbook.asks:
                 best_bid = orderbook.bids[0][0]
@@ -185,21 +184,21 @@ def orderbook(
                 spread = best_ask - best_bid
                 mid_price = (best_bid + best_ask) / 2
                 spread_pct = (spread / mid_price) * 100
-                
+
                 console.print(f"\n[cyan]Best Bid:[/cyan] {best_bid:.8f}")
                 console.print(f"[cyan]Best Ask:[/cyan] {best_ask:.8f}")
                 console.print(f"[cyan]Spread:[/cyan] {spread:.8f} ({spread_pct:.4f}%)")
-            
+
             if verbose:
                 logger.info("Orderbook fetched successfully", symbol=symbol)
-                
+
         except Exception as e:
             logger.error("Failed to fetch orderbook", error=str(e), symbol=symbol)
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
         finally:
             await exchange.disconnect()
-    
+
     asyncio.run(fetch_orderbook())
 
 
@@ -223,18 +222,18 @@ def balance(
     """
     import asyncio
     from rich.table import Table
-    
+
     exchange_name = ctx.obj["exchange"]
     verbose = ctx.obj["verbose"]
-    
+
     if verbose:
         logger.info("Fetching account balance", exchange=exchange_name, currency=currency or "all")
-    
+
     from tri_arb.exchanges.factory import create_exchange
-    
+
     async def fetch_balance():
         exchange = create_exchange(exchange_name)
-        
+
         # Check if credentials are available
         if not exchange.api_key or not exchange.api_secret:
             console.print("[red]Error: API credentials not found![/red]")
@@ -242,41 +241,41 @@ def balance(
             console.print(f"  export {exchange_name.upper()}_API_KEY=your_api_key")
             console.print(f"  export {exchange_name.upper()}_API_SECRET=your_api_secret")
             raise typer.Exit(code=1)
-        
+
         try:
             await exchange.connect()
-            
+
             # Note: BaseExchange doesn't have get_balance method yet
             # This is a placeholder showing the expected interface
             console.print("[yellow]Note: Account balance command is under development.[/yellow]")
             console.print("\n[cyan]Expected API:[/cyan]")
             console.print("  exchange.get_balance(currency=None) -> dict")
             console.print("\n[cyan]Example output:[/cyan]")
-            
+
             # Create example table
             table = Table(title="Account Balance (Example)", show_header=True)
             table.add_column("Currency", style="cyan")
             table.add_column("Available", style="green", justify="right")
             table.add_column("Frozen", style="yellow", justify="right")
             table.add_column("Total", style="white", justify="right")
-            
+
             table.add_row("USDT", "1000.50000000", "0.00000000", "1000.50000000")
             table.add_row("BTC", "0.50000000", "0.10000000", "0.60000000")
             table.add_row("ETH", "5.25000000", "0.00000000", "5.25000000")
-            
+
             console.print(table)
             console.print("\n[yellow]This feature requires implementing get_balance() method in BaseExchange.[/yellow]")
-            
+
             if verbose:
                 logger.info("Balance command executed (placeholder)")
-                
+
         except Exception as e:
             logger.error("Failed to fetch balance", error=str(e))
             console.print(f"[red]Error: {e}[/red]")
             raise typer.Exit(code=1)
         finally:
             await exchange.disconnect()
-    
+
     asyncio.run(fetch_balance())
 
 
@@ -308,7 +307,6 @@ def history(
     """
     import asyncio
     from rich.table import Table
-    from datetime import datetime
 
     exchange_name = ctx.obj["exchange"]
     verbose = ctx.obj["verbose"]

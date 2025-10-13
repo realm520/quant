@@ -75,11 +75,20 @@ class XTPerpExchange(BaseExchange):
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
-        # Load trading pairs (cache for performance)
-        await self._load_trading_pairs()
-
+        # Mark as connected immediately after client creation
+        # This allows API calls to work even if trading pair loading fails
         self.is_connected = True
-        logger.info("Connected to XT perpetual futures exchange")
+
+        # Load trading pairs (cache for performance)
+        try:
+            await self._load_trading_pairs()
+            logger.info("Connected to XT perpetual futures exchange", pairs_loaded=len(self._trading_pairs))
+        except Exception as e:
+            logger.warning(
+                "Failed to load trading pairs, but connection is still usable",
+                error=str(e),
+                error_type=type(e).__name__
+            )
 
     async def disconnect(self) -> None:
         """Close connection to XT perpetual futures exchange."""

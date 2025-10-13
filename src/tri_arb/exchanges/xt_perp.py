@@ -918,16 +918,23 @@ class XTPerpExchange(BaseExchange):
                 symbol_str = item.get("symbol", "")
                 side = item.get("positionSide", "LONG")
                 quantity = Decimal(str(item.get("positionAmt", "0")))
+
+                # Skip closed positions (quantity = 0)
+                # API may return historical positions with zero quantity
+                if quantity <= 0:
+                    logger.debug("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
+                    continue
+
                 entry_price = Decimal(str(item.get("entryPrice", "0")))
                 mark_price = Decimal(str(item.get("markPrice", "0")))
                 liquidation_price = Decimal(str(item.get("liquidationPrice", "0")))
                 unrealized_pnl = Decimal(str(item.get("unrealizedProfit", "0")))
                 leverage_val = int(item.get("leverage", 1))
                 margin = Decimal(str(item.get("isolatedMargin", "0")))
-                
+
                 # Calculate ROE (Return on Equity)
                 roe = (unrealized_pnl / margin * Decimal("100")) if margin > 0 else Decimal("0")
-                
+
                 position = Position(
                     symbol=symbol_str,
                     side=side,

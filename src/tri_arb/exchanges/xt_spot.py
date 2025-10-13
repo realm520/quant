@@ -624,8 +624,13 @@ class XTSpotExchange(BaseExchange):
 
         data = response.json()
 
-        # Debug: Log raw API response
-        logger.debug("Raw balance API response", data=data)
+        # Debug: Log raw API response (using info to ensure visibility)
+        logger.info(
+            "Raw balance API response",
+            response_type=type(data).__name__,
+            is_list=isinstance(data, list),
+            sample_data=str(data)[:500] if data else "empty"
+        )
 
         # Handle two possible response formats:
         # 1. Standard XT format: {rc: 0, result: [...]}
@@ -633,20 +638,32 @@ class XTSpotExchange(BaseExchange):
         if isinstance(data, list):
             # Direct array response
             result = data
+            logger.info("Using direct array response format", item_count=len(data))
         else:
             # Standard XT response with rc/result wrapper
             result = self._check_response(data)
+            logger.info("Using standard XT response format", result_type=type(result).__name__)
 
         # Parse balance data
         balances: dict[str, dict[str, Any]] = {}
 
         # Result is a list of balance objects: [{currency, available, locked}, ...]
         if isinstance(result, list):
+            logger.info("Parsing balance list", item_count=len(result))
             for item in result:
                 currency = item.get("currency", "").upper()
                 available = Decimal(str(item.get("available", "0")))
                 frozen = Decimal(str(item.get("locked", "0")))
                 total = available + frozen
+
+                logger.info(
+                    "Processing balance item",
+                    currency=currency,
+                    available=str(available),
+                    frozen=str(frozen),
+                    total=str(total),
+                    will_include=total > 0
+                )
 
                 # Only include non-zero balances
                 if total > 0:
@@ -655,8 +672,10 @@ class XTSpotExchange(BaseExchange):
                         "frozen": frozen,
                         "total": total,
                     }
+        else:
+            logger.warning("Result is not a list", result_type=type(result).__name__, result=result)
 
-        logger.debug("Account balance retrieved", currency_count=len(balances))
+        logger.info("Account balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances
 
     async def subscribe_ticker(  # type: ignore[override, misc]

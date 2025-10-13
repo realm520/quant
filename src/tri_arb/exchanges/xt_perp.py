@@ -854,13 +854,19 @@ class XTPerpExchange(BaseExchange):
             return balances
 
         # Parse each balance item
+        # XT perp API uses different field names:
+        # - coin (not currency)
+        # - amount (available balance)
+        # - openOrderMarginFrozen (frozen balance)
         for item in items:
-            currency = item.get("currency", "")
+            currency = item.get("coin", "").upper()
             if not currency:
                 continue
 
-            available = Decimal(str(item.get("available", "0")))
-            frozen = Decimal(str(item.get("frozen", "0")))
+            # Use 'amount' for available balance
+            available = Decimal(str(item.get("amount", "0")))
+            # Use 'openOrderMarginFrozen' for frozen balance
+            frozen = Decimal(str(item.get("openOrderMarginFrozen", "0")))
             total = available + frozen
 
             logger.info(
@@ -872,12 +878,13 @@ class XTPerpExchange(BaseExchange):
                 will_include=total > 0
             )
 
-            # Include all balances (including zero) for consistency
-            balances[currency] = {
-                "available": available,
-                "frozen": frozen,
-                "total": total,
-            }
+            # Only include non-zero balances
+            if total > 0:
+                balances[currency] = {
+                    "available": available,
+                    "frozen": frozen,
+                    "total": total,
+                }
 
         logger.info("Perp balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances

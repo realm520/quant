@@ -156,14 +156,11 @@ def positions(
         async def get_positions():
             await exchange.connect()
             try:
-                if symbol:
-                    # 获取特定交易对的持仓
-                    position_data = await exchange.get_position(symbol)
-                    return [position_data] if position_data else []
-                else:
-                    # 获取所有持仓
-                    positions_data = await exchange.get_all_positions()
-                    return positions_data
+                # get_positions() supports both:
+                # - symbol=None: get all positions
+                # - symbol="btc_usdt": get specific position
+                positions_data = await exchange.get_positions(symbol)
+                return positions_data
             finally:
                 await exchange.disconnect()
 

@@ -803,27 +803,59 @@ class XTPerpExchange(BaseExchange):
 
         path = "/future/user/v1/balance/detail"
         data = await self._request("GET", path, params=None, body=None, require_auth=True)
-        
-        # Parse balance response
-        # Expected format: [{"currency": "USDT", "available": "1000.0", "frozen": "100.0"}, ...]
-        balances: dict[str, dict[str, Decimal]] = {}
-        
-        if isinstance(data, list):
-            for item in data:
-                currency = item.get("currency", "")
-                if not currency:
-                    continue
-                
-                available = Decimal(str(item.get("available", "0")))
-                frozen = Decimal(str(item.get("frozen", "0")))
-                total = available + frozen
 
-                balances[currency] = {
-                    "available": available,
-                    "frozen": frozen,
-                    "total": total,
-                }
-        
+        # Debug: Log raw API response
+        logger.info(
+            "Raw balance API response (perp)",
+            response_type=type(data).__name__,
+            is_list=isinstance(data, list),
+            sample_data=str(data)[:500] if data else "empty"
+        )
+
+        # Parse balance response
+        # Handle two possible formats:
+        # 1. Direct list: [{"currency": "USDT", "available": "1000.0", "frozen": "100.0"}, ...]
+        # 2. Dict with data field: {"data": [...]}
+        balances: dict[str, dict[str, Decimal]] = {}
+
+        # Extract balance items
+        if isinstance(data, list):
+            items = data
+            logger.info("Using direct list format (perp)", item_count=len(items))
+        elif isinstance(data, dict):
+            items = data.get("data", [])
+            logger.info("Extracting from dict format (perp)", item_count=len(items))
+        else:
+            logger.error("Unexpected perp balance response type", response_type=type(data).__name__)
+            return balances
+
+        # Parse each balance item
+        for item in items:
+            currency = item.get("currency", "")
+            if not currency:
+                continue
+
+            available = Decimal(str(item.get("available", "0")))
+            frozen = Decimal(str(item.get("frozen", "0")))
+            total = available + frozen
+
+            logger.info(
+                "Processing perp balance item",
+                currency=currency,
+                available=str(available),
+                frozen=str(frozen),
+                total=str(total),
+                will_include=total > 0
+            )
+
+            # Include all balances (including zero) for consistency
+            balances[currency] = {
+                "available": available,
+                "frozen": frozen,
+                "total": total,
+            }
+
+        logger.info("Perp balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances
 
     async def get_positions(self, symbol: str | None = None) -> list[Position]:

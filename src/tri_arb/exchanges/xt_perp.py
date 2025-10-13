@@ -918,21 +918,43 @@ class XTPerpExchange(BaseExchange):
         path = "/future/user/v1/position/list"
         params = {"symbol": symbol} if symbol else None
         data = await self._request("GET", path, params=params, body=None, require_auth=True)
-        
+
+        # Debug: Log raw API response
+        logger.info(
+            "Raw positions API response",
+            response_type=type(data).__name__,
+            is_list=isinstance(data, list),
+            item_count=len(data) if isinstance(data, list) else "N/A",
+            sample_data=str(data)[:500] if data else "empty"
+        )
+
         # Parse positions response
         # Expected format: [{"symbol": "btc_usdt", "positionSide": "LONG", "positionAmt": "0.5", ...}]
         positions: list[Position] = []
-        
+
         if isinstance(data, list):
+            logger.info("Parsing positions list", total_items=len(data))
+
             for item in data:
                 symbol_str = item.get("symbol", "")
                 side = item.get("positionSide", "LONG")
                 quantity = Decimal(str(item.get("positionAmt", "0")))
 
+                # Log every position item (including zero quantity)
+                logger.info(
+                    "Processing position item",
+                    symbol=symbol_str,
+                    side=side,
+                    quantity=str(quantity),
+                    entry_price=str(item.get("entryPrice", "0")),
+                    unrealized_pnl=str(item.get("unrealizedProfit", "0")),
+                    will_skip=(quantity <= 0)
+                )
+
                 # Skip closed positions (quantity = 0)
                 # API may return historical positions with zero quantity
                 if quantity <= 0:
-                    logger.debug("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
+                    logger.info("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
                     continue
 
                 entry_price = Decimal(str(item.get("entryPrice", "0")))
@@ -958,7 +980,20 @@ class XTPerpExchange(BaseExchange):
                     roe=roe,
                 )
                 positions.append(position)
-        
+        else:
+            logger.warning(
+                "Unexpected positions response format",
+                response_type=type(data).__name__,
+                data=data
+            )
+
+        logger.info(
+            "Positions query completed",
+            total_api_items=len(data) if isinstance(data, list) else 0,
+            valid_positions=len(positions),
+            position_symbols=[p.symbol for p in positions]
+        )
+
         return positions
 
     async def get_funding_rate(self, symbol: str) -> FundingRate:

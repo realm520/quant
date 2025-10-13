@@ -202,11 +202,16 @@ class XTPerpExchange(BaseExchange):
             data = response.json()
 
             # Check XT API response code
-            if data.get("rc") != 0:
+            # Note: Some endpoints return rc=0, some return rc=null, some omit rc entirely
+            # Only treat as error if rc is explicitly non-zero (not null/None)
+            rc = data.get("rc")
+            if rc is not None and rc != 0:
                 error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else "Unknown error"
-                raise ValueError(f"XT API error (code {data.get('rc')}): {error_msg}")
+                raise ValueError(f"XT API error (code {rc}): {error_msg}")
 
-            return data.get("result", {})
+            # Return result field if present, otherwise return entire data
+            # Some endpoints return data directly without wrapping in "result"
+            return data.get("result", data.get("data", data))
 
         except httpx.HTTPError as e:
             logger.error(

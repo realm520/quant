@@ -10,6 +10,10 @@ Auto-generated from all feature plans. Last updated: 2025-10-05
 - N/A (无持久化，仅内存计算和实时输出) (004-xt-get-ticker)
 - Python 3.11+ (已确定,项目要求) + httpx (async HTTP), pydantic (validation), structlog (logging), pytest (testing) (007-xtexhcnage-xtspotexchange-xt)
 - N/A (无存储变更) (007-xtexhcnage-xtspotexchange-xt)
+- Python 3.11+ + httpx (async HTTP, connection pooling), pydantic (data validation), tenacity (retry logic), pytest + pytest-asyncio + respx (testing) (008-xt-perp-api)
+- N/A (无持久化需求，仅内存管理持仓和订单状态) (008-xt-perp-api)
+- Python 3.11+ (项目标准) + yper (CLI框架), rich (终端UI), httpx (已有), pydantic (已有), structlog (已有) (009-xt-perp-api)
+- N/A (无状态CLI工具) (009-xt-perp-api)
 
 ## Project Structure
 ```
@@ -24,9 +28,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11+ (required for performance improvements and modern typing features): Follow standard conventions
 
 ## Recent Changes
+- 009-xt-perp-api: Added Python 3.11+ (项目标准) + yper (CLI框架), rich (终端UI), httpx (已有), pydantic (已有), structlog (已有)
+- 008-xt-perp-api: Added XT perpetual futures integration - XTPerpExchange adapter with position management, leverage control, funding rate tracking, dual-direction trading (LONG/SHORT), plan orders (stop-profit/stop-loss), extended data models (Position, FundingRate, LeverageBracket), performance target <50ms p95 order submission
 - 007-xtexhcnage-xtspotexchange-xt: Added Python 3.11+ (已确定,项目要求) + httpx (async HTTP), pydantic (validation), structlog (logging), pytest (testing)
-- 005-usdt: Added automated arbitrage execution - ArbitrageExecutor engine with market order execution, sequential trade execution (USDT-only account), session ID tracking (UUID), profit/loss calculation, 10 USDT minimum initial amount, 30s order timeout with 0.5s polling, integrated into monitor command with --execute and --dry-run flags
-- 004-xt-get-ticker: Added Python 3.11+ (required for performance and modern typing) + httpx (async HTTP), pydantic (validation), structlog (logging), colorama/rich (彩色输出), typer (CLI), asyncio (异步)
 
 <!-- MANUAL ADDITIONS START -->
 ## XT Exchange Integration (Feature 002)
@@ -110,6 +114,96 @@ ruff check src/tri_arb/exchanges/xt_spot.py
 black src/tri_arb/exchanges/xt_spot.py
 ```
 <!-- MANUAL ADDITIONS END -->
+
+## XT Perpetual Futures Integration (Feature 008)
+
+### Technical Stack
+- **HTTP Client**: httpx (async, connection pooling, HTTP/2 support)
+- **Authentication**: HMAC-SHA256 signature (same as spot, different base URL)
+- **Base URL**: `https://fapi.xt.com` (vs `https://sapi.xt.com` for spot)
+- **Retry Logic**: tenacity (exponential backoff for network errors)
+- **Testing**: pytest + pytest-asyncio + respx (httpx mocking)
+
+### Key Files
+- `src/tri_arb/exchanges/xt_perp.py` - XTPerpExchange adapter (NOT YET IMPLEMENTED)
+- `tests/unit/test_exchanges/test_xt_perp_contract.py` - Contract tests (MUST FAIL until implementation)
+- `tests/integration/test_xt_perp_integration.py` - Integration tests (requires XT_PERP_API_KEY, XT_PERP_API_SECRET)
+- `specs/008-xt-perp-api/` - Design documents (research.md, data-model.md, contracts/, quickstart.md)
+
+### Architecture Patterns
+- **Async/await**: All I/O operations use async pattern for performance
+- **Connection pooling**: httpx.AsyncClient with max_connections=100, max_keepalive=20
+- **Dual-direction trading**: Position side (LONG/SHORT) + Order side (BUY/SELL)
+- **Position tracking**: In-memory position management with real-time updates
+- **Leverage management**: Per-symbol leverage configuration (1-125x)
+- **Funding rate tracking**: Periodic funding rate queries for cost calculation
+- **Error handling**: Retry transient errors (timeout, network), fail fast on auth/validation errors
+
+### Data Model Extensions
+- **TradingPair**: Added `leverage_brackets`, `contract_size`, `contract_type`
+- **Order**: Added `position_side`, `time_in_force`, `trade_action` property
+- **Position** (NEW): `symbol`, `side`, `quantity`, `entry_price`, `unrealized_pnl`, `leverage`, `liquidation_price`, `margin`, `roe`
+- **FundingRate** (NEW): `symbol`, `rate`, `next_funding_time`
+- **LeverageBracket** (NEW): `min_notional`, `max_notional`, `max_leverage`
+- **PlanOrder** (NEW): Conditional orders (stop-profit, stop-loss)
+- **StopProfit** (NEW): Take-profit configuration
+
+### Performance Requirements (NON-NEGOTIABLE)
+- Order execution: <50ms p95 (from signal to order submission)
+- Position query: <100ms p95 (from request to response)
+- Price processing: <10ms p95 (parsing only, not network)
+- Funding rate query: <2 seconds (including network)
+
+### Security Considerations
+- API credentials NEVER logged or exposed in error messages
+- Signature generation uses millisecond timestamp (5-second window)
+- All API calls use HTTPS with certificate verification
+- Input validation at system boundaries (leverage limits, position sizes)
+- Liquidation price monitoring to prevent forced closure
+
+### Trading Logic
+- **Open Long**: `BUY` + `LONG` position_side
+- **Open Short**: `SELL` + `SHORT` position_side
+- **Close Long**: `SELL` + `LONG` position_side
+- **Close Short**: `BUY` + `SHORT` position_side
+- **Trade Action Property**: Auto-derives intent (OPEN_LONG, CLOSE_SHORT, etc.)
+
+### Testing Strategy
+1. **Contract tests** (Priority 1): Verify BaseExchange interface compliance + perpetual-specific methods
+2. **Unit tests** (Priority 2): Test position tracking, leverage validation, funding rate calculations
+3. **Integration tests** (Priority 3): Real XT perpetual API calls (requires credentials, marked @pytest.mark.integration)
+4. **Performance tests** (Priority 4): Benchmark latency targets (use pytest-benchmark)
+
+### Common Pitfalls
+- **Position Side Confusion**: Must specify both `side` (BUY/SELL) and `position_side` (LONG/SHORT)
+- **Leverage Limits**: Different symbols have different max leverage based on notional value
+- **Funding Rate Timing**: Charged every 8 hours, can significantly impact P&L for long-held positions
+- **Liquidation Risk**: High leverage increases liquidation risk, monitor `liquidation_price` closely
+- **Margin Requirements**: Initial margin vs maintenance margin, understand the difference
+- **Position Quantity**: Always in base currency (BTC for BTC/USDT), not quote currency
+
+### Quick Commands
+```bash
+# Run XT perpetual contract tests (will fail until XTPerpExchange implemented)
+uv run pytest tests/unit/test_exchanges/test_xt_perp_contract.py -v
+
+# Run XT perpetual integration tests (requires credentials)
+export XT_PERP_API_KEY=your_key
+export XT_PERP_API_SECRET=your_secret
+uv run pytest tests/integration/test_xt_perp_integration.py --run-integration -v
+
+# Type check XT perpetual adapter
+mypy src/tri_arb/exchanges/xt_perp.py --strict
+
+# Lint XT perpetual adapter
+ruff check src/tri_arb/exchanges/xt_perp.py
+
+# Format XT perpetual adapter
+black src/tri_arb/exchanges/xt_perp.py
+
+# Test with quickstart example
+uv run python examples/xt_perp_quickstart.py
+```
 
 ## Automated Arbitrage Execution (Feature 005)
 

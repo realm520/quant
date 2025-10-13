@@ -76,7 +76,7 @@ def ticker(
             await exchange.connect()
             try:
                 if symbol:
-                    ticker_data = await exchange.get_ticker(symbol)
+                    ticker_data = await exchange.get_ticker_by_symbol(symbol)
                     return [ticker_data] if ticker_data else []
                 else:
                     tickers_data = await exchange.get_all_tickers()

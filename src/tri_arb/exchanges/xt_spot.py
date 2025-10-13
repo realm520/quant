@@ -623,7 +623,19 @@ class XTSpotExchange(BaseExchange):
         )
 
         data = response.json()
-        result = self._check_response(data)
+
+        # Debug: Log raw API response
+        logger.debug("Raw balance API response", data=data)
+
+        # Handle two possible response formats:
+        # 1. Standard XT format: {rc: 0, result: [...]}
+        # 2. Direct array: [...]
+        if isinstance(data, list):
+            # Direct array response
+            result = data
+        else:
+            # Standard XT response with rc/result wrapper
+            result = self._check_response(data)
 
         # Parse balance data
         balances: dict[str, dict[str, Any]] = {}

@@ -185,6 +185,45 @@ class BaseExchange(ABC):
         pass
 
     @abstractmethod
+    async def get_balance(self) -> dict[str, dict[str, Any]]:
+        """Get account balances for all assets.
+
+        Retrieves current balance information including available, frozen,
+        and total amounts for each currency in the account.
+
+        Returns:
+            Dictionary mapping currency code to balance details:
+            {
+                "BTC": {
+                    "available": Decimal("1.5"),    # Available for trading
+                    "frozen": Decimal("0.5"),       # Locked in orders
+                    "total": Decimal("2.0")         # Total balance
+                },
+                "USDT": {
+                    "available": Decimal("50000.0"),
+                    "frozen": Decimal("10000.0"),
+                    "total": Decimal("60000.0")
+                }
+            }
+
+        Raises:
+            ExchangeConnectionError: If exchange is not connected
+            AuthenticationError: If API credentials are invalid
+
+        Note:
+            - Currency codes are uppercase (BTC, USDT, ETH, etc.)
+            - All amounts are Decimal type for precision
+            - Implementations may filter out zero balances
+            - total = available + frozen
+
+        Examples:
+            >>> balances = await exchange.get_balance()
+            >>> btc_available = balances["BTC"]["available"]
+            >>> print(f"Available BTC: {btc_available}")
+        """
+        pass
+
+    @abstractmethod
     async def subscribe_ticker(
         self, trading_pair: TradingPair
     ) -> AsyncIterator[Price]:

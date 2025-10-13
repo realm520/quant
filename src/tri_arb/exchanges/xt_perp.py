@@ -768,8 +768,16 @@ class XTPerpExchange(BaseExchange):
         Returns:
             Dictionary with balance information:
             {
-                "USDT": {"available": Decimal("1000.0"), "frozen": Decimal("100.0")},
-                "BTC": {"available": Decimal("0.5"), "frozen": Decimal("0.1")},
+                "USDT": {
+                    "available": Decimal("1000.0"),
+                    "frozen": Decimal("100.0"),
+                    "total": Decimal("1100.0")
+                },
+                "BTC": {
+                    "available": Decimal("0.5"),
+                    "frozen": Decimal("0.1"),
+                    "total": Decimal("0.6")
+                },
                 ...
             }
 
@@ -794,10 +802,12 @@ class XTPerpExchange(BaseExchange):
                 
                 available = Decimal(str(item.get("available", "0")))
                 frozen = Decimal(str(item.get("frozen", "0")))
-                
+                total = available + frozen
+
                 balances[currency] = {
                     "available": available,
                     "frozen": frozen,
+                    "total": total,
                 }
         
         return balances

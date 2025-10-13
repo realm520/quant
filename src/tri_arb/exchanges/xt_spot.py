@@ -596,6 +596,57 @@ class XTSpotExchange(BaseExchange):
 
         return trades
 
+    async def get_balance(self) -> dict[str, dict[str, Any]]:
+        """Get account balances for all assets.
+
+        Returns:
+            Dictionary mapping currency code to balance details:
+            {
+                "BTC": {
+                    "available": Decimal("1.5"),
+                    "frozen": Decimal("0.5"),
+                    "total": Decimal("2.0")
+                },
+                ...
+            }
+
+        Raises:
+            ValueError: If not connected or missing credentials
+            httpx.HTTPStatusError: If API request fails
+        """
+        self._require_credentials()
+
+        response = await self._request(
+            method="GET",
+            path=f"/{self.API_VERSION}/balances",
+            authenticated=True,
+        )
+
+        data = response.json()
+        result = self._check_response(data)
+
+        # Parse balance data
+        balances: dict[str, dict[str, Any]] = {}
+
+        # Result is a list of balance objects: [{currency, available, locked}, ...]
+        if isinstance(result, list):
+            for item in result:
+                currency = item.get("currency", "").upper()
+                available = Decimal(str(item.get("available", "0")))
+                frozen = Decimal(str(item.get("locked", "0")))
+                total = available + frozen
+
+                # Only include non-zero balances
+                if total > 0:
+                    balances[currency] = {
+                        "available": available,
+                        "frozen": frozen,
+                        "total": total,
+                    }
+
+        logger.debug("Account balance retrieved", currency_count=len(balances))
+        return balances
+
     async def subscribe_ticker(  # type: ignore[override, misc]
         self, trading_pair: TradingPair
     ) -> AsyncIterator[Price]:

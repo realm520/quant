@@ -94,15 +94,27 @@ Python 3.11+ (required for performance improvements and modern typing features):
 - **Decimal precision**: Always use `Decimal` type, never float for money/quantities
 - **Cache usage**: `get_trading_pair_info()` uses cache-first strategy, refresh cache via `refresh_trading_pairs()` if needed
 
+### Implemented Features
+- ✅ **get_balance()** - Account balance query (T017)
+  - Endpoint: `GET /v4/balances`
+  - Returns: `dict[str, dict[str, Decimal]]` with available, frozen, and total amounts
+  - Filters out zero balances automatically
+  - Requires authentication
+
 ### Quick Commands
 ```bash
-# Run XT contract tests (will fail until XTSpotExchange implemented)
+# Run XT contract tests
 pytest tests/unit/test_exchanges/test_xt_contract.py -v
 
 # Run XT integration tests (requires credentials)
 export XT_API_KEY=your_key
 export XT_API_SECRET=your_secret
 pytest tests/integration/test_xt_integration.py --run-integration -v
+
+# Test balance command via CLI
+export XT_API_KEY=your_key
+export XT_API_SECRET=your_secret
+cextools account balance --exchange-type spot
 
 # Type check XT adapter
 mypy src/tri_arb/exchanges/xt_spot.py --strict

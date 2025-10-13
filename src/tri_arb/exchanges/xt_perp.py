@@ -393,18 +393,30 @@ class XTPerpExchange(BaseExchange):
                         )
                     
                     # Parse ticker data
-                    last_price = Decimal(str(item.get("c", "0")))  # close/last price
-                    bid_price = Decimal(str(item.get("b", "0")))   # bid price
-                    ask_price = Decimal(str(item.get("a", "0")))   # ask price
-                    volume = Decimal(str(item.get("v", "0")))      # 24h volume
+                    bid_price = Decimal(str(item.get("b", "0")))
+                    ask_price = Decimal(str(item.get("a", "0")))
+                    # Try to get bid/ask volumes, default to 0 if not available
+                    bid_volume = Decimal(str(item.get("bv", "0")))
+                    ask_volume = Decimal(str(item.get("av", "0")))
+                    
+                    # Skip invalid tickers (price must be > 0)
+                    if bid_price <= 0 or ask_price <= 0:
+                        logger.debug(
+                            "Skipping invalid ticker",
+                            symbol=symbol_str,
+                            bid=str(bid_price),
+                            ask=str(ask_price)
+                        )
+                        continue
                     
                     price = Price(
                         trading_pair=pair,
                         bid_price=bid_price,
                         ask_price=ask_price,
-                        last_price=last_price,
-                        volume_24h=volume,
+                        bid_volume=bid_volume,
+                        ask_volume=ask_volume,
                         timestamp=datetime.utcnow(),
+                        exchange="xt_perp",
                     )
                     tickers.append(price)
             
@@ -418,20 +430,40 @@ class XTPerpExchange(BaseExchange):
             params = {"symbol": symbol}
             data = await self._request("GET", path, params=params, body=None, require_auth=False)
             
+            # Debug: Log raw API response to verify field names
+            logger.info(
+                "Raw ticker API response (single)",
+                symbol=symbol,
+                response_data=str(data)[:500] if data else "empty"
+            )
+            
             # Parse single ticker response
-            # Expected format: {"s": "btc_usdt", "c": "50000", "b": "49990", "a": "50010", "v": "1234.56", ...}
-            last_price = Decimal(str(data.get("c", "0")))
+            # XT perp API ticker fields:
+            # - b: bid price
+            # - a: ask price  
+            # - bv: bid volume (if available)
+            # - av: ask volume (if available)
             bid_price = Decimal(str(data.get("b", "0")))
             ask_price = Decimal(str(data.get("a", "0")))
-            volume = Decimal(str(data.get("v", "0")))
+            # Try to get bid/ask volumes, default to 0 if not available
+            bid_volume = Decimal(str(data.get("bv", "0")))
+            ask_volume = Decimal(str(data.get("av", "0")))
+            
+            # Validate prices (must be > 0)
+            if bid_price <= 0 or ask_price <= 0:
+                raise ValueError(
+                    f"Invalid ticker data for {trading_pair.base_currency}/"
+                    f"{trading_pair.quote_currency}: bid={bid_price}, ask={ask_price}"
+                )
             
             price = Price(
                 trading_pair=trading_pair,
                 bid_price=bid_price,
                 ask_price=ask_price,
-                last_price=last_price,
-                volume_24h=volume,
+                bid_volume=bid_volume,
+                ask_volume=ask_volume,
                 timestamp=datetime.utcnow(),
+                exchange="xt_perp",
             )
             
             return price

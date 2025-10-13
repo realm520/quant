@@ -201,6 +201,18 @@ class XTPerpExchange(BaseExchange):
             response.raise_for_status()
             data = response.json()
 
+            # Debug: Log full response for balance endpoint
+            if "balance" in path:
+                logger.info(
+                    "Full API response for balance endpoint",
+                    path=path,
+                    status_code=response.status_code,
+                    has_rc=("rc" in data),
+                    has_result=("result" in data),
+                    has_data=("data" in data),
+                    full_response=data
+                )
+
             # Check XT API response code
             # Note: Some endpoints return rc=0, some return rc=null, some omit rc entirely
             # Only treat as error if rc is explicitly non-zero (not null/None)
@@ -211,7 +223,18 @@ class XTPerpExchange(BaseExchange):
 
             # Return result field if present, otherwise return entire data
             # Some endpoints return data directly without wrapping in "result"
-            return data.get("result", data.get("data", data))
+            result = data.get("result", data.get("data", data))
+
+            # Debug: Log extracted result
+            if "balance" in path:
+                logger.info(
+                    "Extracted result from response",
+                    result_type=type(result).__name__,
+                    result_is_none=(result is None),
+                    result_sample=str(result)[:300] if result else "None"
+                )
+
+            return result
 
         except httpx.HTTPError as e:
             logger.error(
@@ -801,7 +824,8 @@ class XTPerpExchange(BaseExchange):
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
-        path = "/future/user/v1/balance/detail"
+        # Use compat endpoint based on xt_perp_api.py implementation
+        path = "/future/user/v1/compat/balance/list"
         data = await self._request("GET", path, params=None, body=None, require_auth=True)
 
         # Debug: Log raw API response

@@ -596,6 +596,98 @@ class XTSpotExchange(BaseExchange):
 
         return trades
 
+    async def get_balance(self) -> dict[str, dict[str, Any]]:
+        """Get account balances for all assets.
+
+        Returns:
+            Dictionary mapping currency code to balance details:
+            {
+                "BTC": {
+                    "available": Decimal("1.5"),
+                    "frozen": Decimal("0.5"),
+                    "total": Decimal("2.0")
+                },
+                ...
+            }
+
+        Raises:
+            ValueError: If not connected or missing credentials
+            httpx.HTTPStatusError: If API request fails
+        """
+        self._require_credentials()
+
+        response = await self._request(
+            method="GET",
+            path=f"/{self.API_VERSION}/balances",
+            authenticated=True,
+        )
+
+        data = response.json()
+
+        # Debug: Log raw API response (using info to ensure visibility)
+        logger.info(
+            "Raw balance API response",
+            response_type=type(data).__name__,
+            is_list=isinstance(data, list),
+            sample_data=str(data)[:500] if data else "empty"
+        )
+
+        # Handle two possible response formats:
+        # 1. Standard XT format: {rc: 0, result: [...]}
+        # 2. Direct array: [...]
+        if isinstance(data, list):
+            # Direct array response
+            result = data
+            logger.info("Using direct array response format", item_count=len(data))
+        else:
+            # Standard XT response with rc/result wrapper
+            result = self._check_response(data)
+            logger.info("Using standard XT response format", result_type=type(result).__name__)
+
+        # Parse balance data
+        balances: dict[str, dict[str, Any]] = {}
+
+        # Extract assets array from result
+        # XT API returns: {totalUsdtAmount, totalBtcAmount, assets: [...]}
+        if isinstance(result, dict):
+            assets = result.get("assets", [])
+            logger.info("Extracted assets from result dict", asset_count=len(assets))
+        elif isinstance(result, list):
+            # Direct array response (fallback)
+            assets = result
+            logger.info("Using result as direct array", asset_count=len(assets))
+        else:
+            logger.error("Unexpected result type", result_type=type(result).__name__)
+            return balances
+
+        # Parse each asset: {currency, availableAmount, frozenAmount, ...}
+        for item in assets:
+            currency = item.get("currency", "").upper()
+            # XT uses 'availableAmount' and 'frozenAmount' (not 'available' and 'locked')
+            available = Decimal(str(item.get("availableAmount", "0")))
+            frozen = Decimal(str(item.get("frozenAmount", "0")))
+            total = available + frozen
+
+            logger.info(
+                "Processing balance item",
+                currency=currency,
+                available=str(available),
+                frozen=str(frozen),
+                total=str(total),
+                will_include=total > 0
+            )
+
+            # Only include non-zero balances
+            if total > 0:
+                balances[currency] = {
+                    "available": available,
+                    "frozen": frozen,
+                    "total": total,
+                }
+
+        logger.info("Account balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
+        return balances
+
     async def subscribe_ticker(  # type: ignore[override, misc]
         self, trading_pair: TradingPair
     ) -> AsyncIterator[Price]:

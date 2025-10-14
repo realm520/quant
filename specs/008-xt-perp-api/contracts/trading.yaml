@@ -1,0 +1,354 @@
+# XT永续合约交易API合约定义
+openapi: 3.0.3
+info:
+  title: XT Perpetual Futures Trading API
+  version: 1.0.0
+  description: XT永续合约交易相关API端点定义
+
+servers:
+  - url: https://fapi.xt.com
+    description: Production server
+
+components:
+  securitySchemes:
+    XTSignature:
+      type: apiKey
+      in: header
+      name: validate-signature
+      description: HMAC-SHA256 signature
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        rc:
+          type: integer
+          description: Return code (0=success)
+        mc:
+          type: string
+          description: Error code
+        ma:
+          type: array
+          items:
+            type: string
+          description: Error messages
+        result:
+          type: object
+          description: Result data
+
+    CreateOrderRequest:
+      type: object
+      required:
+        - symbol
+        - orderSide
+        - orderType
+        - positionSide
+        - origQty
+      properties:
+        symbol:
+          type: string
+          example: "btc_usdt"
+        orderSide:
+          type: string
+          enum: [BUY, SELL]
+        orderType:
+          type: string
+          enum: [MARKET, LIMIT]
+        positionSide:
+          type: string
+          enum: [LONG, SHORT]
+        price:
+          type: string
+          description: Required for LIMIT orders
+        origQty:
+          type: string
+          description: Order quantity
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK, POST_ONLY]
+          default: GTC
+        clientOrderId:
+          type: string
+          description: Client order ID
+
+    OrderDetail:
+      type: object
+      properties:
+        orderId:
+          type: string
+        clientOrderId:
+          type: string
+        symbol:
+          type: string
+        orderType:
+          type: string
+          enum: [MARKET, LIMIT]
+        orderSide:
+          type: string
+          enum: [BUY, SELL]
+        positionSide:
+          type: string
+          enum: [LONG, SHORT]
+        timeInForce:
+          type: string
+        price:
+          type: string
+        origQty:
+          type: string
+        executedQty:
+          type: string
+        avgPrice:
+          type: string
+        state:
+          type: string
+          enum: [NEW, PARTIALLY_FILLED, FILLED, CANCELED, REJECTED]
+        createdTime:
+          type: integer
+          format: int64
+        updatedTime:
+          type: integer
+          format: int64
+
+paths:
+  /future/trade/v1/order/create:
+    post:
+      summary: Create Order
+      description: Create a new perpetual futures order
+      security:
+        - XTSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '200':
+          description: Order created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      result:
+                        $ref: '#/components/schemas/OrderDetail'
+
+  /future/trade/v1/order/cancel:
+    delete:
+      summary: Cancel Order
+      description: Cancel an existing order
+      security:
+        - XTSignature: []
+      parameters:
+        - name: orderId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: bizType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [FUTURE]
+      responses:
+        '200':
+          description: Order cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /future/trade/v1/order/detail:
+    get:
+      summary: Get Order Detail
+      description: Query order details by order ID
+      security:
+        - XTSignature: []
+      parameters:
+        - name: orderId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: bizType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [FUTURE]
+      responses:
+        '200':
+          description: Order details retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      result:
+                        $ref: '#/components/schemas/OrderDetail'
+
+  /future/trade/v1/order/list:
+    get:
+      summary: List Active Orders
+      description: Query active orders with pagination
+      security:
+        - XTSignature: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [NEW]
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+      responses:
+        '200':
+          description: Active orders retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      result:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderDetail'
+
+  /future/trade/v1/order/list-history:
+    get:
+      summary: List Historical Orders
+      description: Query historical orders with filters
+      security:
+        - XTSignature: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [PREV, NEXT]
+        - name: id
+          in: query
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: startTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: endTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Historical orders retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      result:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderDetail'
+
+  /future/trade/v1/order/trade-list:
+    get:
+      summary: List Trade History
+      description: Query trade execution history
+      security:
+        - XTSignature: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: startTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: endTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Trade history retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      result:
+                        type: object
+                        properties:
+                          hasPrev:
+                            type: boolean
+                          hasNext:
+                            type: boolean
+                          items:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                tradeId:
+                                  type: string
+                                orderId:
+                                  type: string
+                                orderSide:
+                                  type: string
+                                  enum: [BUY, SELL]
+                                price:
+                                  type: string
+                                quantity:
+                                  type: string
+                                fee:
+                                  type: string
+                                feeCurrency:
+                                  type: string
+                                time:
+                                  type: integer
+                                  format: int64

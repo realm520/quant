@@ -259,7 +259,7 @@ async def _async_monitor(
 
         console.print("[cyan]ℹ 使用 XT Exchange（公开模式 - 仅监控功能）[/cyan]")
         console.print("[dim]提示: 设置 XT_API_KEY 和 XT_API_SECRET 以启用交易功能[/dim]")
-        
+
         try:
             exchange_adapter = XTExchangeAdapter()  # No credentials
             await exchange_adapter.connect()
@@ -651,7 +651,7 @@ def _display_opportunities(
     min_display_amount = Decimal("1.0")  # Minimum amount to display (1 USDT)
     safe_amounts_map = {}
     liquidity_usage_rate = Decimal(str(liquidity_usage))
-    
+
     if tickers:
         for i, opp in enumerate(opportunities, 1):
             max_safe, _ = _calculate_max_safe_amount(opp, tickers, liquidity_usage_rate)
@@ -660,10 +660,10 @@ def _display_opportunities(
     # Filter opportunities by tradeable value
     high_value_opportunities = []
     low_value_count = 0
-    
+
     for i, opp in enumerate(opportunities, 1):
         max_safe = safe_amounts_map.get(i, opp.recommended_amount)
-        
+
         if max_safe >= min_display_amount:
             high_value_opportunities.append((i, opp, max_safe))
         else:
@@ -680,7 +680,7 @@ def _display_opportunities(
         table_title = f"发现 {len(high_value_opportunities)} 条套利机会（已过滤 {low_value_count} 条低价值，按收益率排序）"
     else:
         table_title = f"发现 {len(high_value_opportunities)} 条套利机会（按收益率排序）"
-    
+
     table = Table(title=table_title)
     table.add_column("序号", justify="right", style="cyan", no_wrap=True)
     table.add_column("路径", style="magenta")
@@ -711,15 +711,15 @@ def _display_opportunities(
         )
 
     console.print(table)
-    
+
     # Display low-value opportunities statistics
     if low_value_count > 0:
         console.print(f"\n[dim]ℹ️  已过滤 {low_value_count} 条可成交金额 <1 USDT 的套利机会[/dim]")
         logger.info("low_value_opportunities_filtered", count=low_value_count)
-    
+
     # Display detailed breakdown for high-value opportunities only
     console.print()  # Empty line for spacing
-    
+
     # Display detailed breakdown for high-value opportunities only
     for display_idx, (_original_idx, opp, max_safe_amount) in enumerate(high_value_opportunities, 1):
         # Calculate step details using safe amount
@@ -741,7 +741,7 @@ def _display_opportunities(
         detail_table.add_column("手续费", justify="right", style="dim")
         detail_table.add_column("可用流动性", justify="right", style="cyan")
         detail_table.add_column("使用率", justify="right", style="green")
-        
+
         for step in steps:
             # Format type with emoji
             type_display = "🔴买入" if step["type"] == "buy" else "🔵卖出"
@@ -786,7 +786,7 @@ def _display_opportunities(
                 liquidity_str,
                 usage_str
             )
-        
+
         # Add summary row
         initial_amount = max_safe_amount
         final_amount = steps[-1]["amount_after"]

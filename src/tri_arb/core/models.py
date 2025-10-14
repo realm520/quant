@@ -113,6 +113,18 @@ class TradingPair(BaseModel):
         default=None, gt=0, description="Quantity step size (minimum quantity increment)"
     )
 
+    # Perpetual futures specific (optional, for perpetual contracts)
+    leverage_brackets: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Leverage brackets defining max leverage based on notional value"
+    )
+    contract_size: Decimal | None = Field(
+        default=None, gt=0, description="Contract face value (e.g., 1 BTC = 1 contract)"
+    )
+    contract_type: str | None = Field(
+        default=None, description="Contract type (e.g., PERPETUAL, FUTURES)"
+    )
+
     @field_validator("base_currency", "quote_currency")
     @classmethod
     def uppercase_currency(cls, v: str) -> str:
@@ -223,6 +235,43 @@ class Order(BaseModel):
     created_at: datetime = Field(..., description="When order was created")
     updated_at: datetime = Field(..., description="Last status update")
     exchange: str = Field(..., min_length=1, description="Target exchange")
+
+    # Perpetual futures specific (optional, for perpetual contracts)
+    position_side: str | None = Field(
+        default=None, description="Position direction (LONG or SHORT) for perpetual futures"
+    )
+    time_in_force: str | None = Field(
+        default="GTC",
+        description="Time in force (GTC, IOC, FOK, POST_ONLY) - defaults to GTC"
+    )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def trade_action(self) -> str | None:
+        """Determine trade action from side and position_side.
+
+        Returns:
+            - "OPEN_LONG": BUY + LONG (open long position)
+            - "CLOSE_LONG": SELL + LONG (close long position)
+            - "OPEN_SHORT": SELL + SHORT (open short position)
+            - "CLOSE_SHORT": BUY + SHORT (close short position)
+            - None: If position_side is not set (spot trading)
+        """
+        if self.position_side is None:
+            return None
+
+        if self.side == OrderSide.BUY:
+            if self.position_side == "LONG":
+                return "OPEN_LONG"
+            elif self.position_side == "SHORT":
+                return "CLOSE_SHORT"
+        elif self.side == OrderSide.SELL:
+            if self.position_side == "LONG":
+                return "CLOSE_LONG"
+            elif self.position_side == "SHORT":
+                return "OPEN_SHORT"
+
+        return None
 
     @field_validator("price")
     @classmethod

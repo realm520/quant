@@ -372,7 +372,8 @@ class XTPerpExchange(BaseExchange):
             data = await self._request("GET", path, params=None, body=None, require_auth=False)
             
             # Parse response
-            result = data.get("result", [])
+            # Note: _request() already extracts the "result" field, so data IS the result
+            result = data
             if not isinstance(result, list):
                 raise ValueError(f"Expected list result for batch query, got {type(result)}")
             
@@ -443,9 +444,19 @@ class XTPerpExchange(BaseExchange):
             params = {"symbol": symbol}
             data = await self._request("GET", path, params=params, body=None, require_auth=False)
             
+            # Debug: Log what _request() returns
+            logger.info(
+                "Ticker book API response",
+                symbol=symbol,
+                data_type=type(data).__name__,
+                data_keys=list(data.keys()) if isinstance(data, dict) else "not a dict",
+                data_sample=str(data)[:300] if data else "None"
+            )
+            
             # Parse single book ticker response
-            # Expected format: {returnCode: 0, result: {s, t, ap, aq, bp, bq}}
-            result = data.get("result", {})
+            # Note: _request() already extracts the "result" field, so data IS the result
+            # Expected format after _request(): {s, t, ap, aq, bp, bq}
+            result = data
             if not isinstance(result, dict):
                 raise ValueError(f"Expected dict result for single query, got {type(result)}")
             

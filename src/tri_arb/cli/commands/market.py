@@ -76,10 +76,12 @@ def ticker(
             await exchange.connect()
             try:
                 if symbol:
+                    # Single symbol query
                     ticker_data = await exchange.get_ticker_by_symbol(symbol)
                     return [ticker_data] if ticker_data else []
                 else:
-                    tickers_data = await exchange.get_all_tickers()
+                    # Batch query (all symbols)
+                    tickers_data = await exchange.get_ticker(None)
                     return tickers_data
             finally:
                 await exchange.disconnect()

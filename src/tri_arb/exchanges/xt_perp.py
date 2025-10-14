@@ -5,6 +5,7 @@ supporting position management, leverage control, and funding rate tracking.
 """
 
 import asyncio
+import decimal
 import hashlib
 import hmac
 import time
@@ -409,10 +410,30 @@ class XTPerpExchange(BaseExchange):
                 
                 # Parse book ticker data
                 # API fields: ap (ask price), aq (ask quantity), bp (bid price), bq (bid quantity)
-                bid_price = Decimal(str(item.get("bp", "0")))
-                ask_price = Decimal(str(item.get("ap", "0")))
-                bid_volume = Decimal(str(item.get("bq", "0")))
-                ask_volume = Decimal(str(item.get("aq", "0")))
+                try:
+                    bp_str = item.get("bp", "")
+                    ap_str = item.get("ap", "")
+                    bq_str = item.get("bq", "")
+                    aq_str = item.get("aq", "")
+                    
+                    # Skip if any field is empty or invalid
+                    if not bp_str or not ap_str or not bq_str or not aq_str:
+                        logger.debug("Skipping ticker with missing fields", symbol=symbol_str)
+                        continue
+                    
+                    bid_price = Decimal(str(bp_str))
+                    ask_price = Decimal(str(ap_str))
+                    bid_volume = Decimal(str(bq_str))
+                    ask_volume = Decimal(str(aq_str))
+                except (ValueError, decimal.InvalidOperation, decimal.ConversionSyntax) as e:
+                    logger.debug(
+                        "Skipping ticker with invalid number format",
+                        symbol=symbol_str,
+                        error=str(e),
+                        bp=item.get("bp"),
+                        ap=item.get("ap"),
+                    )
+                    continue
                 
                 # Skip invalid tickers (price must be > 0)
                 if bid_price <= 0 or ask_price <= 0:

@@ -472,11 +472,7 @@ class XTPerpExchange(BaseExchange):
                 exchange="xt_perp",
             )
             
-            return price is not supported for XT Perpetual Futures. "
-            "XT Perp API '/future/market/v1/public/q/ticker' only provides "
-            "24h statistics (high/low/volume) without bid/ask prices. "
-            "Use get_orderbook(trading_pair, depth=1) to get best bid/ask prices instead."
-        )
+            return price
 
     async def get_orderbook(self, trading_pair: TradingPair, depth: int = 20) -> OrderBook:
         """Get order book for a trading pair.

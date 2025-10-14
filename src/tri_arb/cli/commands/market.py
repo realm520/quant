@@ -94,17 +94,28 @@ def ticker(
         if output == "json":
             print_json(tickers)
         elif output == "csv":
-            csv_data = [
-                {
-                    "symbol": t.get("symbol", ""),
-                    "bid": str(t.get("bid", 0)),
-                    "ask": str(t.get("ask", 0)),
-                    "last": str(t.get("last", 0)),
-                    "change_24h": str(t.get("change_24h", 0)),
-                    "volume_24h": str(t.get("volume_24h", 0))
-                }
-                for t in tickers
-            ]
+            csv_data = []
+            for t in tickers:
+                if hasattr(t, 'trading_pair'):
+                    # Price object
+                    csv_data.append({
+                        "symbol": f"{t.trading_pair.base_currency}/{t.trading_pair.quote_currency}",
+                        "bid": str(t.bid_price),
+                        "ask": str(t.ask_price),
+                        "last": str(t.mid_price),
+                        "change_24h": "0",
+                        "volume_24h": str(t.bid_volume + t.ask_volume)
+                    })
+                else:
+                    # Dict format
+                    csv_data.append({
+                        "symbol": t.get("symbol", ""),
+                        "bid": str(t.get("bid", 0)),
+                        "ask": str(t.get("ask", 0)),
+                        "last": str(t.get("last", 0)),
+                        "change_24h": str(t.get("change_24h", 0)),
+                        "volume_24h": str(t.get("volume_24h", 0))
+                    })
             print_csv(csv_data)
         else:  # table (default)
             format_ticker_table(tickers)

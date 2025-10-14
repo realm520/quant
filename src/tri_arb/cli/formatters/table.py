@@ -111,13 +111,25 @@ def format_ticker_table(tickers: List[Any]) -> None:
     table.add_column("24h Volume", justify="right")
 
     for ticker in tickers:
-        # Handle both object and dict formats
-        symbol = ticker.symbol if hasattr(ticker, 'symbol') else ticker.get('symbol')
-        bid = ticker.bid_price if hasattr(ticker, 'bid_price') else ticker.get('bid')
-        ask = ticker.ask_price if hasattr(ticker, 'ask_price') else ticker.get('ask')
-        last = ticker.last_price if hasattr(ticker, 'last_price') else ticker.get('last')
-        change = ticker.change_24h if hasattr(ticker, 'change_24h') else ticker.get('change_24h', Decimal('0'))
-        volume = ticker.volume_24h if hasattr(ticker, 'volume_24h') else ticker.get('volume_24h', Decimal('0'))
+        # Handle both Price object and dict formats
+        if hasattr(ticker, 'trading_pair'):
+            # Price object from exchange
+            symbol = f"{ticker.trading_pair.base_currency}/{ticker.trading_pair.quote_currency}"
+            bid = ticker.bid_price
+            ask = ticker.ask_price
+            # Price model doesn't have last_price, use mid_price
+            last = ticker.mid_price
+            # Price model doesn't have 24h stats
+            change = Decimal('0')
+            volume = ticker.bid_volume + ticker.ask_volume
+        else:
+            # Dict format (legacy or other sources)
+            symbol = ticker.get('symbol', '')
+            bid = Decimal(str(ticker.get('bid', 0)))
+            ask = Decimal(str(ticker.get('ask', 0)))
+            last = Decimal(str(ticker.get('last', 0)))
+            change = Decimal(str(ticker.get('change_24h', 0)))
+            volume = Decimal(str(ticker.get('volume_24h', 0)))
 
         table.add_row(
             symbol,

@@ -109,6 +109,21 @@ def ticker(
         else:  # table (default)
             format_ticker_table(tickers)
 
+    except NotImplementedError as e:
+        # Friendly error message for unsupported operations (e.g., perp ticker)
+        error_msg = str(e)
+        if "xt" in error_msg.lower() and "perp" in error_msg.lower():
+            console.print("[yellow]提示:[/yellow] XT 永续合约不支持 ticker 命令")
+            console.print("XT Perp API 的 ticker 端点只提供 24h 统计数据，不包含实时买卖价。")
+            console.print("
+请使用以下命令获取最佳买卖价:")
+            if symbol:
+                console.print(f"  [cyan]cextools market depth --symbol {symbol} --limit 1 -e perp[/cyan]")
+            else:
+                console.print(f"  [cyan]cextools market depth --symbol <SYMBOL> --limit 1 -e perp[/cyan]")
+        else:
+            console.print(f"[red]不支持的操作:[/red] {error_msg}")
+        raise typer.Exit(code=1)
     except ValueError as e:
         console.print(f"[red]参数错误:[/red] {e}")
         raise typer.Exit(code=1)

@@ -340,29 +340,139 @@ class XTPerpExchange(BaseExchange):
     async def get_ticker(self, trading_pair: TradingPair | None = None) -> Price | list[Price]:
         """Get current ticker price for a trading pair or all markets.
         
-        **NOT SUPPORTED for XT Perpetual Futures.**
-        
-        XT Perpetual API does not provide bid/ask prices in ticker endpoint.
-        The `/future/market/v1/public/q/ticker` endpoint only returns 24h statistics
-        (high, low, volume, change rate) without real-time bid/ask prices.
-        
-        Use `get_orderbook()` method instead to get best bid/ask prices.
+        Fetches best bid/ask prices from XT Perp book ticker API.
         
         Args:
-            trading_pair: Trading pair to get ticker for
-            
+            trading_pair: Trading pair to get ticker for. If None, returns all
+                         active markets (batch query). Default is None.
+        
+        Returns:
+            - If trading_pair is provided: Single Price object
+            - If trading_pair is None: List of Price objects for all active markets
+        
         Raises:
-            NotImplementedError: This method is not supported for perpetual futures
+            ExchangeConnectionError: If exchange is not connected
+            InvalidTradingPairError: If trading pair is not supported
             
         Example:
-            >>> # Instead of ticker, use orderbook:
-            >>> orderbook = await exchange.get_orderbook(trading_pair, depth=1)
-            >>> best_bid_price, best_bid_volume = orderbook.bids[0]
-            >>> best_ask_price, best_ask_volume = orderbook.asks[0]
-            >>> print(f"Best bid: {best_bid_price}, Best ask: {best_ask_price}")
+            >>> # Single pair query
+            >>> price = await exchange.get_ticker(trading_pair)
+            >>> print(f"Bid: {price.bid_price}, Ask: {price.ask_price}")
+            >>> 
+            >>> # Batch query (all pairs)
+            >>> prices = await exchange.get_ticker(None)
+            >>> print(f"Total markets: {len(prices)}")
         """
-        raise NotImplementedError(
-            "get_ticker() is not supported for XT Perpetual Futures. "
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+        
+        if trading_pair is None:
+            # Batch query: Get all market book tickers
+            path = "/future/market/v1/public/q/ticker/books"
+            data = await self._request("GET", path, params=None, body=None, require_auth=False)
+            
+            # Parse response
+            result = data.get("result", [])
+            if not isinstance(result, list):
+                raise ValueError(f"Expected list result for batch query, got {type(result)}")
+            
+            # Parse each ticker to Price object
+            prices: list[Price] = []
+            for item in result:
+                symbol_str = item.get("s", "")
+                if not symbol_str:
+                    continue
+                
+                # Convert XT symbol format to TradingPair
+                parts = symbol_str.lower().split("_")
+                if len(parts) != 2:
+                    continue
+                
+                base, quote = parts[0].upper(), parts[1].upper()
+                
+                # Find or create TradingPair
+                pair_key = f"{base}/{quote}"
+                if pair_key in self._trading_pairs:
+                    pair = self._trading_pairs[pair_key]
+                else:
+                    # Create minimal TradingPair for unknown pairs
+                    pair = TradingPair(
+                        base_currency=base,
+                        quote_currency=quote,
+                        exchange="xt_perp",
+                        min_order_size=Decimal("0.001"),
+                        max_order_size=Decimal("1000000"),
+                        price_precision=8,
+                        quantity_precision=8,
+                    )
+                
+                # Parse book ticker data
+                # API fields: ap (ask price), aq (ask quantity), bp (bid price), bq (bid quantity)
+                bid_price = Decimal(str(item.get("bp", "0")))
+                ask_price = Decimal(str(item.get("ap", "0")))
+                bid_volume = Decimal(str(item.get("bq", "0")))
+                ask_volume = Decimal(str(item.get("aq", "0")))
+                
+                # Skip invalid tickers (price must be > 0)
+                if bid_price <= 0 or ask_price <= 0:
+                    logger.debug(
+                        "Skipping invalid ticker",
+                        symbol=symbol_str,
+                        bid=str(bid_price),
+                        ask=str(ask_price)
+                    )
+                    continue
+                
+                price = Price(
+                    trading_pair=pair,
+                    bid_price=bid_price,
+                    ask_price=ask_price,
+                    bid_volume=bid_volume,
+                    ask_volume=ask_volume,
+                    timestamp=datetime.utcnow(),
+                    exchange="xt_perp",
+                )
+                prices.append(price)
+            
+            return prices
+        else:
+            # Single pair query: Get specific book ticker
+            symbol = f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            
+            path = "/future/market/v1/public/q/ticker/book"
+            params = {"symbol": symbol}
+            data = await self._request("GET", path, params=params, body=None, require_auth=False)
+            
+            # Parse single book ticker response
+            # Expected format: {returnCode: 0, result: {s, t, ap, aq, bp, bq}}
+            result = data.get("result", {})
+            if not isinstance(result, dict):
+                raise ValueError(f"Expected dict result for single query, got {type(result)}")
+            
+            # Parse book ticker data
+            bid_price = Decimal(str(result.get("bp", "0")))
+            ask_price = Decimal(str(result.get("ap", "0")))
+            bid_volume = Decimal(str(result.get("bq", "0")))
+            ask_volume = Decimal(str(result.get("aq", "0")))
+            
+            # Validate prices (must be > 0)
+            if bid_price <= 0 or ask_price <= 0:
+                raise ValueError(
+                    f"Invalid ticker data for {trading_pair.base_currency}/"
+                    f"{trading_pair.quote_currency}: bid={bid_price}, ask={ask_price}"
+                )
+            
+            price = Price(
+                trading_pair=trading_pair,
+                bid_price=bid_price,
+                ask_price=ask_price,
+                bid_volume=bid_volume,
+                ask_volume=ask_volume,
+                timestamp=datetime.utcnow(),
+                exchange="xt_perp",
+            )
+            
+            return price is not supported for XT Perpetual Futures. "
             "XT Perp API '/future/market/v1/public/q/ticker' only provides "
             "24h statistics (high/low/volume) without bid/ask prices. "
             "Use get_orderbook(trading_pair, depth=1) to get best bid/ask prices instead."

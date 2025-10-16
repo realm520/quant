@@ -1,12 +1,13 @@
 """Account management commands."""
 
 import asyncio
+from decimal import Decimal
 from typing import Optional
 
 import typer
 from rich.console import Console
 
-from tri_arb.cli.utils.exchange_factory import ExchangeType, create_exchange
+from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
 from tri_arb.cli.formatters.table import format_balance_table, format_positions_table
 from tri_arb.cli.formatters.json import print_json
 from tri_arb.cli.formatters.csv import print_csv
@@ -23,6 +24,12 @@ def balance(
         "--exchange-type",
         "-e",
         help="交易类型 (spot 或 perp)"
+    ),
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt 或 binance)，默认 xt"
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -51,21 +58,27 @@ def balance(
     示例:
         cextools account balance --exchange-type spot
         cextools account balance -e perp --output json
+        cextools account balance -e spot --exchange binance
     """
     try:
         # 创建 exchange 实例
-        exchange = create_exchange(exchange_type, api_key, api_secret)
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
 
         # 异步获取余额
         async def get_balance():
-            await exchange.connect()
+            await exchange_instance.connect()
             try:
-                balance_data = await exchange.get_balance()
+                balance_data = await exchange_instance.get_balance()
                 return balance_data
             finally:
-                await exchange.disconnect()
+                await exchange_instance.disconnect()
 
         balances = asyncio.run(get_balance())
+
+        # 检查是否有余额数据
+        if not balances:
+            console.print("[yellow]账户余额为空或所有币种余额为0[/yellow]")
+            return
 
         # 根据输出格式显示
         if output == "json":
@@ -86,13 +99,15 @@ def balance(
             format_balance_table(balances)
 
     except ValueError as e:
-        console.print(f"[red]配置错误:[/red] {e}")
+        error_msg = str(e) if str(e) else "配置错误，请检查交易所和API凭证"
+        console.print(f"[red]配置错误:[/red] {error_msg}")
         raise typer.Exit(code=1)
     except Exception as e:
         if debug:
             console.print_exception()
         else:
-            console.print(f"[red]错误:[/red] {e}")
+            error_msg = str(e) if str(e) else f"未知错误: {type(e).__name__}"
+            console.print(f"[red]错误:[/red] {error_msg}")
         raise typer.Exit(code=1)
 
 
@@ -103,6 +118,12 @@ def positions(
         "--exchange-type",
         "-e",
         help="交易类型（必须为 perp）"
+    ),
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt 或 binance)，默认 xt"
     ),
     symbol: Optional[str] = typer.Option(
         None,
@@ -138,6 +159,7 @@ def positions(
         cextools account positions -e perp
         cextools account positions -e perp --symbol BTC/USDT
         cextools account positions -e perp -o json
+        cextools account positions -e perp --exchange binance
     """
     try:
         # 验证 exchange_type
@@ -150,47 +172,91 @@ def positions(
             symbol = validate_symbol(symbol)
 
         # 创建 exchange 实例
-        exchange = create_exchange(exchange_type, api_key, api_secret)
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
 
         # 异步获取持仓
         async def get_positions():
-            await exchange.connect()
+            await exchange_instance.connect()
             try:
-                # get_positions() supports both:
-                # - symbol=None: get all positions
-                # - symbol="btc_usdt": get specific position
-                positions_data = await exchange.get_positions(symbol)
+                # 始终获取所有持仓，然后在本地筛选
+                # 这样可以避免不同交易所的symbol格式转换问题
+                positions_data = await exchange_instance.get_positions(None)
                 return positions_data
             finally:
-                await exchange.disconnect()
+                await exchange_instance.disconnect()
 
         positions_list = asyncio.run(get_positions())
 
+        # 如果指定了symbol，在本地筛选
+        if symbol:
+            # 标准化symbol格式用于匹配（移除斜杠和转大写）
+            normalized_symbol = symbol.replace("/", "").replace("_", "").upper()
+            
+            filtered_positions = []
+            for pos in positions_list:
+                if isinstance(pos, dict):
+                    # 币安格式
+                    pos_symbol = pos.get("symbol", "").upper()
+                else:
+                    # XT格式，可能是 "btc_usdt" 或 "BTC/USDT"
+                    pos_symbol = pos.symbol.replace("/", "").replace("_", "").upper()
+                
+                if pos_symbol == normalized_symbol:
+                    filtered_positions.append(pos)
+            
+            positions_list = filtered_positions
+
         if not positions_list:
-            console.print("[yellow]未发现持仓[/yellow]")
+            if symbol:
+                console.print(f"[yellow]未发现 {symbol} 的持仓[/yellow]")
+            else:
+                console.print("[yellow]未发现持仓[/yellow]")
             return
 
         # 根据输出格式显示
         if output == "json":
             print_json(positions_list)
         elif output == "csv":
-            # 转换为字典列表供 CSV 使用
-            csv_data = [
-                {
-                    "symbol": pos.get("symbol", ""),
-                    "side": pos.get("side", ""),
-                    "quantity": str(pos.get("quantity", 0)),
-                    "entry_price": str(pos.get("entry_price", 0)),
-                    "current_price": str(pos.get("current_price", 0)),
-                    "pnl": str(pos.get("pnl", 0)),
-                    "roe": str(pos.get("roe", 0)),
-                    "leverage": str(pos.get("leverage", 0))
-                }
-                for pos in positions_list
-            ]
+            # 转换为字典列表供 CSV 使用，支持两种格式
+            csv_data = []
+            for pos in positions_list:
+                if isinstance(pos, dict):
+                    # Binance dict format (V2 API)
+                    unrealized_pnl = pos.get("unRealizedProfit", Decimal('0'))
+                    leverage = pos.get("leverage", "1")
+                    
+                    # Calculate ROE: use notional/leverage to get margin
+                    notional = abs(pos.get("notional", Decimal('0')))
+                    leverage_num = Decimal(leverage) if leverage else Decimal('1')
+                    margin = notional / leverage_num if leverage_num > 0 and notional > 0 else Decimal('0')
+                    roe = (unrealized_pnl / margin * 100) if margin > 0 else Decimal('0')
+                
+                    csv_data.append({
+                        "symbol": pos.get("symbol", ""),
+                        "side": "Long" if pos.get("positionAmt") > 0 else "Short",
+                        "quantity": str(abs(pos.get("positionAmt", 0))),
+                        "entry_price": str(pos.get("entryPrice", 0)),
+                        "current_price": str(pos.get("markPrice", 0)),
+                        "pnl": str(unrealized_pnl),
+                        "roe": str(roe),
+                        "leverage": str(leverage)
+                        })
+                else:
+                    # Position object format (XT)
+                    roe = (pos.unrealized_pnl / pos.margin * 100) if hasattr(pos, 'margin') and pos.margin > 0 else Decimal('0')
+                    csv_data.append({
+                        "symbol": pos.symbol if hasattr(pos, 'symbol') else "",
+                        "side": pos.side if hasattr(pos, 'side') else "",
+                        "quantity": str(pos.quantity if hasattr(pos, 'quantity') else 0),
+                        "entry_price": str(pos.entry_price if hasattr(pos, 'entry_price') else 0),
+                        "current_price": str(pos.mark_price if hasattr(pos, 'mark_price') else 0),
+                        "pnl": str(pos.unrealized_pnl if hasattr(pos, 'unrealized_pnl') else 0),
+                        "roe": str(roe),
+                        "leverage": str(pos.leverage if hasattr(pos, 'leverage') else 0)
+                    })
             print_csv(csv_data)
         else:  # table (default)
-            format_positions_table(positions_list)
+            format_positions_table(positions_list,exchange_instance)
 
     except ValueError as e:
         console.print(f"[red]参数错误:[/red] {e}")

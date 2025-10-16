@@ -300,6 +300,33 @@ class Trade(BaseModel):
     exchange: str = Field(..., min_length=1, description="Execution exchange")
 
 
+class Balance(BaseModel):
+    """账户余额数据结构"""
+    
+    accountAlias: str = Field(..., description="账户唯一识别码")
+    asset: str = Field(..., description="资产（如 USDT, BTC）")
+    balance: Decimal = Field(..., description="总余额")
+    crossWalletBalance: Decimal = Field(..., description="全仓余额")
+    crossUnPnl: Decimal = Field(..., description="全仓持仓未实现盈亏")
+    availableBalance: Decimal = Field(..., description="下单可用余额")
+    maxWithdrawAmount: Decimal = Field(..., description="最大可转出余额")
+    marginAvailable: bool = Field(..., description="是否可用作联合保证金")
+    updateTime: int = Field(..., description="更新时间（时间戳）")
+    
+    class Config:
+        # 将字符串转为 Decimal 类型，并保证小数精度
+        anystr_strip_whitespace = True
+    
+    def to_dict(self):
+        """将余额数据转换为字典形式"""
+        return {
+            "currency": self.asset,
+            "available": str(self.availableBalance),
+            "frozen": str(self.balance - self.availableBalance),
+            "total": str(self.balance)
+        }
+        
+        
 class ArbitrageOpportunity(BaseModel):
     """Triangular arbitrage opportunity.
 

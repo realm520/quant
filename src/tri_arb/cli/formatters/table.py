@@ -58,38 +58,75 @@ def format_balance_table(balances: Dict[str, Dict[str, Decimal]]) -> None:
     console.print(f"Data fetched at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
-def format_positions_table(positions: List[Any]) -> None:
+def format_positions_table(positions: List[Any], exchange) -> None:
     """Format positions as Rich table.
     
+    Supports both Position objects (XT) and position dicts (Binance).
+    
     Args:
-        positions: List of Position objects
+        positions: List of Position objects or position dictionaries
     """
     if not positions:
         console.print("[yellow]当前无持仓[/yellow]")
         return
-
+    exchange_name = exchange.name
     table = Table(title="Positions", show_header=True, header_style="bold magenta")
+    table.add_column("Exchange", style="cyan")
     table.add_column("Symbol", style="cyan")
     table.add_column("Side", style="white")
     table.add_column("Quantity", justify="right")
     table.add_column("Entry Price", justify="right")
     table.add_column("Current Price", justify="right")
+    table.add_column("Liquidation Price", justify="right")
     table.add_column("PnL", justify="right")
     table.add_column("ROE", justify="right")
     table.add_column("Leverage", justify="right")
+    
 
     for pos in positions:
-        roe = (pos.unrealized_pnl / pos.margin * 100) if hasattr(pos, 'margin') and pos.margin > 0 else Decimal('0')
+        # Handle both Position object and dict formats
+        if isinstance(pos, dict):
+            # Binance dict format (from V2 API)
+            symbol = pos.get('symbol', '')
+            side = "Long" if pos.get('positionAmt') > 0 else "Short"
+            quantity = abs(pos.get('positionAmt', Decimal('0')))
+            entry_price = pos.get('entryPrice', Decimal('0'))
+            mark_price = pos.get('markPrice', Decimal('0'))
+            unrealized_pnl = pos.get('unRealizedProfit', Decimal('0'))
+            
+            # V2 API provides leverage directly
+            leverage = pos.get('leverage', '1')
+            
+            # Calculate ROE: use notional/leverage to get margin
+            notional = abs(pos.get('notional', Decimal('0')))
+            leverage_num = Decimal(leverage) if leverage else Decimal('1')
+            margin = notional / leverage_num if leverage_num > 0 and notional  > 0 else Decimal('0')
+            roe = (unrealized_pnl / margin * 100) if margin > 0 else Decimal('0')
+            liquidation_price = pos.get('liquidationPrice', Decimal('0'))
+        else:
+            # Position object format (XT)
+            symbol = pos.symbol
+            side = pos.side
+            quantity = pos.quantity
+            entry_price = pos.entry_price
+            mark_price = pos.mark_price
+            unrealized_pnl = pos.unrealized_pnl
+            roe = (pos.unrealized_pnl / pos.margin * 100) if hasattr(pos, 'margin') and pos.margin > 0 else Decimal('0')
+            leverage = f"{pos.leverage}" if hasattr(pos, 'leverage') else "N/A"
+            liquidation_price = pos.liquidation_price if hasattr(pos, 'liquidation_price') else Decimal('0')
+            
 
         table.add_row(
-            pos.symbol,
-            pos.side,
-            f"{pos.quantity:.8f}",
-            f"{pos.entry_price:.2f}",
-            f"{pos.mark_price:.2f}",
-            format_pnl(pos.unrealized_pnl),
+            exchange_name,
+            symbol,
+            side,
+            f"{quantity:.8f}",
+            f"{entry_price:.8f}",
+            f"{mark_price:.8f}",
+            f"{liquidation_price:.8f}",
+            format_pnl(unrealized_pnl),
             format_percentage(roe),
-            f"{pos.leverage}x",
+            f"{leverage}x" if leverage != "N/A" else leverage,
         )
 
     console.print(table)

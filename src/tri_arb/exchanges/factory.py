@@ -200,15 +200,21 @@ def get_available_exchanges() -> list[str]:
 def _register_default_exchanges() -> None:
     """Register default exchange implementations on module import."""
     from tri_arb.exchanges.xt_spot import XTSpotExchange
+    from tri_arb.exchanges.binance_spot import BinanceSpotExchange
 
     # Import environment variables for credentials
     import os
     from tri_arb.config.settings import settings
 
-    # Register XT Exchange
+    # Register XT Exchange (for tri-arb usage)
     exchange_factory.register("xt", XTSpotExchange)
     
-    logger.info("Default exchanges registered", exchanges=["xt"])
+    # Register Binance Spot Exchange (for tri-arb usage)
+    # Note: CLI tools use their own factory in cli/utils/exchange_factory.py
+    # which handles both spot and perp separately
+    exchange_factory.register("binance", BinanceSpotExchange)
+    
+    logger.info("Default exchanges registered", exchanges=["xt", "binance"])
 
 
 # Register on module import

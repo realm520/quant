@@ -59,7 +59,7 @@ class XTPerpExchange(BaseExchange):
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
-    async def get_name(self) -> str:
+    def get_name(self) -> str:
         """Get the name of the exchange."""
         return "xt_perp"
     

@@ -15,6 +15,8 @@
 ### 永续合约 (Binance Futures)
 - ✅ 账户余额查询 - `GET /fapi/v2/balance`
 - ✅ 持仓查询 - `GET /fapi/v2/positionRisk`
+- ✅ 挂单查询 - `GET /fapi/v1/openOrders`
+- ✅ 下单功能 - `POST /fapi/v1/order`
 - ✅ 实时价格查询 - `GET /fapi/v1/ticker/bookTicker`
 - ✅ 订单簿深度 - `GET /fapi/v1/depth`
 - ✅ HMAC-SHA256 签名认证
@@ -22,7 +24,6 @@
 ## 🔄 待实现功能
 
 以下功能尚未实现，调用时会抛出 `NotImplementedError`：
-- ⏳ 下单功能 (`place_order`)
 - ⏳ 撤单功能 (`cancel_order`)
 - ⏳ 订单状态查询 (`get_order_status`)
 - ⏳ 交易历史查询 (`get_trade_history`)
@@ -61,7 +62,23 @@ cextools account positions -x binance -e perp --symbol BTC/USDT
 cextools account positions -x binance -e perp -o json
 ```
 
-### 4. 查询实时价格（无需API密钥）
+### 4. 查询挂单（永续合约）
+
+```bash
+# 查询所有挂单
+cextools account orders -x binance -e perp
+
+# 查询特定合约的挂单
+cextools account orders -x binance -e perp --symbol BTC/USDT
+
+# JSON格式输出
+cextools account orders -x binance -e perp -o json
+
+# CSV格式输出
+cextools account orders -x binance -e perp -o csv
+```
+
+### 5. 查询实时价格（无需API密钥）
 
 ```bash
 # 查询币安现货价格

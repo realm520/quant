@@ -25,10 +25,63 @@ python examples/binance_positions_example.py
 ```
 
 **API说明**：
-- 使用币安永续合约API v3 (`/fapi/v3/positionRisk`)
-- 仅返回有持仓或挂单的交易对
+- 使用币安永续合约API v2 (`/fapi/v2/positionRisk`)
+- 仅返回有持仓的交易对
 - 支持单向持仓模式和双向持仓模式
 - 包含详细的保证金和盈亏信息
+
+### 币安合约挂单查询 (`binance_orders_example.py`)
+
+演示如何使用 `BinancePerpExchange` 类查询币安永续合约的挂单信息。
+
+**功能示例**：
+- ✅ 查询所有挂单
+- ✅ 查询特定交易对的挂单
+- ✅ 挂单统计和分析
+- ✅ 按类型和交易对分组
+
+**使用方法**：
+```bash
+# 1. 设置环境变量
+export BINANCE_API_KEY="your_api_key"
+export BINANCE_API_SECRET="your_api_secret"
+
+# 2. 运行示例
+python examples/binance_orders_example.py
+```
+
+**API说明**：
+- 使用币安永续合约API v1 (`/fapi/v1/openOrders`)
+- 返回当前所有未成交订单
+- 支持限价单、市价单、止损单、止盈单等各种订单类型
+- 包含订单状态、成交情况、时间等详细信息
+
+### OKX合约完整功能 (`okx_example.py`)
+
+演示如何使用 `OKXPerpExchange` 类查询OKX永续合约的余额、持仓和挂单。
+
+**功能示例**：
+- ✅ 查询账户余额
+- ✅ 查询所有持仓
+- ✅ 查询所有挂单
+- ✅ 综合账户分析
+
+**使用方法**：
+```bash
+# 1. 设置环境变量（注意：OKX需要3个参数）
+export OKX_API_KEY="your_api_key"
+export OKX_API_SECRET="your_api_secret"
+export OKX_PASSPHRASE="your_passphrase"
+
+# 2. 运行示例
+python examples/okx_example.py
+```
+
+**API说明**：
+- 使用OKX API v5
+- 需要3个认证参数：API Key、Secret Key、Passphrase
+- 产品ID格式：`BTC-USDT-SWAP`
+- 返回详细的账户、持仓和订单信息
 
 ## 🔧 准备工作
 
@@ -53,6 +106,13 @@ export BINANCE_API_SECRET="your_binance_api_secret"
 ```bash
 export XT_API_KEY="your_xt_api_key"
 export XT_API_SECRET="your_xt_api_secret"
+```
+
+**OKX交易所**（需要3个参数）：
+```bash
+export OKX_API_KEY="your_okx_api_key"
+export OKX_API_SECRET="your_okx_api_secret"
+export OKX_PASSPHRASE="your_okx_passphrase"
 ```
 
 ### 3. API权限要求

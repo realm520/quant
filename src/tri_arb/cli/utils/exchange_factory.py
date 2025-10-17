@@ -12,12 +12,14 @@ from tri_arb.exchanges.xt_spot import XTSpotExchange
 from tri_arb.exchanges.xt_perp import XTPerpExchange
 from tri_arb.exchanges.binance_spot import BinanceSpotExchange
 from tri_arb.exchanges.binance_perp import BinancePerpExchange
+from tri_arb.exchanges.okx_perp import OKXPerpExchange
 
 
 class ExchangeName(str, Enum):
     """交易所名称枚举"""
     XT = "xt"
     BINANCE = "binance"
+    OKX = "okx"
 
 
 class ExchangeType(str, Enum):
@@ -80,6 +82,20 @@ def create_exchange(
         elif exchange_type == ExchangeType.PERP:
             # Binance 永续合约（占位符实现）
             return BinancePerpExchange(api_key=key, api_secret=secret)
+
+    # OKX 交易所
+    elif exchange_name == ExchangeName.OKX:
+        # OKX 需要额外的 passphrase
+        passphrase = os.getenv(f'{env_prefix}_PASSPHRASE', '')
+        
+        if exchange_type == ExchangeType.PERP:
+            # OKX 永续合约
+            return OKXPerpExchange(api_key=key, api_secret=secret, passphrase=passphrase)
+        elif exchange_type == ExchangeType.SPOT:
+            raise ValueError(
+                "OKX 现货交易暂未实现\n"
+                "请使用永续合约: --exchange-type perp"
+            )
 
     raise ValueError(f"不支持的交易所或交易类型: {exchange_name.value}/{exchange_type.value}")
 

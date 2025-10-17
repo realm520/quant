@@ -50,7 +50,10 @@ uvx --from . cextools --help
   - 永续合约交易 (perp) - ✅ 完整实现
 - **binance** - 币安交易所（部分实现）
   - 现货交易 (spot) - ✅ 余额/行情已实现，订单功能待实现
-  - 永续合约 (perp) - ✅ 余额/行情已实现，订单功能待实现
+  - 永续合约 (perp) - ✅ 余额/行情/持仓/挂单已实现，下单功能待实现
+- **okx** - OKX交易所（部分实现）
+  - 永续合约 (perp) - ✅ 余额/持仓/挂单已实现，下单功能待实现
+  - 现货交易 (spot) - ⏳ 待实现
 
 ### 支持的交易类型
 - **spot** - 现货交易
@@ -168,6 +171,24 @@ cextools account balance -x binance -e perp
 cextools account balance -e spot --output json
 ```
 
+### 定时查询余额（新功能！）
+
+```bash
+# 每1分钟查询一次余额（默认）
+cextools account watch-balance -e perp
+
+# 每5分钟查询一次Binance余额
+cextools account watch-balance -x binance -e perp --interval 5
+
+# 每10分钟查询一次OKX余额
+cextools account watch-balance -x okx -e perp -i 10
+
+# JSON格式输出（便于记录）
+cextools account watch-balance -x okx -e perp -i 5 -o json
+
+# 按 Ctrl+C 停止监控
+```
+
 ### 持仓查询（永续合约）
 ```bash
 # 查询所有永续合约持仓（XT交易所）
@@ -187,6 +208,45 @@ cextools account positions -e perp -x binance --symbol BTC/USDT
 
 # JSON 格式输出币安持仓（包含完整的API返回数据）
 cextools account positions -e perp -x binance -o json
+```
+
+### 挂单查询（永续合约）
+```bash
+# 查询所有挂单（XT交易所）
+cextools account orders --exchange-type perp
+
+# 查询特定合约的挂单
+cextools account orders -e perp --symbol BTC/USDT
+
+# CSV 格式输出挂单信息
+cextools account orders -e perp --output csv
+
+# 查询币安合约的所有挂单
+cextools account orders -e perp --exchange binance
+
+# 查询币安合约的特定挂单
+cextools account orders -e perp -x binance --symbol BTC/USDT
+
+# JSON 格式输出币安挂单（包含完整的API返回数据）
+cextools account orders -e perp -x binance -o json
+```
+
+### 定时查询挂单（新功能！）
+
+```bash
+# 每1分钟查询一次所有挂单
+cextools account watch-orders -e perp
+
+# 每2分钟查询Binance的BTC挂单
+cextools account watch-orders -x binance -e perp -s BTC/USDT --interval 2
+
+# 每5分钟查询OKX的所有挂单
+cextools account watch-orders -x okx -e perp -i 5
+
+# JSON格式输出（便于记录）
+cextools account watch-orders -x okx -e perp -i 3 -o json
+
+# 按 Ctrl+C 停止监控
 ```
 
 ### 交易历史
@@ -288,10 +348,12 @@ cextools account balance -x binance -e spot
 |--------|--------|------|----------|------|
 | XT | `xt` | ✅ | ✅ | 完整实现 |
 | Binance | `binance` | ⚡ | ⚡ | 部分实现 |
+| OKX | `okx` | ⏳ | ⚡ | 部分实现 |
 
 **说明**：
 - ✅ **完整实现**：所有功能可正常使用，连接真实 API
-- ⚡ **部分实现**：余额查询和行情数据已实现，订单功能待完善
+- ⚡ **部分实现**：余额/持仓/挂单已实现，订单功能待完善
+- ⏳ **待实现**：功能尚未实现
 
 ### 币安交易所说明
 
@@ -302,12 +364,13 @@ cextools account balance -x binance -e spot
 - 实时价格查询
 - 订单簿深度查询
 - 持仓查询（永续合约）- 支持查询所有持仓和特定合约持仓
+- 挂单查询（永续合约）- 支持查询所有挂单和特定合约挂单
+- 下单功能（永续合约）- 支持限价单、市价单等多种订单类型
 - HMAC-SHA256 签名认证
 
 **待实现功能** 🔄：
-- 下单功能
 - 撤单功能
-- 订单查询
+- 历史订单查询
 - 交易历史查询
 - WebSocket 实时订阅
 
@@ -327,9 +390,73 @@ cextools account positions -x binance -e perp
 # 查询特定合约持仓
 cextools account positions -x binance -e perp --symbol BTC/USDT
 
+# 查询币安永续合约挂单（真实API）
+cextools account orders -x binance -e perp
+
+# 查询特定合约挂单
+cextools account orders -x binance -e perp --symbol BTC/USDT
+
+# 下单（永续合约限价单）
+cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 30000 --position-side LONG
+
+# 下单（永续合约市价单，⚠️会立即成交）
+cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 --type market --position-side LONG
+
 # 查询实时价格（公开API，无需密钥）
 cextools market ticker -x binance -s BTC/USDT
 ```
+
+### OKX交易所说明
+
+OKX交易所**已实现真实API调用**，可以查询实时数据：
+
+**已实现功能** ✅：
+- 账户余额查询（永续合约）
+- 持仓查询（永续合约）- 支持查询所有持仓和特定合约持仓
+- 挂单查询（永续合约）- 支持查询所有挂单和特定合约挂单
+- 下单功能（永续合约）- 支持限价单、市价单、Post-only等订单类型
+- HMAC-SHA256 签名认证
+
+**待实现功能** 🔄：
+- 现货交易功能
+- 撤单功能
+- 行情查询
+- WebSocket 实时订阅
+
+**使用示例**：
+```bash
+# 配置OKX API凭证（注意：OKX需要3个参数）
+export OKX_API_KEY="your_okx_api_key"
+export OKX_API_SECRET="your_okx_api_secret"
+export OKX_PASSPHRASE="your_okx_passphrase"
+
+# 查询OKX永续合约余额
+cextools account balance -x okx -e perp
+
+# 查询OKX永续合约持仓
+cextools account positions -x okx -e perp
+
+# 查询特定合约持仓（注意OKX格式：BTC-USDT-SWAP）
+cextools account positions -x okx -e perp --symbol BTC-USDT-SWAP
+
+# 查询OKX永续合约挂单
+cextools account orders -x okx -e perp
+
+# 下单（永续合约限价单）
+cextools order place -x okx -e perp -s BTC/USDT --side buy -q 0.001 -p 30000 --position-side LONG
+
+# 下单（Post-only订单，只做Maker）
+cextools order place -x okx -e perp -s ETH/USDT --side buy -q 0.01 -p 2000 --type post_only --position-side LONG
+
+# JSON格式输出
+cextools account positions -x okx -e perp -o json
+```
+
+**注意事项**：
+- OKX 需要3个API凭证：API Key、Secret Key 和 Passphrase
+- OKX 产品ID格式为：`BTC-USDT-SWAP`（币安格式是 `BTCUSDT`）
+- OKX 持仓方向为：`long`/`short`/`net`（币安格式是 `LONG`/`SHORT`/`BOTH`）
+- CLI命令会自动转换symbol格式（`BTC/USDT` → `BTC-USDT-SWAP`）
 
 ## 环境变量配置
 
@@ -361,8 +488,23 @@ export BINANCE_API_SECRET="your_binance_api_secret"
 
 **说明**：
 - 同一个 API key 可以同时用于币安的现货和永续合约交易
-- 目前币安交易所处于占位符模式，API 凭证为可选项
-- 当实现真实 API 集成后，私有 API 操作将需要配置相应的凭证
+- 币安交易所已实现真实API调用
+
+### OKX交易所 API 凭证
+
+OKX现货和永续合约共用同一个 API key，但需要额外的 passphrase：
+
+```bash
+# OKX 现货和永续合约共用（注意：需要3个参数）
+export OKX_API_KEY="your_okx_api_key"
+export OKX_API_SECRET="your_okx_api_secret"
+export OKX_PASSPHRASE="your_okx_passphrase"
+```
+
+**说明**：
+- OKX API 需要3个凭证：API Key、Secret Key 和 Passphrase
+- Passphrase 是创建 API 时自己设置的密码
+- 同一个 API key 可以同时用于 OKX 的现货和永续合约交易
 
 ### API 凭证获取
 

@@ -373,8 +373,12 @@ def orders(
             normalized_symbol = symbol.replace("/", "").replace("-", "").replace("_", "").upper()
             filtered_orders = []
             for order in orders_list:
+                # Gate.io格式 (contract: "BTC_USDT")
+                if 'contract' in order and 'instId' not in order:
+                    order_symbol = order.get("contract", "").replace("_", "").upper()
+                    
                 # OKX格式 (instId: "BTC-USDT-SWAP")
-                if 'instId' in order:
+                elif 'instId' in order:
                     order_symbol = order.get("instId", "").replace("-", "").replace("SWAP", "").upper()
                     
                 # Binance格式 (symbol: "BTCUSDT")
@@ -397,10 +401,26 @@ def orders(
         if output == "json":
             print_json(orders_list)
         elif output == "csv":
-            # 转换为字典列表供 CSV 使用，支持OKX和Binance格式
+            # 转换为字典列表供 CSV 使用，支持Gate.io、OKX和Binance格式
             csv_data = []
             for order in orders_list:
-                if 'instId' in order:
+                if 'contract' in order and 'instId' not in order:
+                    # Gate.io format
+                    size = order.get("size", 0)
+                    left = order.get("left", 0)
+                    filled = size - left if isinstance(size, (int, float)) and isinstance(left, (int, float)) else 0
+                    csv_data.append({
+                        "order_id": str(order.get("id", "")),
+                        "symbol": order.get("contract", ""),
+                        "side": order.get("side", ""),
+                        "type": order.get("tif", ""),
+                        "price": str(order.get("price", 0)),
+                        "quantity": str(size),
+                        "filled": str(filled),
+                        "status": order.get("status", ""),
+                        "time": str(order.get("create_time", 0))
+                    })
+                elif 'instId' in order:
                     # OKX format
                     csv_data.append({
                         "order_id": order.get("ordId", ""),
@@ -453,7 +473,7 @@ def watch_balance(
         ExchangeName.XT,
         "--exchange",
         "-x",
-        help="交易所 (xt, binance, okx)，默认 xt"
+        help="交易所 (xt, binance, okx, gate)，默认 xt"
     ),
     interval: int = typer.Option(
         1,
@@ -573,6 +593,221 @@ def watch_balance(
         raise typer.Exit(code=1)
 
 
+@app.command("watch-positions")
+def watch_positions(
+    exchange_type: ExchangeType = typer.Option(
+        ...,
+        "--exchange-type",
+        "-e",
+        help="交易类型（必须为 perp）"
+    ),
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt, binance, okx, gate)，默认 xt"
+    ),
+    symbol: Optional[str] = typer.Option(
+        None,
+        "--symbol",
+        "-s",
+        help="交易对（例如 BTC/USDT），不指定则显示所有"
+    ),
+    interval: int = typer.Option(
+        1,
+        "--interval",
+        "-i",
+        help="查询间隔（分钟），默认1分钟"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="API 密钥（覆盖环境变量）"
+    ),
+    api_secret: Optional[str] = typer.Option(
+        None,
+        "--api-secret",
+        help="API 密钥（覆盖环境变量）"
+    ),
+    output: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="输出格式 (table, json)"
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="启用调试模式"
+    )
+):
+    """定时查询持仓（仅永续合约）.
+    
+    每隔指定分钟查询一次持仓，持续监控持仓变化。
+    按 Ctrl+C 停止监控。
+    
+    示例:
+        # 每1分钟查询一次所有持仓
+        cextools account watch-positions -e perp
+        
+        # 每2分钟查询Binance的BTC持仓
+        cextools account watch-positions -x binance -e perp -s BTC/USDT --interval 2
+        
+        # 每5分钟查询Gate.io的所有持仓
+        cextools account watch-positions -x gate -e perp -i 5
+    """
+    try:
+        # 验证 exchange_type
+        if exchange_type != ExchangeType.PERP:
+            console.print("[red]错误:[/red] watch-positions 命令仅支持永续合约 (perp)")
+            raise typer.Exit(code=1)
+
+        # 验证间隔时间
+        if interval < 1:
+            raise ValueError("查询间隔必须至少为1分钟")
+
+        # 验证 symbol 格式（如果提供）
+        if symbol:
+            symbol = validate_symbol(symbol)
+
+        # 创建 exchange 实例
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
+
+        symbol_text = f"的 {symbol} " if symbol else ""
+        console.print(f"[cyan]开始监控 {exchange.value.upper()} 永续合约{symbol_text}持仓[/cyan]")
+        console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
+        console.print(f"[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+        # 定时查询函数
+        async def watch_loop():
+            iteration = 0
+            try:
+                await exchange_instance.connect()
+                
+                while True:
+                    iteration += 1
+                    current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    console.print(f"\n{'='*60}")
+                    console.print(f"[bold]第 {iteration} 次查询 - {current_time}[/bold]")
+                    console.print(f"{'='*60}\n")
+                    
+                    try:
+                        # 始终获取所有持仓，然后在本地筛选
+                        positions_data = await exchange_instance.get_positions(None)
+                        
+                        # 如果指定了symbol，在本地筛选
+                        if symbol:
+                            # 标准化symbol格式用于匹配（移除斜杠、横杠、下划线并转大写）
+                            normalized_symbol = symbol.replace("/", "").replace("-", "").replace("_", "").upper()
+                            
+                            filtered_positions = []
+                            for pos in positions_data:
+                                if isinstance(pos, dict):
+                                    # Gate.io格式 (contract: "BTC_USDT")
+                                    if 'contract' in pos and 'instId' not in pos:
+                                        pos_symbol = pos.get("contract", "").replace("_", "").upper()
+                                    # OKX格式 (instId: "BTC-USDT-SWAP")
+                                    elif 'instId' in pos:
+                                        pos_symbol = pos.get("instId", "").replace("-", "").replace("SWAP", "").upper()
+                                    # Binance格式 (symbol: "BTCUSDT")
+                                    else:
+                                        pos_symbol = pos.get("symbol", "").upper()
+                                else:
+                                    # XT格式，可能是 "btc_usdt" 或 "BTC/USDT"
+                                    pos_symbol = pos.symbol.replace("/", "").replace("_", "").upper()
+                                
+                                if pos_symbol == normalized_symbol:
+                                    filtered_positions.append(pos)
+                            
+                            positions_data = filtered_positions
+                        
+                        # 显示结果
+                        if not positions_data:
+                            if symbol:
+                                console.print(f"[yellow]未发现 {symbol} 的持仓[/yellow]")
+                            else:
+                                console.print("[yellow]未发现持仓[/yellow]")
+                        else:
+                            # 根据输出格式显示
+                            if output == "json":
+                                print_json(positions_data)
+                            else:  # table (default)
+                                format_positions_table(positions_data, exchange_instance)
+                        
+                        # 显示统计信息
+                        if positions_data:
+                            total_positions = len(positions_data)
+                            long_positions = 0
+                            short_positions = 0
+                            
+                            for pos in positions_data:
+                                if isinstance(pos, dict):
+                                    # Gate.io格式
+                                    if 'contract' in pos and 'instId' not in pos:
+                                        size = pos.get("size", 0)
+                                        if size > 0:
+                                            long_positions += 1
+                                        elif size < 0:
+                                            short_positions += 1
+                                    # OKX格式
+                                    elif 'instId' in pos:
+                                        pos_side = pos.get("posSide", "")
+                                        if pos_side == "long":
+                                            long_positions += 1
+                                        elif pos_side == "short":
+                                            short_positions += 1
+                                    # Binance格式
+                                    else:
+                                        pos_amt = pos.get("positionAmt", 0)
+                                        if pos_amt > 0:
+                                            long_positions += 1
+                                        elif pos_amt < 0:
+                                            short_positions += 1
+                                else:
+                                    # XT格式
+                                    if hasattr(pos, 'side'):
+                                        if pos.side.lower() == 'long':
+                                            long_positions += 1
+                                        elif pos.side.lower() == 'short':
+                                            short_positions += 1
+                            
+                            console.print(f"\n[dim]统计: 共 {total_positions} 个持仓 (多头: {long_positions}, 空头: {short_positions})[/dim]")
+                        
+                        # 显示下次查询时间
+                        next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
+                        console.print(f"[dim]下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+                        
+                    except Exception as e:
+                        console.print(f"[red]查询失败:[/red] {e}")
+                        if debug:
+                            console.print_exception()
+                    
+                    # 等待指定分钟数（转换为秒）
+                    console.print(f"[dim]等待 {interval} 分钟...[/dim]")
+                    await asyncio.sleep(interval * 60)
+                    
+            except KeyboardInterrupt:
+                console.print("\n[yellow]监控已停止[/yellow]")
+            finally:
+                await exchange_instance.disconnect()
+        
+        # 运行监控循环
+        asyncio.run(watch_loop())
+        
+    except KeyboardInterrupt:
+        console.print("\n[yellow]监控已停止[/yellow]")
+    except ValueError as e:
+        console.print(f"[red]参数错误:[/red] {e}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        if debug:
+            console.print_exception()
+        else:
+            console.print(f"[red]错误:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 @app.command("watch-orders")
 def watch_orders(
     exchange_type: ExchangeType = typer.Option(
@@ -585,7 +820,7 @@ def watch_orders(
         ExchangeName.XT,
         "--exchange",
         "-x",
-        help="交易所 (xt, binance, okx)，默认 xt"
+        help="交易所 (xt, binance, okx, gate)，默认 xt"
     ),
     symbol: Optional[str] = typer.Option(
         None,
@@ -633,8 +868,8 @@ def watch_orders(
         # 每2分钟查询Binance的BTC挂单
         cextools account watch-orders -x binance -e perp -s BTC/USDT --interval 2
         
-        # 每5分钟查询OKX的所有挂单
-        cextools account watch-orders -x okx -e perp -i 5
+        # 每5分钟查询Gate.io的所有挂单
+        cextools account watch-orders -x gate -e perp -i 5
     """
     try:
         # 验证 exchange_type

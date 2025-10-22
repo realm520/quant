@@ -13,6 +13,7 @@ from tri_arb.exchanges.xt_perp import XTPerpExchange
 from tri_arb.exchanges.binance_spot import BinanceSpotExchange
 from tri_arb.exchanges.binance_perp import BinancePerpExchange
 from tri_arb.exchanges.okx_perp import OKXPerpExchange
+from tri_arb.exchanges.gate_perp import GatePerpExchange
 
 
 class ExchangeName(str, Enum):
@@ -20,6 +21,7 @@ class ExchangeName(str, Enum):
     XT = "xt"
     BINANCE = "binance"
     OKX = "okx"
+    GATE = "gate"
 
 
 class ExchangeType(str, Enum):
@@ -94,6 +96,17 @@ def create_exchange(
         elif exchange_type == ExchangeType.SPOT:
             raise ValueError(
                 "OKX 现货交易暂未实现\n"
+                "请使用永续合约: --exchange-type perp"
+            )
+    
+    # Gate.io 交易所
+    elif exchange_name == ExchangeName.GATE:
+        if exchange_type == ExchangeType.PERP:
+            # Gate.io 永续合约
+            return GatePerpExchange(api_key=key, api_secret=secret)
+        elif exchange_type == ExchangeType.SPOT:
+            raise ValueError(
+                "Gate.io 现货交易暂未实现\n"
                 "请使用永续合约: --exchange-type perp"
             )
 

@@ -315,7 +315,7 @@ class Balance(BaseModel):
     
     class Config:
         # 将字符串转为 Decimal 类型，并保证小数精度
-        anystr_strip_whitespace = True
+        str_strip_whitespace = True
     
     def to_dict(self):
         """将余额数据转换为字典形式"""

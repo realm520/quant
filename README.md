@@ -1,8 +1,75 @@
-# tri-arb - Triangle Arbitrage Trading System
+# tri-arb - Multi-Exchange Trading System
 
-**MVP Scaffold v0.1.0** - Python-based triangle arbitrage trading system with async architecture and production-ready infrastructure.
+**Version 2.0** - 全功能多交易所量化交易系统，支持XT、Binance、OKX、Gate.io。
 
-> ⚠️ **PLACEHOLDER MODE**: This is an MVP scaffold implementation. All trading logic returns placeholder data. No actual trading occurs.
+## 🎉 新功能亮点
+
+### ⚡ WebSocket实时订阅 (NEW!)
+- ✅ 实时账户更新推送
+- ✅ 实时订单状态推送
+- ✅ 实时成交记录推送
+- ✅ PostgreSQL数据持久化
+- ✅ 自动重连机制
+
+### 🔄 定时监控 (NEW!)
+- ✅ 定时查询余额 (`watch-balance`)
+- ✅ 定时查询订单 (`watch-orders`)
+- ✅ 可配置时间间隔
+
+### 📊 多交易所支持
+- ✅ **XT** - 完整支持
+- ✅ **Binance** - 完整支持 + WebSocket
+- ✅ **OKX** - 完整支持 + WebSocket
+- ✅ **Gate.io** - 完整支持 + WebSocket
+
+## ⚡ 快速开始
+
+### 1. REST API查询（基础功能）
+
+```bash
+# 配置API凭证
+export BINANCE_API_KEY="..."
+export BINANCE_API_SECRET="..."
+export OKX_API_KEY="..."
+export OKX_API_SECRET="..."
+export OKX_PASSPHRASE="..."
+
+# 查询余额
+cextools account balance -x binance -e perp
+cextools account balance -x okx -e perp
+
+# 查询持仓
+cextools account positions -x binance -e perp --symbol BTC/USDT
+
+# 下单
+cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG
+```
+
+### 2. WebSocket实时订阅（推荐）
+
+```bash
+# 1. 安装依赖
+pip install -r requirements-db.txt
+
+# 2. 配置PostgreSQL
+bash scripts/configure_postgres_trust.sh
+
+# 3. 初始化数据库
+psql -U postgres -d trading -f scripts/init_database.sql
+
+# 4. 启动订阅
+export DATABASE_URL="postgresql+asyncpg://postgres@localhost:5432/trading"
+cextools subscribe user-stream -x binance        # Binance全部
+cextools subscribe user-stream -x okx            # OKX全部
+cextools subscribe user-stream -x okx -c order   # OKX只订阅订单
+```
+
+📚 **核心文档**：
+1. **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** ⭐ - 所有命令（5分钟）
+2. **[FEATURES.md](FEATURES.md)** ⭐ - 功能总览
+3. **[docs/WEBSOCKET_COMPLETE_GUIDE.md](docs/WEBSOCKET_COMPLETE_GUIDE.md)** - WebSocket指南
+4. **[docs/GATE.md](docs/GATE.md)** - Gate.io 合并指南
+5. **[docs/README.md](docs/README.md)** - 文档中心
 
 ## 📋 Table of Contents
 

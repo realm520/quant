@@ -176,8 +176,28 @@ def format_open_orders_table(orders: List[Dict[str, Any]], exchange) -> None:
     table.add_column("Time", style="white")
 
     for order in orders:
-        # Check if it's OKX format (has 'instId') or Binance format (has 'symbol')
-        if 'instId' in order:
+        # Check if it's Gate.io format (has 'contract')
+        if 'contract' in order and 'instId' not in order:
+            # Gate.io format
+            symbol = order.get("contract", "")
+            order_id = str(order.get("id", ""))
+            side = order.get("side", "").upper()
+            order_type = order.get("tif", "")  # Gate.io用tif表示订单类型
+            price = order.get("price", Decimal('0'))
+            orig_qty = order.get("size", Decimal('0'))
+            # Gate.io的left表示剩余数量，成交数量 = 总数量 - 剩余数量
+            left_qty = order.get("left", Decimal('0'))
+            executed_qty = orig_qty - left_qty
+            status = order.get("status", "")
+            
+            # Gate.io时间戳是秒
+            order_time = order.get("create_time", 0)
+            if order_time:
+                time_str = datetime.fromtimestamp(order_time).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                time_str = "N/A"
+        # Check if it's OKX format (has 'instId')
+        elif 'instId' in order:
             # OKX format
             symbol = order.get("instId", "")
             order_id = order.get("ordId", "")

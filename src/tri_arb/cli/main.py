@@ -38,6 +38,17 @@ app.add_typer(market.app, name="market", help="市场行情")
 app.add_typer(order.app, name="order", help="订单管理")
 app.add_typer(leverage.app, name="leverage", help="杠杆管理（仅永续合约）")
 
+# 添加subscribe命令组（WebSocket订阅）
+try:
+    from tri_arb.cli.commands import subscribe
+    app.add_typer(subscribe.app, name="subscribe", help="WebSocket订阅（Binance）")
+except ImportError as e:
+    import sys
+    print(f"Warning: subscribe command not available: {e}", file=sys.stderr)
+except Exception as e:
+    import sys
+    print(f"Error loading subscribe command: {e}", file=sys.stderr)
+
 console = Console()
 
 

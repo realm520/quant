@@ -773,3 +773,119 @@ class BinancePerpExchange(BaseExchange):
         """
         raise NotImplementedError("Order book subscription not yet implemented for Binance Futures")
         yield  # Make this a generator
+
+    async def get_all_orders(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """查询所有订单（包括历史订单）.
+
+        Args:
+            symbol: 交易对符号，如"BTCUSDT"
+            start_time: 起始时间戳（毫秒），可选
+            end_time: 结束时间戳（毫秒），可选
+            limit: 返回数量限制，默认500，最大1000
+
+        Returns:
+            订单列表，每个订单包含完整信息
+
+        Raises:
+            ValueError: 缺少API凭证
+        """
+        self._require_credentials()
+
+        params = {
+            "symbol": symbol,
+            "limit": limit,
+            "timestamp": int(time.time() * 1000),
+        }
+
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+
+        query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        signature = self._generate_signature(query_string)
+        params["signature"] = signature
+
+        response = await self._request(
+            method="GET",
+            path="/fapi/v1/allOrders",
+            params=params,
+            authenticated=True,
+        )
+
+        orders = response.json()
+        logger.debug(
+            "Retrieved historical orders",
+            symbol=symbol,
+            count=len(orders),
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        return orders
+
+    async def get_user_trades(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        from_id: int | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """查询账户成交历史.
+
+        Args:
+            symbol: 交易对符号，如"BTCUSDT"
+            start_time: 起始时间戳（毫秒），可选
+            end_time: 结束时间戳（毫秒），可选
+            from_id: Trade ID起点，可选
+            limit: 返回数量限制，默认500，最大1000
+
+        Returns:
+            成交列表，每个成交包含完整信息
+
+        Raises:
+            ValueError: 缺少API凭证
+        """
+        self._require_credentials()
+
+        params = {
+            "symbol": symbol,
+            "limit": limit,
+            "timestamp": int(time.time() * 1000),
+        }
+
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        if from_id is not None:
+            params["fromId"] = from_id
+
+        query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        signature = self._generate_signature(query_string)
+        params["signature"] = signature
+
+        response = await self._request(
+            method="GET",
+            path="/fapi/v1/userTrades",
+            params=params,
+            authenticated=True,
+        )
+
+        trades = response.json()
+        logger.debug(
+            "Retrieved user trades",
+            symbol=symbol,
+            count=len(trades),
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        return trades

@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -99,6 +99,7 @@ class OrderUpdate(Base):
         Index('idx_order_id_event_time', 'order_id', 'event_time'),
         Index('idx_symbol_status', 'symbol', 'order_status'),
         Index('idx_exchange_symbol_time', 'exchange', 'symbol', 'event_time'),
+        UniqueConstraint('exchange', 'order_id', 'event_time', name='uq_order_update_event'),
     )
 
 
@@ -119,7 +120,7 @@ class TradeUpdate(Base):
     # 交易信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
     order_id = Column(BigInteger, nullable=False, index=True)  # 订单ID
-    trade_id = Column(BigInteger, nullable=False, unique=True, index=True)  # 成交ID
+    trade_id = Column(BigInteger, nullable=False, index=True)  # 成交ID
     
     # 成交详情
     side = Column(String(10), nullable=False)  # BUY/SELL
@@ -144,17 +145,18 @@ class TradeUpdate(Base):
     __table_args__ = (
         Index('idx_symbol_trade_time', 'symbol', 'transaction_time'),
         Index('idx_order_trade', 'order_id', 'trade_id'),
+        UniqueConstraint('exchange', 'trade_id', name='uq_trade_id'),
     )
 
 
 class ListenKeyRecord(Base):
     """ListenKey记录.
-    
+
     存储Binance用户数据流的ListenKey，用于WebSocket连接。
     """
-    
+
     __tablename__ = "listen_keys"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)
     listen_key = Column(String(100), nullable=False, unique=True)
@@ -162,4 +164,39 @@ class ListenKeyRecord(Base):
     expires_at = Column(DateTime, nullable=False)  # 过期时间（60分钟后）
     is_active = Column(Boolean, default=True, index=True)
     last_keepalive = Column(DateTime, nullable=True)  # 最后一次keepalive时间
+
+
+class ConnectionStatus(Base):
+    """WebSocket连接状态追踪.
+
+    存储每个交易所WebSocket连接的状态和最后处理的数据时间戳，
+    用于断线重连后补全丢失的数据。
+    """
+
+    __tablename__ = "connection_status"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exchange = Column(String(20), nullable=False, unique=True, index=True)  # 交易所名称
+    is_connected = Column(Boolean, default=False)  # 当前连接状态
+    last_connected_at = Column(DateTime, nullable=True)  # 最后连接时间
+    last_disconnected_at = Column(DateTime, nullable=True)  # 最后断线时间
+
+    # 最后处理的事件时间戳（用于数据补全）
+    last_order_event_time = Column(DateTime, nullable=True, index=True)  # 最后处理的订单事件时间
+    last_trade_event_time = Column(DateTime, nullable=True, index=True)  # 最后处理的成交事件时间
+    last_account_event_time = Column(DateTime, nullable=True, index=True)  # 最后处理的账户事件时间
+
+    # 最后处理的ID（用于精确去重）
+    last_order_id = Column(BigInteger, nullable=True)  # 最后处理的订单ID
+    last_trade_id = Column(BigInteger, nullable=True)  # 最后处理的成交ID
+
+    # 统计信息
+    total_reconnect_count = Column(Integer, default=0)  # 总重连次数
+    last_data_gap_seconds = Column(Integer, nullable=True)  # 最后一次断线时长（秒）
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('idx_exchange_connected', 'exchange', 'is_connected'),
+    )
 

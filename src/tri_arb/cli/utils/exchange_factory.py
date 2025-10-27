@@ -124,7 +124,8 @@ def _get_env_prefix(exchange_name: ExchangeName, exchange_type: ExchangeType) ->
         环境变量前缀字符串
         
     Note:
-        现货和永续合约使用相同的 API key，只需要根据交易所名称区分环境变量。
+        XT交易所的现货和永续合约使用相同的API密钥，只需要根据交易所名称区分环境变量。
+        其他交易所也遵循相同规则。
     """
-    # 现货和永续合约共用同一个 API key
+    # 现货和永续合约共用同一个API key
     return exchange_name.value.upper()

@@ -12,6 +12,8 @@ from tri_arb.config.logging import get_logger
 from tri_arb.storage.models import Base as BinanceBase
 from tri_arb.storage.okx_models import Base as OKXBase
 from tri_arb.storage.gate_models import Base as GateBase
+from tri_arb.storage.rest_models import Base as RestBase
+from tri_arb.storage.xt_websocket_models import Base as XTWebSocketBase
 
 logger = get_logger(__name__)
 
@@ -59,7 +61,7 @@ class DatabaseManager:
         )
     
     async def create_tables(self):
-        """创建所有数据库表（Binance、OKX、Gate.io）."""
+        """创建所有数据库表（Binance、OKX、Gate.io、REST API、XT WebSocket）."""
         async with self.async_engine.begin() as conn:
             # 创建Binance表
             await conn.run_sync(BinanceBase.metadata.create_all)
@@ -67,7 +69,11 @@ class DatabaseManager:
             await conn.run_sync(OKXBase.metadata.create_all)
             # 创建Gate.io表
             await conn.run_sync(GateBase.metadata.create_all)
-        logger.info("Database tables created (Binance + OKX + Gate.io)")
+            # 创建REST API表
+            await conn.run_sync(RestBase.metadata.create_all)
+            # 创建XT WebSocket表
+            await conn.run_sync(XTWebSocketBase.metadata.create_all)
+        logger.info("Database tables created (Binance + OKX + Gate.io + REST API + XT WebSocket)")
     
     async def drop_tables(self):
         """删除所有数据库表（谨慎使用）."""
@@ -75,7 +81,9 @@ class DatabaseManager:
             await conn.run_sync(BinanceBase.metadata.drop_all)
             await conn.run_sync(OKXBase.metadata.drop_all)
             await conn.run_sync(GateBase.metadata.drop_all)
-        logger.warning("Database tables dropped (Binance + OKX + Gate.io)")
+            await conn.run_sync(RestBase.metadata.drop_all)
+            await conn.run_sync(XTWebSocketBase.metadata.drop_all)
+        logger.warning("Database tables dropped (Binance + OKX + Gate.io + REST API + XT WebSocket)")
     
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession, None]:

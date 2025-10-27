@@ -11,6 +11,7 @@ from tri_arb.cli.utils.exchange_factory import ExchangeName
 from tri_arb.services.binance_user_stream import BinanceUserStreamService
 from tri_arb.services.okx_user_stream import OKXUserStreamService
 from tri_arb.services.gate_user_stream import GateUserStreamService
+from tri_arb.services.xt_user_stream import XTUserStreamService
 from tri_arb.storage.database import DatabaseManager
 
 app = typer.Typer(help="WebSocket订阅命令")
@@ -23,7 +24,7 @@ def user_stream(
         ...,
         "--exchange",
         "-x",
-        help="交易所: binance 或 okx"
+        help="交易所: binance, okx, gate, xt"
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -60,24 +61,33 @@ def user_stream(
         None,
         "--channels",
         "-c",
-        help="订阅的频道，用逗号分隔。Binance: account,order,trade; OKX: account,position,order。留空=全部订阅"
+        help="订阅的频道，用逗号分隔。Binance: account,order,trade; OKX: account,position,order; XT: account,position,order,trade。留空=全部订阅（默认订阅永续合约）"
     ),
     debug: bool = typer.Option(
         False,
         "--debug",
         help="启用调试模式"
+    ),
+    enable_data_sync: bool = typer.Option(
+        True,
+        "--enable-data-sync/--disable-data-sync",
+        help="启用/禁用数据同步（默认启用，防止数据丢失）"
     )
 ):
     """订阅用户数据流.
     
     实时接收账户更新、订单更新和成交信息，并存储到PostgreSQL数据库。
+    默认订阅永续合约数据。
     
     示例:
-        # Binance
+        # Binance永续合约
         cextools subscribe user-stream -x binance
         
-        # OKX
+        # OKX永续合约
         cextools subscribe user-stream -x okx
+        
+        # XT永续合约（默认）
+        cextools subscribe user-stream -x xt
         
         # 指定输出格式
         cextools subscribe user-stream -x binance --output table
@@ -96,6 +106,14 @@ def user_stream(
             OKX_API_SECRET: API密钥
             OKX_PASSPHRASE: API Passphrase
         
+        Gate.io:
+            GATE_API_KEY: API密钥
+            GATE_API_SECRET: API密钥
+        
+        XT:
+            XT_API_KEY: API密钥（现货和永续合约共用）
+            XT_API_SECRET: API密钥（现货和永续合约共用）
+        
         数据库:
             DATABASE_URL: PostgreSQL连接URL
         
@@ -103,9 +121,9 @@ def user_stream(
     """
     try:
         # 验证交易所
-        if exchange not in [ExchangeName.BINANCE, ExchangeName.OKX, ExchangeName.GATE]:
+        if exchange not in [ExchangeName.BINANCE, ExchangeName.OKX, ExchangeName.GATE, ExchangeName.XT]:
             console.print(f"[red]错误:[/red] 不支持的交易所: {exchange}")
-            console.print("支持的交易所: binance, okx, gate")
+            console.print("支持的交易所: binance, okx, gate, xt")
             raise typer.Exit(code=1)
         
         # 根据交易所获取API凭证
@@ -147,6 +165,18 @@ def user_stream(
                 console.print("  export GATE_API_SECRET='your_secret'")
                 raise typer.Exit(code=1)
         
+        elif exchange == ExchangeName.XT:
+            key = api_key or os.getenv("XT_API_KEY", "")
+            secret = api_secret or os.getenv("XT_API_SECRET", "")
+            
+            if not key or not secret:
+                console.print("[red]错误:[/red] 缺少XT API凭证")
+                console.print("请设置环境变量或使用命令行参数")
+                console.print("\n示例:")
+                console.print("  export XT_API_KEY='your_key'")
+                console.print("  export XT_API_SECRET='your_secret'")
+                raise typer.Exit(code=1)
+        
         # 获取数据库URL
         db_url = database_url or os.getenv(
             "DATABASE_URL",
@@ -179,11 +209,19 @@ def user_stream(
                     console.print(f"[red]错误:[/red] Gate.io不支持的频道: {', '.join(invalid)}")
                     console.print(f"支持的频道: {', '.join(valid_channels)}")
                     raise typer.Exit(code=1)
+            elif exchange == ExchangeName.XT:
+                valid_channels = {"account", "position", "order", "trade"}
+                invalid = set(channel_list) - valid_channels
+                if invalid:
+                    console.print(f"[red]错误:[/red] XT不支持的频道: {', '.join(invalid)}")
+                    console.print(f"支持的频道: {', '.join(valid_channels)}")
+                    raise typer.Exit(code=1)
         
         exchange_name = {
             ExchangeName.BINANCE: "Binance",
             ExchangeName.OKX: "OKX",
-            ExchangeName.GATE: "Gate.io"
+            ExchangeName.GATE: "Gate.io",
+            ExchangeName.XT: "XT"
         }.get(exchange, "Unknown")
         console.print(f"[cyan]{exchange_name}用户数据流订阅服务[/cyan]")
         console.print(f"[cyan]数据库: {db_url.split('@')[-1] if '@' in db_url else 'localhost'}[/cyan]")
@@ -191,6 +229,7 @@ def user_stream(
             console.print(f"[cyan]订阅频道: {', '.join(channel_list)}[/cyan]")
         else:
             console.print(f"[cyan]订阅频道: 全部[/cyan]")
+        console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
         console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
         
         async def run_service():
@@ -229,7 +268,7 @@ def user_stream(
                     display_format=output,
                     enabled_channels=channel_list,
                 )
-            else:  # Gate.io
+            elif exchange == ExchangeName.GATE:
                 service = GateUserStreamService(
                     api_key=key,
                     api_secret=secret,
@@ -237,6 +276,16 @@ def user_stream(
                     auto_reconnect=True,
                     display_format=output,
                     enabled_channels=channel_list,
+                )
+            else:  # XT
+                service = XTUserStreamService(
+                    api_key=key,
+                    api_secret=secret,
+                    db_manager=db_manager,
+                    auto_reconnect=True,
+                    display_format=output,
+                    enabled_channels=channel_list,
+                    enable_data_sync=enable_data_sync,
                 )
             
             console.print("[green]✅ 服务已启动[/green]")

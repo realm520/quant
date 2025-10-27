@@ -507,6 +507,210 @@ COMMENT ON TABLE gate_orders IS 'Gate.io订单记录';
 COMMENT ON TABLE gate_trades IS 'Gate.io成交记录';
 
 -- ============================================================
+-- XT WebSocket 表结构
+-- ============================================================
+
+-- XT WebSocket账户更新表
+CREATE TABLE IF NOT EXISTS xt_account_updates (
+    id BIGSERIAL PRIMARY KEY,
+    update_time TIMESTAMP NOT NULL,
+    
+    -- 余额信息
+    currency VARCHAR(20) NOT NULL,
+    available NUMERIC(30, 10) NOT NULL,
+    frozen NUMERIC(30, 10) NOT NULL,
+    total NUMERIC(30, 10) NOT NULL,
+    
+    -- 原始数据
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_account_currency_time ON xt_account_updates(currency, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_account_time ON xt_account_updates(update_time);
+
+-- XT WebSocket持仓更新表
+CREATE TABLE IF NOT EXISTS xt_position_updates (
+    id BIGSERIAL PRIMARY KEY,
+    update_time TIMESTAMP NOT NULL,
+    
+    -- 持仓信息
+    symbol VARCHAR(20) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    quantity NUMERIC(30, 10) NOT NULL,
+    entry_price NUMERIC(30, 10),
+    mark_price NUMERIC(30, 10),
+    liquidation_price NUMERIC(30, 10),
+    unrealized_pnl NUMERIC(30, 10),
+    leverage INTEGER,
+    margin NUMERIC(30, 10),
+    roe NUMERIC(10, 4),
+    
+    -- 原始数据
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_position_symbol_time ON xt_position_updates(symbol, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_position_side_time ON xt_position_updates(side, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_position_time ON xt_position_updates(update_time);
+
+-- XT WebSocket订单更新表
+CREATE TABLE IF NOT EXISTS xt_order_updates (
+    id BIGSERIAL PRIMARY KEY,
+    update_time TIMESTAMP NOT NULL,
+    
+    -- 订单信息
+    symbol VARCHAR(20) NOT NULL,
+    order_id VARCHAR(50) NOT NULL,
+    client_order_id VARCHAR(50),
+    side VARCHAR(10) NOT NULL,
+    order_type VARCHAR(30) NOT NULL,
+    position_side VARCHAR(10),
+    quantity NUMERIC(30, 10) NOT NULL,
+    price NUMERIC(30, 10),
+    filled_quantity NUMERIC(30, 10) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    time_in_force VARCHAR(10),
+    
+    -- 时间信息
+    create_time TIMESTAMP,
+    update_time_order TIMESTAMP,
+    
+    -- 原始数据
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_order_id_time ON xt_order_updates(order_id, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_order_symbol_status_time ON xt_order_updates(symbol, status, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_order_time ON xt_order_updates(update_time);
+
+-- XT WebSocket成交更新表
+CREATE TABLE IF NOT EXISTS xt_trade_updates (
+    id BIGSERIAL PRIMARY KEY,
+    update_time TIMESTAMP NOT NULL,
+    
+    -- 交易信息
+    symbol VARCHAR(20) NOT NULL,
+    order_id VARCHAR(50) NOT NULL,
+    trade_id VARCHAR(50) NOT NULL UNIQUE,
+    
+    -- 成交详情
+    side VARCHAR(10) NOT NULL,
+    price NUMERIC(30, 10) NOT NULL,
+    quantity NUMERIC(30, 10) NOT NULL,
+    quote_quantity NUMERIC(30, 10) NOT NULL,
+    
+    -- 手续费
+    commission NUMERIC(30, 10),
+    commission_asset VARCHAR(20),
+    
+    -- 是否为Maker
+    is_maker BOOLEAN DEFAULT FALSE,
+    
+    -- 持仓方向
+    position_side VARCHAR(10),
+    
+    -- 原始数据
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_trade_symbol_time ON xt_trade_updates(symbol, update_time);
+CREATE INDEX IF NOT EXISTS idx_xt_trade_order_trade ON xt_trade_updates(order_id, trade_id);
+CREATE INDEX IF NOT EXISTS idx_xt_trade_time ON xt_trade_updates(update_time);
+
+-- XT WebSocket连接记录表
+CREATE TABLE IF NOT EXISTS xt_websocket_connections (
+    id SERIAL PRIMARY KEY,
+    connection_id VARCHAR(100) NOT NULL UNIQUE,
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- 连接统计
+    total_messages INTEGER DEFAULT 0,
+    account_updates INTEGER DEFAULT 0,
+    position_updates INTEGER DEFAULT 0,
+    order_updates INTEGER DEFAULT 0,
+    trade_updates INTEGER DEFAULT 0,
+    
+    -- 重连统计
+    reconnect_count INTEGER DEFAULT 0,
+    last_reconnect_time TIMESTAMP,
+    last_error TEXT,
+    
+    -- 数据同步统计
+    data_sync_count INTEGER DEFAULT 0,
+    last_sync_time TIMESTAMP,
+    
+    -- 原始数据
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_ws_active ON xt_websocket_connections(is_active);
+CREATE INDEX IF NOT EXISTS idx_xt_ws_start_time ON xt_websocket_connections(start_time);
+
+-- ============================================================
+-- XT WebSocket 视图
+-- ============================================================
+
+-- XT最新账户余额
+CREATE OR REPLACE VIEW xt_latest_account_balances AS
+SELECT DISTINCT ON (currency)
+    *
+FROM xt_account_updates
+ORDER BY currency, update_time DESC;
+
+-- XT最新持仓
+CREATE OR REPLACE VIEW xt_latest_positions AS
+SELECT DISTINCT ON (symbol, side)
+    *
+FROM xt_position_updates
+WHERE quantity > 0
+ORDER BY symbol, side, update_time DESC;
+
+-- XT最新订单
+CREATE OR REPLACE VIEW xt_latest_orders AS
+SELECT DISTINCT ON (order_id)
+    *
+FROM xt_order_updates
+ORDER BY order_id, update_time DESC;
+
+-- XT WebSocket连接统计
+CREATE OR REPLACE VIEW xt_websocket_stats AS
+SELECT
+    COUNT(*) as total_connections,
+    COUNT(CASE WHEN is_active = TRUE THEN 1 END) as active_connections,
+    SUM(total_messages) as total_messages,
+    SUM(account_updates) as total_account_updates,
+    SUM(position_updates) as total_position_updates,
+    SUM(order_updates) as total_order_updates,
+    SUM(trade_updates) as total_trade_updates,
+    SUM(reconnect_count) as total_reconnects,
+    SUM(data_sync_count) as total_data_syncs,
+    MAX(start_time) as last_connection_start,
+    MAX(end_time) as last_connection_end
+FROM xt_websocket_connections;
+
+-- ============================================================
+-- XT WebSocket 表注释
+-- ============================================================
+
+COMMENT ON TABLE xt_account_updates IS 'XT WebSocket账户余额更新记录';
+COMMENT ON TABLE xt_position_updates IS 'XT WebSocket持仓更新记录';
+COMMENT ON TABLE xt_order_updates IS 'XT WebSocket订单更新记录';
+COMMENT ON TABLE xt_trade_updates IS 'XT WebSocket成交更新记录';
+COMMENT ON TABLE xt_websocket_connections IS 'XT WebSocket连接记录';
+
+-- ============================================================
 -- 完成
 -- ============================================================
 

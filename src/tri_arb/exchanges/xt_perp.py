@@ -1124,5 +1124,119 @@ class XTPerpExchange(BaseExchange):
         path = "/future/user/v1/position/leverage"
         body = {"symbol": symbol, "leverage": leverage}
         await self._request("POST", path, params=None, body=body, require_auth=True)
-        
+
         logger.info("Leverage set successfully", symbol=symbol, leverage=leverage)
+
+    async def get_order_list(
+        self,
+        symbol: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[Order]:
+        """Query order history.
+
+        Args:
+            symbol: Trading pair symbol (optional, None for all symbols)
+            start_time: Start timestamp in milliseconds (optional)
+            end_time: End timestamp in milliseconds (optional)
+            limit: Maximum number of orders to return (default: 100, max: 500)
+
+        Returns:
+            List of orders
+
+        Raises:
+            RuntimeError: If exchange is not connected
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        path = "/future/trade/v1/order/list-history"
+        params = {"limit": min(limit, 500)}
+
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+
+        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+
+        orders = []
+        order_list = data.get("result", {}).get("items", [])
+
+        for order_data in order_list:
+            try:
+                # Parse trading pair from symbol
+                symbol_str = order_data.get("symbol", "")
+                if "_" in symbol_str:
+                    base, quote = symbol_str.split("_", 1)
+                    trading_pair = TradingPair(base_currency=base.upper(), quote_currency=quote.upper())
+                else:
+                    logger.warning("Invalid symbol format", symbol=symbol_str)
+                    continue
+
+                # Parse order data
+                order = Order(
+                    exchange_order_id=str(order_data.get("orderId", "")),
+                    trading_pair=trading_pair,
+                    side=OrderSide(order_data.get("orderSide", "BUY")),
+                    order_type=OrderType(order_data.get("orderType", "LIMIT")),
+                    quantity=Decimal(str(order_data.get("origQty", "0"))),
+                    price=Decimal(str(order_data.get("price", "0"))) if order_data.get("price") else None,
+                    status=self._parse_order_status(order_data.get("state", "")),
+                    timestamp=datetime.fromtimestamp(
+                        order_data.get("createTime", 0) / 1000, tz=timezone.utc
+                    ) if order_data.get("createTime") else None,
+                    position_side=order_data.get("positionSide", "LONG"),
+                )
+                orders.append(order)
+
+            except (ValueError, KeyError, decimal.InvalidOperation) as e:
+                logger.warning("Failed to parse order data", error=str(e), order_data=order_data)
+                continue
+
+        logger.info("Retrieved order list", count=len(orders), symbol=symbol)
+        return orders
+
+    async def get_user_trades(
+        self,
+        symbol: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query user trade history.
+
+        Args:
+            symbol: Trading pair symbol (optional, None for all symbols)
+            start_time: Start timestamp in milliseconds (optional)
+            end_time: End timestamp in milliseconds (optional)
+            limit: Maximum number of trades to return (default: 100, max: 500)
+
+        Returns:
+            List of trade records
+
+        Raises:
+            RuntimeError: If exchange is not connected
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        path = "/future/trade/v1/order/trade-list"
+        params = {"limit": min(limit, 500)}
+
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+
+        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+
+        trades = data.get("result", {}).get("items", [])
+
+        logger.info("Retrieved user trades", count=len(trades), symbol=symbol)
+        return trades

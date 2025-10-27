@@ -33,13 +33,18 @@ export BINANCE_API_SECRET="..."
 export OKX_API_KEY="..."
 export OKX_API_SECRET="..."
 export OKX_PASSPHRASE="..."
+export XT_API_KEY="..."  # XT现货和永续合约共用
+export XT_API_SECRET="..."  # XT现货和永续合约共用
 
 # 查询余额
 cextools account balance -x binance -e perp
 cextools account balance -x okx -e perp
+cextools account balance -x xt -e perp  # XT永续合约
+cextools account balance -x xt -e spot  # XT现货
 
 # 查询持仓
 cextools account positions -x binance -e perp --symbol BTC/USDT
+cextools account positions -x xt -e perp --symbol BTC/USDT
 
 # 下单
 cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG
@@ -57,10 +62,11 @@ bash scripts/configure_postgres_trust.sh
 # 3. 初始化数据库
 psql -U postgres -d trading -f scripts/init_database.sql
 
-# 4. 启动订阅
+# 4. 启动订阅（默认订阅永续合约）
 export DATABASE_URL="postgresql+asyncpg://postgres@localhost:5432/trading"
-cextools subscribe user-stream -x binance        # Binance全部
-cextools subscribe user-stream -x okx            # OKX全部
+cextools subscribe user-stream -x binance        # Binance永续合约
+cextools subscribe user-stream -x okx            # OKX永续合约
+cextools subscribe user-stream -x xt              # XT永续合约（默认）
 cextools subscribe user-stream -x okx -c order   # OKX只订阅订单
 ```
 

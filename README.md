@@ -66,9 +66,9 @@ cextools subscribe user-stream -x okx -c order   # OKX只订阅订单
 
 📚 **核心文档**：
 1. **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** ⭐ - 所有命令（5分钟）
-2. **[FEATURES.md](FEATURES.md)** ⭐ - 功能总览
-3. **[docs/WEBSOCKET_COMPLETE_GUIDE.md](docs/WEBSOCKET_COMPLETE_GUIDE.md)** - WebSocket指南
-4. **[docs/GATE.md](docs/GATE.md)** - Gate.io 合并指南
+2. **[docs/CEXTOOLS_COMPLETE_GUIDE.md](docs/CEXTOOLS_COMPLETE_GUIDE.md)** ⭐ - 完整使用指南（20分钟）
+3. **[FEATURES.md](FEATURES.md)** ⭐ - 功能总览
+4. **[docs/WEBSOCKET_COMPLETE_GUIDE.md](docs/WEBSOCKET_COMPLETE_GUIDE.md)** - WebSocket指南
 5. **[docs/README.md](docs/README.md)** - 文档中心
 
 ## 📋 Table of Contents

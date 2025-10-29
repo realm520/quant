@@ -9,9 +9,11 @@ import decimal
 import hashlib
 import hmac
 import time
+import aiohttp
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from decimal import Decimal
+from pyxt.perp import Perp
 from typing import Any
 
 import httpx
@@ -59,6 +61,7 @@ class XTPerpExchange(BaseExchange):
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
+        self.perp = Perp("https://fapi.xt.com", api_key, api_secret)
     def get_name(self) -> str:
         """Get the name of the exchange."""
         return "xt_perp"
@@ -901,6 +904,78 @@ class XTPerpExchange(BaseExchange):
     # ============================================================================
     # Perpetual Futures Specific Methods
     # ============================================================================
+    async def create_user_stream_listen_key(self) -> str:
+        """创建用户数据 WebSocket 流的 listen key"""
+        try:
+            # 使用 Perp 客户端获取 listen key
+            status_code, response, headers = self.perp.get_listen_key()
+
+            # 如果返回状态码不是 200 或者没有 'result' 字段，则抛出异常
+            if status_code != 200 or 'result' not in response:
+                raise RuntimeError(f"获取 listen key 失败，意外的响应: {response}")
+
+            listen_key = response['result']
+            logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
+
+            return listen_key
+
+        except Exception as exc:
+            logger.error(f"创建 XT 用户流 listen key 失败: {str(exc)}")
+            raise RuntimeError(f"创建 XT 用户流 listen key 失败: {str(exc)}") from exc
+    # async def create_user_stream_listen_key(self) -> str:
+    #     """创建用户数据 WebSocket 流的 listen key"""
+    #     try:
+    #         async with aiohttp.ClientSession() as session:
+    #             # 构造请求头
+    #             headers = {
+    #                 'Content-Type': 'application/json',
+    #                 'X-API-KEY': self._api_key
+    #             }
+    #             # 构造请求数据
+    #             payload = {}
+
+    #             # 发送 POST 请求来获取 listen key
+    #             async with session.post(f"{self.BASE_URL}/future/user/v1/listen-key", headers=headers, json=payload) as response:
+    #                 if response.status != 200:
+    #                     raise RuntimeError(f"获取 listen key 失败，HTTP 状态码: {response.status}")
+
+    #                 result = await response.json()
+                    
+    #                 # 检查响应是否包含 "result"
+    #                 if 'result' not in result:
+    #                     raise RuntimeError(f"获取 listen key 失败，响应内容: {result}")
+                    
+    #                 listen_key = result['result']
+    #                 logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
+
+    #                 return listen_key
+
+    #     except Exception as exc:
+    #         logger.error(f"创建 XT 用户流 listen key 失败: {str(exc)}")
+    #         raise RuntimeError(f"创建 XT 用户流 listen key 失败: {str(exc)}") from exc
+
+    @staticmethod
+    def _extract_listen_key(response: Any) -> str | None:
+        """Extract listen key from XT API response."""
+        if isinstance(response, str):
+            return response
+
+        if isinstance(response, dict):
+            for key in ("listenKey", "listen_key", "result", "data"):
+                if key not in response:
+                    continue
+                extracted = XTPerpExchange._extract_listen_key(response[key])
+                if extracted:
+                    return extracted
+            return None
+
+        if isinstance(response, list):
+            for item in response:
+                extracted = XTPerpExchange._extract_listen_key(item)
+                if extracted:
+                    return extracted
+
+        return None
 
     async def get_balance(self) -> dict[str, dict[str, Decimal]]:
         """Get account balance for perpetual futures.

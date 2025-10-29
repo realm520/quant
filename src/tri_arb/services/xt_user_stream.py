@@ -72,7 +72,24 @@ class XTUserStreamService:
         self.enable_data_sync = enable_data_sync
 
         # 默认启用所有频道（包括成交记录）
-        self.enabled_channels = enabled_channels or {"account", "position", "order", "trade"}
+        default_channels = {"account", "position", "order", "trade"}
+        if enabled_channels is None:
+            self.enabled_channels = set(default_channels)
+        else:
+            self.enabled_channels = set(enabled_channels)
+            unsupported = self.enabled_channels - default_channels
+            if unsupported:
+                logger.warning(
+                    "Ignoring unsupported XT user stream channels",
+                    extra={"unsupported_channels": list(unsupported)},
+                )
+                self.enabled_channels -= unsupported
+            if not self.enabled_channels:
+                logger.warning(
+                    "No valid XT user stream channels provided; falling back to defaults",
+                    extra={"default_channels": list(default_channels)},
+                )
+                self.enabled_channels = set(default_channels)
         
         # WebSocket连接状态
         self.websocket = None
@@ -95,6 +112,9 @@ class XTUserStreamService:
 
         # XT WebSocket认证
         self.listen_key = None
+        self._subscription_request_id: Optional[str] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._heartbeat_interval = 15  # seconds
 
         # 数据缓存（用于检测变化）
         self._last_account_data = {}
@@ -108,7 +128,6 @@ class XTUserStreamService:
                         "data_sync_enabled": self.enable_data_sync,
                         "fixed_lookback_hours": 1
                     })
-    
     async def start(self) -> None:
         """启动WebSocket服务."""
         if self.is_running:
@@ -160,6 +179,7 @@ class XTUserStreamService:
         self.is_running = False
         
         if self.websocket:
+            await self._stop_heartbeat()
             await self.websocket.close()
             self.websocket = None
         
@@ -185,6 +205,8 @@ class XTUserStreamService:
 
             # 订阅用户数据流
             await self._subscribe_user_data()
+
+            await self._start_heartbeat()
             
             # 记录重连时间
             self.reconnect_time = datetime.utcnow()
@@ -199,8 +221,11 @@ class XTUserStreamService:
                 await self._handle_message(message)
                 message_count += 1
                 
-        except ConnectionClosed:
-            logger.warning("XT WebSocket connection closed")
+        except ConnectionClosed as exc:
+            logger.warning(
+                "XT WebSocket connection closed",
+                extra={"code": exc.code, "reason": exc.reason},
+            )
             self.is_connected = False
             # 记录断线时间
             self.disconnect_time = datetime.utcnow()
@@ -217,77 +242,113 @@ class XTUserStreamService:
             # 记录断线时间
             self.disconnect_time = datetime.utcnow()
             logger.debug("Recorded disconnect time")
+        finally:
+            await self._stop_heartbeat()
     
     async def _get_listen_key(self) -> None:
         """获取XT WebSocket listenKey."""
+        api_key = self.api_key
+        api_secret = self.api_secret
+        if not api_key or not api_secret:
+            raise RuntimeError("XT_API_KEY / XT_API_SECRET 未设置")
+
         if not self.rest_client:
-            logger.error("REST client not initialized, cannot get listen key")
-            raise RuntimeError("REST client not initialized")
+            raise RuntimeError("XT REST client is not initialized")
 
         try:
-            # 调用XT API获取listenKey - 使用官方文档的路径
-            path = "/v1/user/listen-key"
-            logger.debug(f"Requesting listen_key from endpoint: {path}")
-            data = await self.rest_client._request("POST", path, params=None, body={}, require_auth=True)
-
-            # Debug: Log the full response
-            logger.debug(f"Listen key API response: {json.dumps(data, indent=2, cls=DecimalEncoder) if data else 'None'}")
-
-            # XT API返回的字段名
-            if isinstance(data, dict):
-                self.listen_key = data.get("listenKey") or data.get("listen_key")
-                if not self.listen_key:
-                    nested = data.get("result") if isinstance(data.get("result"), dict) else data.get("data")
-                    if isinstance(nested, dict):
-                        self.listen_key = nested.get("listenKey") or nested.get("listen_key")
-            if self.listen_key:
-                logger.info("Successfully obtained listen key", extra={"listen_key_prefix": self.listen_key[:8] if len(self.listen_key) > 8 else "***"})
-            else:
-                logger.error("Failed to get listen key from API response")
-                # Log response details
-                logger.error(f"API response: {data}")
-                raise RuntimeError("Listen key not found in API response")
-
-        except Exception as e:
-            logger.error(f"Failed to get listen key: {e}")
+            listen_key = await self.rest_client.create_user_stream_listen_key()
+        except Exception as exc:
+            logger.error("Failed to obtain XT listen key", extra={"error": str(exc)})
             raise
-    
+
+        if not listen_key:
+            raise RuntimeError("Failed to obtain XT listen key: response was empty")
+
+        self.listen_key = listen_key
+        logger.debug(
+            "Obtained XT listen key",
+            extra={"listen_key_prefix": listen_key[:8]},
+        )
+
     async def _subscribe_user_data(self) -> None:
         """订阅用户数据流."""
         if not self.listen_key:
             logger.error("Listen key not available, cannot subscribe")
             raise RuntimeError("Listen key not available")
 
-        # XT WebSocket订阅格式
-        # 根据XT文档，需要发送订阅消息
-        subscribe_message = {
-            "method": "SUBSCRIBE",
-            "params": [
-                f"order@{self.listen_key}"
-            ],
-            "id": "test1"
+        channel_map = {
+            "account": "balance",
+            "position": "position",
+            "order": "order",
+            "trade": "trade",
         }
 
+        params = []
+        for channel in sorted(self.enabled_channels):
+            stream_name = channel_map.get(channel)
+            if not stream_name:
+                logger.warning(
+                    "Skipping unsupported XT user stream channel",
+                    extra={"channel": channel},
+                )
+                continue
+            params.append(f"{stream_name}@{self.listen_key}")
+
+        if not params:
+            logger.error("No valid XT user stream channels configured")
+            raise RuntimeError("No valid XT user stream channels configured")
+
+        # 使用固定的订阅ID，符合XT API文档要求
+        subscribe_message = {
+            "method": "SUBSCRIBE",
+            "params": params,
+            "id": "test1",
+        }
+       
         await self.websocket.send(json.dumps(subscribe_message, cls=DecimalEncoder))
-        logger.info("Subscribed to XT user data stream with listenKey")
+        logger.info(
+            "Subscribed to XT user data stream with listenKey",
+            extra={"channels": params},
+        )
     
     async def _handle_message(self, message: str) -> None:
+        
         """处理WebSocket消息."""
         try:
             # 检查消息是否为空或只包含空白字符
             if not message or not message.strip():
                 logger.debug("Received empty WebSocket message")
                 return
+
+            normalized = message.strip().lower()
+
+            if normalized == "ping":
+                logger.debug("Received XT ping, sending pong response")
+                await self._send_pong()
+                return
+
+            if normalized == "pong":
+                logger.debug("Received XT pong response")
+                return
             
             data = json.loads(message)
-            
+            logger.info(f"Received WebSocket message: {message[:500]}")
+            logger.debug("Parsed WebSocket message", extra={"data_sample": str(data)[:200]})
             # 更新消息统计
             await self._update_message_stats()
 
             # XT WebSocket消息格式处理
             # 检查是否是订阅确认消息
-            if "result" in data and data.get("id") == 1:
-                logger.info("Subscription confirmed", extra={"result": data.get("result")})
+            if data.get("id") == "test1":
+                if "result" in data:
+                    logger.info("Subscription confirmed", extra={"result": data.get("result")})
+                elif data.get("code") == 0:
+                    logger.info(
+                        "Subscription confirmed",
+                        extra={"confirmation_message": data.get("msg", "ok")},
+                    )
+                else:
+                    logger.debug("Subscription response received", extra={"payload": data})
                 return
 
             # 检查是否是错误消息
@@ -304,38 +365,103 @@ class XTUserStreamService:
                     logger.error("WebSocket error", extra={"error_code": error_code, "error_msg": error_msg})
                     return
 
-            # 处理数据推送消息
-            stream = data.get("stream", "")
-            if "@" in stream:
-                channel = stream.split("@")[0]
-                listen_key = stream.split("@")[1]
+            # 处理数据推送消息 - XT格式
+            topic = data.get("topic", "")
+            event = data.get("event", "")
+            
+            if topic and event:
+                logger.info("Received XT WebSocket message", extra={"topic": topic, "event": event})
                 
-                logger.info("Received WebSocket message", extra={"channel": channel, "stream": stream})
-                
-                # 根据频道类型处理数据
-                if channel == "balance" and "account" in self.enabled_channels:
+                # 根据topic类型处理数据
+                if topic == "balance" and "account" in self.enabled_channels:
                     await self._handle_account_update(data)
-                elif channel == "position" and "position" in self.enabled_channels:
+                elif topic == "position" and "position" in self.enabled_channels:
                     await self._handle_position_update(data)
-                elif channel == "order" and "order" in self.enabled_channels:
+                elif topic == "order" and "order" in self.enabled_channels:
                     await self._handle_order_update(data)
-                elif channel == "trade" and "trade" in self.enabled_channels:
+                elif topic == "trade" and "trade" in self.enabled_channels:
                     await self._handle_trade_update(data)
                 else:
-                    logger.debug("Unknown channel or channel disabled", extra={"channel": channel})
+                    logger.debug("Unknown topic or channel disabled", extra={"topic": topic})
             else:
-                logger.debug("Unknown message format", extra={"data_sample": str(data)[:200]})
+                # 兼容旧格式
+                stream = data.get("stream", "")
+                if "@" in stream:
+                    channel = stream.split("@")[0]
+                    listen_key = stream.split("@")[1]
+                    
+                    logger.info("Received WebSocket message (legacy format)", extra={"channel": channel, "stream": stream})
+                    
+                    # 根据频道类型处理数据
+                    if channel == "balance" and "account" in self.enabled_channels:
+                        await self._handle_account_update(data)
+                    elif channel == "position" and "position" in self.enabled_channels:
+                        await self._handle_position_update(data)
+                    elif channel == "order" and "order" in self.enabled_channels:
+                        await self._handle_order_update(data)
+                    elif channel == "trade" and "trade" in self.enabled_channels:
+                        await self._handle_trade_update(data)
+                    else:
+                        logger.debug("Unknown channel or channel disabled", extra={"channel": channel})
+                else:
+                    logger.debug("Unknown message format", extra={"data_sample": str(data)[:200]})
                 
         except json.JSONDecodeError as e:
             logger.debug(f"Failed to parse WebSocket message: {e}")
             # 记录原始消息内容以便调试
             logger.debug(f"Raw message content: {repr(message[:200])}")
+            normalized = message.strip().lower()
+            if normalized == "ping":
+                await self._send_pong()
+            elif normalized == "pong":
+                logger.debug("Received raw pong text frame")
         except Exception as e:
             logger.error(f"Error handling WebSocket message: {e}")
+
+    async def _send_pong(self) -> None:
+        """Respond to XT ping with pong."""
+        if not self.websocket:
+            return
+        try:
+            await self.websocket.send("pong")
+            logger.debug("Sent pong response to XT WebSocket")
+        except Exception as exc:
+            logger.debug("Failed to send pong response", extra={"error": str(exc)})
+
+    async def _start_heartbeat(self) -> None:
+        """Start periodic ping task to keep XT WebSocket alive."""
+        await self._stop_heartbeat()
+
+        if not self.websocket:
+            return
+
+        async def _heartbeat_loop() -> None:
+            while self.is_running and self.is_connected and self.websocket:
+                try:
+                    await self.websocket.send("ping")
+                    logger.debug("Sent heartbeat ping to XT WebSocket")
+                except Exception as exc:
+                    logger.debug("Heartbeat ping failed", extra={"error": str(exc)})
+                    break
+                await asyncio.sleep(self._heartbeat_interval)
+
+        self._heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
+    async def _stop_heartbeat(self) -> None:
+        """Stop heartbeat task if running."""
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._heartbeat_task = None
     
     async def _handle_account_update(self, data: Dict[str, Any]) -> None:
         """处理账户更新消息."""
         if "account" not in self.enabled_channels:
+            logger.debug("Account channel not enabled")
             return
         
         # 提取XT账户数据
@@ -344,9 +470,14 @@ class XTUserStreamService:
             logger.warning("No account data in message")
             return
         
+        logger.info(f"Processing account update: {account_data}")
+        
         # 检查数据是否有变化
         if not self._has_account_changed(account_data):
+            logger.debug("Account data unchanged, skipping display")
             return
+        
+        logger.info("Account data changed, displaying update")
         
         try:
             # 显示账户更新
@@ -463,13 +594,13 @@ class XTUserStreamService:
             table.add_column("总余额", style="blue")
             table.add_column("更新时间", style="dim")
             
-            # 解析账户数据
-            balances = data.get("balances", [])
-            for balance in balances:
-                currency = balance.get("currency", "")
-                available = balance.get("available", "0")
-                frozen = balance.get("frozen", "0")
-                total = balance.get("total", "0")
+            # XT数据格式：单个余额对象
+            if "coin" in data:
+                # 单个余额对象
+                currency = data.get("coin", "")
+                available = data.get("availableBalance", "0")
+                frozen = data.get("openOrderMarginFrozen", "0")
+                total = data.get("walletBalance", "0")
                 update_time = datetime.now().strftime("%H:%M:%S")
                 
                 table.add_row(
@@ -479,6 +610,23 @@ class XTUserStreamService:
                     f"{total}",
                     update_time,
                 )
+            else:
+                # 兼容旧格式：多个余额对象
+                balances = data.get("balances", [])
+                for balance in balances:
+                    currency = balance.get("currency", "")
+                    available = balance.get("available", "0")
+                    frozen = balance.get("frozen", "0")
+                    total = balance.get("total", "0")
+                    update_time = datetime.now().strftime("%H:%M:%S")
+                    
+                    table.add_row(
+                        currency,
+                        f"{available}",
+                        f"{frozen}",
+                        f"{total}",
+                        update_time,
+                    )
             
             console.print(table)
     
@@ -502,16 +650,16 @@ class XTUserStreamService:
             table.add_column("未实现盈亏", style="red")
             table.add_column("杠杆", style="dim")
             
-            # 解析持仓数据
-            positions = data.get("positions", [])
-            for position in positions:
-                symbol = position.get("symbol", "")
-                side = position.get("side", "")
-                quantity = position.get("quantity", "0")
-                entry_price = position.get("entry_price", "0")
-                mark_price = position.get("mark_price", "0")
-                unrealized_pnl = position.get("unrealized_pnl", "0")
-                leverage = position.get("leverage", "1")
+            # XT数据格式：单个持仓对象
+            if "symbol" in data:
+                # 单个持仓对象
+                symbol = data.get("symbol", "")
+                side = data.get("side", "")
+                quantity = data.get("quantity", "0")
+                entry_price = data.get("entryPrice", "0")
+                mark_price = data.get("markPrice", "0")
+                unrealized_pnl = data.get("unrealizedPnl", "0")
+                leverage = data.get("leverage", "1")
                 
                 table.add_row(
                     symbol,
@@ -522,6 +670,27 @@ class XTUserStreamService:
                     f"{unrealized_pnl}",
                     f"{leverage}x",
                 )
+            else:
+                # 兼容旧格式：多个持仓对象
+                positions = data.get("positions", [])
+                for position in positions:
+                    symbol = position.get("symbol", "")
+                    side = position.get("side", "")
+                    quantity = position.get("quantity", "0")
+                    entry_price = position.get("entry_price", "0")
+                    mark_price = position.get("mark_price", "0")
+                    unrealized_pnl = position.get("unrealized_pnl", "0")
+                    leverage = position.get("leverage", "1")
+                    
+                    table.add_row(
+                        symbol,
+                        side,
+                        f"{quantity}",
+                        f"{entry_price}",
+                        f"{mark_price}",
+                        f"{unrealized_pnl}",
+                        f"{leverage}x",
+                    )
             
             console.print(table)
     
@@ -545,16 +714,16 @@ class XTUserStreamService:
             table.add_column("价格", style="red")
             table.add_column("状态", style="dim")
             
-            # 解析订单数据
-            orders = data.get("orders", [])
-            for order in orders:
-                order_id = order.get("order_id", "")
-                symbol = order.get("symbol", "")
-                side = order.get("side", "")
-                order_type = order.get("order_type", "")
-                quantity = order.get("quantity", "0")
-                price = order.get("price", "0")
-                status = order.get("status", "")
+            # XT数据格式：单个订单对象
+            if "orderId" in data:
+                # 单个订单对象
+                order_id = data.get("orderId", "")
+                symbol = data.get("symbol", "")
+                side = data.get("side", "")
+                order_type = data.get("type", "")
+                quantity = data.get("quantity", "0")
+                price = data.get("price", "0")
+                status = data.get("status", "")
                 
                 table.add_row(
                     order_id,
@@ -565,6 +734,27 @@ class XTUserStreamService:
                     f"{price}",
                     status,
                 )
+            else:
+                # 兼容旧格式：多个订单对象
+                orders = data.get("orders", [])
+                for order in orders:
+                    order_id = order.get("order_id", "")
+                    symbol = order.get("symbol", "")
+                    side = order.get("side", "")
+                    order_type = order.get("order_type", "")
+                    quantity = order.get("quantity", "0")
+                    price = order.get("price", "0")
+                    status = order.get("status", "")
+                    
+                    table.add_row(
+                        order_id,
+                        symbol,
+                        side,
+                        order_type,
+                        f"{quantity}",
+                        f"{price}",
+                        status,
+                    )
             
             console.print(table)
     
@@ -615,17 +805,19 @@ class XTUserStreamService:
         """保存账户更新到数据库."""
         try:
             async with self.db_manager.session() as session:
-                balances = data.get("balances", [])
                 update_time = datetime.utcnow()
                 
-                for balance in balances:
-                    currency = balance.get("currency", "")
+                # XT数据格式：单个余额对象
+                if "coin" in data:
+                    # 单个余额对象
+                    currency = data.get("coin", "")
                     if not currency:
-                        continue
+                        logger.warning("No currency found in account data")
+                        return
                     
-                    available = self._safe_decimal(balance.get("available", "0"))
-                    frozen = self._safe_decimal(balance.get("frozen", "0"))
-                    total = available + frozen
+                    available = self._safe_decimal(data.get("availableBalance", "0"))
+                    frozen = self._safe_decimal(data.get("openOrderMarginFrozen", "0"))
+                    total = self._safe_decimal(data.get("walletBalance", "0"))
                     
                     record = XTAccountUpdate(
                         update_time=update_time,
@@ -633,12 +825,35 @@ class XTUserStreamService:
                         available=available,
                         frozen=frozen,
                         total=total,
-                        raw_data=json.dumps(balance, cls=DecimalEncoder),
+                        raw_data=json.dumps(data, cls=DecimalEncoder),
                     )
                     session.add(record)
+                    logger.info(f"Added account update for {currency}: available={available}, frozen={frozen}, total={total}")
+                else:
+                    # 兼容旧格式：多个余额对象
+                    balances = data.get("balances", [])
+                    for balance in balances:
+                        currency = balance.get("currency", "")
+                        if not currency:
+                            continue
+                        
+                        available = self._safe_decimal(balance.get("available", "0"))
+                        frozen = self._safe_decimal(balance.get("frozen", "0"))
+                        total = available + frozen
+                        
+                        record = XTAccountUpdate(
+                            update_time=update_time,
+                            currency=currency,
+                            available=available,
+                            frozen=frozen,
+                            total=total,
+                            raw_data=json.dumps(balance, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        logger.info(f"Added account update for {currency}: available={available}, frozen={frozen}, total={total}")
                 
                 await session.commit()
-                logger.debug("Saved account update to database")
+                logger.info("Successfully saved account update to database")
                 
         except Exception as e:
             logger.error(f"Failed to save account update: {e}")
@@ -647,20 +862,51 @@ class XTUserStreamService:
         """保存持仓更新到数据库."""
         try:
             async with self.db_manager.session() as session:
-                positions = data.get("positions", [])
                 update_time = datetime.utcnow()
                 
-                for position in positions:
-                    symbol = position.get("symbol", "")
+                # XT数据格式：单个持仓对象
+                if "symbol" in data:
+                    # 单个持仓对象
+                    symbol = data.get("symbol", "")
                     if not symbol:
-                        continue
+                        logger.warning("No symbol found in position data")
+                        return
                     
-                    side = position.get("side", "")
-                    quantity = self._safe_decimal(position.get("quantity", "0"))
+                    side = data.get("side", "")
+                    quantity = self._safe_decimal(data.get("quantity", "0"))
                     
                     # 跳过持仓量为0的记录
                     if quantity == 0:
-                        continue
+                        logger.debug(f"Position quantity is 0 for {symbol}, skipping")
+                        return
+                    
+                    record = XTPositionUpdate(
+                        update_time=update_time,
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=self._safe_decimal(data.get("entryPrice", "0")),
+                        mark_price=self._safe_decimal(data.get("markPrice", "0")),
+                        unrealized_pnl=self._safe_decimal(data.get("unrealizedPnl", "0")),
+                        leverage=self._safe_decimal(data.get("leverage", "1")),
+                        raw_data=json.dumps(data, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                    logger.info(f"Added position update for {symbol}: {side} {quantity}")
+                else:
+                    # 兼容旧格式：多个持仓对象
+                    positions = data.get("positions", [])
+                    for position in positions:
+                        symbol = position.get("symbol", "")
+                        if not symbol:
+                            continue
+                        
+                        side = position.get("side", "")
+                        quantity = self._safe_decimal(position.get("quantity", "0"))
+                        
+                        # 跳过持仓量为0的记录
+                        if quantity == 0:
+                            continue
                     
                     record = XTPositionUpdate(
                         update_time=update_time,
@@ -688,42 +934,81 @@ class XTUserStreamService:
         """保存订单更新到数据库."""
         try:
             async with self.db_manager.session() as session:
-                orders = data.get("orders", [])
                 update_time = datetime.utcnow()
                 
-                for order in orders:
-                    order_id = order.get("order_id", "")
+                # XT数据格式：单个订单对象
+                if "orderId" in data:
+                    # 单个订单对象
+                    order_id = data.get("orderId", "")
                     if not order_id:
-                        continue
+                        logger.warning("No order ID found in order data")
+                        return
                     
-                    symbol = order.get("symbol", "")
-                    side = order.get("side", "")
-                    order_type = order.get("order_type", "")
-                    quantity = self._safe_decimal(order.get("quantity", "0"))
-                    price = self._safe_decimal(order.get("price", "0"))
-                    filled_quantity = self._safe_decimal(order.get("filled_quantity", "0"))
-                    status = order.get("status", "")
+                    symbol = data.get("symbol", "")
+                    side = data.get("side", "")
+                    order_type = data.get("type", "")
+                    quantity = self._safe_decimal(data.get("quantity", "0"))
+                    price = self._safe_decimal(data.get("price", "0"))
+                    filled_quantity = self._safe_decimal(data.get("filledQuantity", "0"))
+                    status = data.get("status", "")
                     
                     record = XTOrderUpdate(
                         update_time=update_time,
                         symbol=symbol,
                         order_id=order_id,
-                        client_order_id=order.get("client_order_id", ""),
+                        client_order_id=data.get("clientOrderId", ""),
                         side=side,
                         order_type=order_type,
-                        position_side=order.get("position_side", ""),
+                        position_side=data.get("positionSide", ""),
                         quantity=quantity,
                         price=price,
                         filled_quantity=filled_quantity,
                         status=status,
-                        time_in_force=order.get("time_in_force", ""),
-                        create_time=self._parse_timestamp(order.get("create_time")),
-                        update_time_order=self._parse_timestamp(order.get("update_time")),
-                        raw_data=json.dumps(order, cls=DecimalEncoder),
+                        time_in_force=data.get("timeInForce", ""),
+                        create_time=self._parse_timestamp(data.get("createTime")),
+                        update_time_order=self._parse_timestamp(data.get("updateTime")),
+                        raw_data=json.dumps(data, cls=DecimalEncoder),
                     )
                     session.add(record)
+                    logger.info(f"Added order update for {symbol}: {order_id} - {side} {quantity} @ {price} ({status})")
+                else:
+                    # 兼容旧格式：多个订单对象
+                    orders = data.get("orders", [])
+                    for order in orders:
+                        order_id = order.get("order_id", "")
+                        if not order_id:
+                            continue
+                        
+                        symbol = order.get("symbol", "")
+                        side = order.get("side", "")
+                        order_type = order.get("order_type", "")
+                        quantity = self._safe_decimal(order.get("quantity", "0"))
+                        price = self._safe_decimal(order.get("price", "0"))
+                        filled_quantity = self._safe_decimal(order.get("filled_quantity", "0"))
+                        status = order.get("status", "")
+                        
+                        record = XTOrderUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=order_id,
+                            client_order_id=order.get("client_order_id", ""),
+                            side=side,
+                            order_type=order_type,
+                            position_side=order.get("position_side", ""),
+                            quantity=quantity,
+                            price=price,
+                            filled_quantity=filled_quantity,
+                            status=status,
+                            time_in_force=order.get("time_in_force", ""),
+                            create_time=self._parse_timestamp(order.get("create_time")),
+                            update_time_order=self._parse_timestamp(order.get("update_time")),
+                            raw_data=json.dumps(order, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        logger.info(f"Added order update for {symbol}: {order_id} - {side} {quantity} @ {price} ({status})")
                 
                 await session.commit()
+                logger.info("Successfully saved order update to database")
                 logger.debug("Saved order update to database")
                 
         except Exception as e:

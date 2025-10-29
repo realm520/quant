@@ -7,8 +7,7 @@ asyncpg>=0.29.0
 sqlalchemy[asyncio]>=2.0.0
 
 # WebSocket client
-websockets>=12.0
+websockets>=12.0,<15
 
 # Database migrations (optional)
 alembic>=1.13.0
-

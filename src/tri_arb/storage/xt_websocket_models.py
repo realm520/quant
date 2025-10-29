@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -110,6 +110,8 @@ class XTOrderUpdate(Base):
         Index('idx_xt_order_id_time', 'order_id', 'update_time'),
         Index('idx_xt_order_symbol_status_time', 'symbol', 'status', 'update_time'),
         Index('idx_xt_order_time', 'update_time'),
+        # 唯一约束：防止重复订单记录（对账服务依赖此约束）
+        UniqueConstraint('order_id', 'update_time', name='uq_xt_order_id_time'),
     )
 
 

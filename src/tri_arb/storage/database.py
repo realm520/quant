@@ -37,7 +37,7 @@ class DatabaseManager:
         self.database_url = database_url or os.getenv(
             "DATABASE_URL",
             # 默认尝试无密码连接（本地开发环境）
-            "postgresql+asyncpg://postgres@localhost:5432/trading"
+            "postgresql+asyncpg://oliver@localhost:5432/trading"
         )
         
         # 异步引擎

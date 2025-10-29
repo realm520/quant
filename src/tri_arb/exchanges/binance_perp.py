@@ -133,22 +133,35 @@ class BinancePerpExchange(BaseExchange):
         if not self._client:
             raise ValueError("Not connected to exchange")
 
-        url = f"{self.BASE_URL}{path}"
         headers = {}
-        
+
         if authenticated:
             self._require_credentials()
             headers["X-MBX-APIKEY"] = self.api_key
-            
+
             # Add timestamp
             if params is None:
                 params = {}
             params["timestamp"] = int(time.time() * 1000)
-            
+
             # Generate signature
             query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
             signature = self._generate_signature(query_string)
-            params["signature"] = signature
+
+            # Build URL with signature manually to ensure consistency
+            url = f"{self.BASE_URL}{path}?{query_string}&signature={signature}"
+
+            logger.debug(
+                "Generated signature",
+                query_string=query_string,
+                signature=signature[:16] + "...",
+            )
+        else:
+            # For unauthenticated requests, let httpx handle params
+            url = f"{self.BASE_URL}{path}"
+            if params:
+                query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+                url = f"{url}?{query_string}"
 
         logger.debug(
             "Making Binance Futures API request",
@@ -160,7 +173,6 @@ class BinancePerpExchange(BaseExchange):
         response = await self._client.request(
             method=method,
             url=url,
-            params=params,
             headers=headers,
         )
         
@@ -800,17 +812,12 @@ class BinancePerpExchange(BaseExchange):
         params = {
             "symbol": symbol,
             "limit": limit,
-            "timestamp": int(time.time() * 1000),
         }
 
         if start_time is not None:
             params["startTime"] = start_time
         if end_time is not None:
             params["endTime"] = end_time
-
-        query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-        signature = self._generate_signature(query_string)
-        params["signature"] = signature
 
         response = await self._request(
             method="GET",
@@ -858,7 +865,6 @@ class BinancePerpExchange(BaseExchange):
         params = {
             "symbol": symbol,
             "limit": limit,
-            "timestamp": int(time.time() * 1000),
         }
 
         if start_time is not None:
@@ -867,10 +873,6 @@ class BinancePerpExchange(BaseExchange):
             params["endTime"] = end_time
         if from_id is not None:
             params["fromId"] = from_id
-
-        query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-        signature = self._generate_signature(query_string)
-        params["signature"] = signature
 
         response = await self._request(
             method="GET",

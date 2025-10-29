@@ -473,24 +473,123 @@ class GatePerpExchange(BaseExchange):
     
     async def get_trade_history(self, symbol: str, limit: int = 100) -> List[Dict]:
         """获取成交历史.
-        
+
         Args:
             symbol: 交易对
             limit: 数量限制
-            
+
         Returns:
             成交历史列表
         """
         contract = symbol.replace("/", "_").replace("-", "_").upper()
-        
+
         response = await self._request(
             method="GET",
             path="/api/v4/futures/usdt/my_trades",
             params={"contract": contract, "limit": limit},
             authenticated=True,
         )
-        
+
         return response.json()
+
+    async def get_all_orders(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """查询所有订单（包括历史订单）.
+
+        Args:
+            symbol: 交易对符号，如"BTC_USDT"
+            start_time: 起始时间戳（秒），可选
+            end_time: 结束时间戳（秒），可选
+            limit: 返回数量限制，默认100
+
+        Returns:
+            订单列表，每个订单包含完整信息
+        """
+        contract = symbol.replace("/", "_").replace("-", "_").upper()
+
+        params = {
+            "contract": contract,
+            "status": "finished",  # finished表示已完成的订单
+            "limit": limit,
+        }
+
+        # Gate.io使用from和to参数（秒级时间戳）
+        if start_time is not None:
+            params["from"] = start_time
+        if end_time is not None:
+            params["to"] = end_time
+
+        response = await self._request(
+            method="GET",
+            path="/api/v4/futures/usdt/orders",
+            params=params,
+            authenticated=True,
+        )
+
+        orders = response.json()
+        logger.debug(
+            "Retrieved Gate historical orders",
+            symbol=symbol,
+            count=len(orders),
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        return orders
+
+    async def get_user_trades(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """查询账户成交历史.
+
+        Args:
+            symbol: 交易对符号
+            start_time: 起始时间戳（秒），可选
+            end_time: 结束时间戳（秒），可选
+            limit: 返回数量限制，默认100
+
+        Returns:
+            成交列表
+        """
+        contract = symbol.replace("/", "_").replace("-", "_").upper()
+
+        params = {
+            "contract": contract,
+            "limit": limit,
+        }
+
+        # Gate.io使用from和to参数（秒级时间戳）
+        if start_time is not None:
+            params["from"] = start_time
+        if end_time is not None:
+            params["to"] = end_time
+
+        response = await self._request(
+            method="GET",
+            path="/api/v4/futures/usdt/my_trades",
+            params=params,
+            authenticated=True,
+        )
+
+        trades = response.json()
+        logger.debug(
+            "Retrieved Gate user trades",
+            symbol=symbol,
+            count=len(trades),
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        return trades
     
     async def get_trading_pair_info(self, symbol: str) -> Dict:
         """获取交易对信息.

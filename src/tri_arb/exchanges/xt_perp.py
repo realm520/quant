@@ -202,7 +202,19 @@ class XTPerpExchange(BaseExchange):
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as http_err:
+                content_preview = response.text[:500] if response.text else ""
+                logger.error(
+                    "XT API HTTP error",
+                    method=method,
+                    path=path,
+                    status_code=response.status_code,
+                    response_text=content_preview,
+                )
+                raise
+
             data = response.json()
 
             # Debug: Log full response for balance endpoint
@@ -222,7 +234,15 @@ class XTPerpExchange(BaseExchange):
             # Only treat as error if rc is explicitly non-zero (not null/None)
             rc = data.get("rc")
             if rc is not None and rc != 0:
-                error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else "Unknown error"
+                error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else data.get("msg", "Unknown error")
+                logger.error(
+                    "XT API returned error code",
+                    method=method,
+                    path=path,
+                    rc=rc,
+                    message=error_msg,
+                    raw_response=data,
+                )
                 raise ValueError(f"XT API error (code {rc}): {error_msg}")
 
             # Return result field if present, otherwise return entire data

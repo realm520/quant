@@ -99,6 +99,7 @@ class OrderUpdate(Base):
         Index('idx_order_id_event_time', 'order_id', 'event_time'),
         Index('idx_symbol_status', 'symbol', 'order_status'),
         Index('idx_exchange_symbol_time', 'exchange', 'symbol', 'event_time'),
+        # 唯一约束：防止重复记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'order_id', 'event_time', name='uq_order_update_event'),
     )
 
@@ -145,6 +146,7 @@ class TradeUpdate(Base):
     __table_args__ = (
         Index('idx_symbol_trade_time', 'symbol', 'transaction_time'),
         Index('idx_order_trade', 'order_id', 'trade_id'),
+        # 唯一约束：防止重复成交记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'trade_id', name='uq_trade_id'),
     )
 

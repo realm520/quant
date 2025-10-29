@@ -8,12 +8,20 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Optional, Set
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """自定义JSON编码器，处理Decimal类型"""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super(DecimalEncoder, self).default(obj)
 
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.xt_websocket_models import (
@@ -62,8 +70,8 @@ class XTUserStreamService:
         self.auto_reconnect = auto_reconnect
         self.display_format = display_format
         self.enable_data_sync = enable_data_sync
-        
-        # 默认启用所有频道
+
+        # 默认启用所有频道（包括成交记录）
         self.enabled_channels = enabled_channels or {"account", "position", "order", "trade"}
         
         # WebSocket连接状态
@@ -81,8 +89,9 @@ class XTUserStreamService:
         self.disconnect_time = None
         self.reconnect_time = None
 
-        # XT REST API客户端（用于数据同步，默认使用永续合约）
-        self.rest_client = None
+        # XT REST API客户端（用于获取listen_key和数据同步）
+        # 即使禁用数据同步，也需要REST客户端来获取WebSocket的listen_key
+        self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
 
         # XT WebSocket认证
         self.listen_key = None
@@ -93,7 +102,12 @@ class XTUserStreamService:
         self._last_order_data = {}
         self._last_trade_data = {}
         
-        logger.info("XT WebSocket service initialized")
+        logger.debug("XT WebSocket service initialized",
+                    extra={
+                        "enabled_channels": list(self.enabled_channels),
+                        "data_sync_enabled": self.enable_data_sync,
+                        "fixed_lookback_hours": 1
+                    })
     
     async def start(self) -> None:
         """启动WebSocket服务."""
@@ -103,17 +117,15 @@ class XTUserStreamService:
         
         self.is_running = True
         self.connection_id = str(uuid.uuid4())
-        
-        # 初始化REST客户端用于数据同步（如果启用）
-        if self.enable_data_sync:
-            self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
-            await self.rest_client.connect()
-            logger.info("REST API client initialized for data synchronization")
-        
+
+        # 初始化REST客户端（必需，用于获取listen_key）
+        await self.rest_client.connect()
+        logger.debug("REST API client initialized")
+
         # 记录连接开始
         await self._record_connection_start()
-        
-        logger.info("Starting XT WebSocket service")
+
+        logger.debug("Starting XT WebSocket service")
         
         # 启动WebSocket连接循环
         while self.is_running:
@@ -135,11 +147,11 @@ class XTUserStreamService:
         
         # 记录连接结束
         await self._record_connection_end()
-        
+
         # 清理资源
-        if self.rest_client and self.enable_data_sync:
+        if self.rest_client:
             await self.rest_client.disconnect()
-        
+
         logger.info("XT WebSocket service stopped")
     
     async def stop(self) -> None:
@@ -159,182 +171,165 @@ class XTUserStreamService:
         ws_url = "wss://fstream.xt.com/ws/user"
         
         try:
-            logger.info("Connecting to XT WebSocket")
-            
+            logger.debug("Connecting to XT WebSocket")
+
             # 建立WebSocket连接，添加必需的请求头
             self.websocket = await websockets.connect(ws_url)
             self.is_connected = True
             self.reconnect_attempts = 0
-            
-            logger.info("Connected to XT WebSocket")
-            
-            # 暂时跳过listenKey获取，直接尝试订阅
-            # await self._get_listen_key()
-            
+
+            logger.debug("Connected to XT WebSocket")
+
+            # 获取listen_key用于认证
+            await self._get_listen_key()
+
             # 订阅用户数据流
             await self._subscribe_user_data()
             
             # 记录重连时间
             self.reconnect_time = datetime.utcnow()
-            logger.info("Recorded reconnect time")
-            
-            # 显示测试数据以验证表格功能
-            await self._display_test_data()
+            logger.debug("Recorded reconnect time")
 
-            # 连接成功后立即进行数据同步（如果启用）
-            if self.enable_data_sync:
-                logger.info("Performing initial data synchronization after reconnection")
-
-                # 如果有断线时间记录，说明是重连，需要补充断线期间的数据
-                if self.disconnect_time:
-                    disconnect_duration = (self.reconnect_time - self.disconnect_time).total_seconds()
-                    logger.info(
-                        "Reconnected after disconnection, will sync missing data",
-                        disconnect_duration=disconnect_duration
-                    )
-
-                # 补充断线期间的缺失数据
-                await self._sync_missing_data()
-            
             # 监听消息
-            logger.info("Starting WebSocket message loop")
+            logger.debug("Starting WebSocket message loop")
             message_count = 0
-            last_test_display = datetime.utcnow()
             
             async for message in self.websocket:
-                logger.debug("Received WebSocket message", message_length=len(message))
+                logger.debug("Received WebSocket message", extra={"message_length": len(message)})
                 await self._handle_message(message)
                 message_count += 1
-
-                # 如果没有收到消息，每30秒显示一次测试数据
-                if message_count == 0 and (datetime.utcnow() - last_test_display).seconds > 30:
-                    await self._display_test_data()
-                    last_test_display = datetime.utcnow()
                 
         except ConnectionClosed:
             logger.warning("XT WebSocket connection closed")
             self.is_connected = False
             # 记录断线时间
             self.disconnect_time = datetime.utcnow()
-            logger.info("Recorded disconnect time")
+            logger.debug("Recorded disconnect time")
         except WebSocketException as e:
             logger.error(f"XT WebSocket error: {e}")
             self.is_connected = False
             # 记录断线时间
             self.disconnect_time = datetime.utcnow()
-            logger.info("Recorded disconnect time")
+            logger.debug("Recorded disconnect time")
         except Exception as e:
             logger.error(f"Unexpected error in WebSocket connection: {e}")
             self.is_connected = False
             # 记录断线时间
             self.disconnect_time = datetime.utcnow()
-            logger.info("Recorded disconnect time")
+            logger.debug("Recorded disconnect time")
     
     async def _get_listen_key(self) -> None:
         """获取XT WebSocket listenKey."""
         if not self.rest_client:
             logger.error("REST client not initialized, cannot get listen key")
-            return
-        
+            raise RuntimeError("REST client not initialized")
+
         try:
-            # 调用XT API获取listenKey
+            # 调用XT API获取listenKey - 使用官方文档的路径
             path = "/v1/user/listen-key"
-            data = await self.rest_client._request("POST", path, params=None, body=None, require_auth=True)
-            
-            self.listen_key = data.get("listenKey")
+            logger.debug(f"Requesting listen_key from endpoint: {path}")
+            data = await self.rest_client._request("POST", path, params=None, body={}, require_auth=True)
+
+            # Debug: Log the full response
+            logger.debug(f"Listen key API response: {json.dumps(data, indent=2, cls=DecimalEncoder) if data else 'None'}")
+
+            # XT API返回的字段名
+            if isinstance(data, dict):
+                self.listen_key = data.get("listenKey") or data.get("listen_key")
+                if not self.listen_key:
+                    nested = data.get("result") if isinstance(data.get("result"), dict) else data.get("data")
+                    if isinstance(nested, dict):
+                        self.listen_key = nested.get("listenKey") or nested.get("listen_key")
             if self.listen_key:
-                logger.info("Successfully obtained listen key")
+                logger.info("Successfully obtained listen key", extra={"listen_key_prefix": self.listen_key[:8] if len(self.listen_key) > 8 else "***"})
             else:
                 logger.error("Failed to get listen key from API response")
-                
+                # Log response details
+                logger.error(f"API response: {data}")
+                raise RuntimeError("Listen key not found in API response")
+
         except Exception as e:
             logger.error(f"Failed to get listen key: {e}")
             raise
     
     async def _subscribe_user_data(self) -> None:
         """订阅用户数据流."""
-        # 构建订阅参数列表
-        params = []
-        
-        # 根据启用的频道添加订阅，使用正确的格式：channel@{listenKey}
-        if "account" in self.enabled_channels:
-            params.append("balance@test")  # 暂时使用test作为listenKey
-        
-        if "position" in self.enabled_channels:
-            params.append("position@test")
-        
-        if "order" in self.enabled_channels:
-            params.append("order@test")
-        
-        if "trade" in self.enabled_channels:
-            params.append("trade@test")
-        
-        if not params:
-            logger.warning("No channels enabled for subscription")
-            return
-        
+        if not self.listen_key:
+            logger.error("Listen key not available, cannot subscribe")
+            raise RuntimeError("Listen key not available")
+
+        # XT WebSocket订阅格式
+        # 根据XT文档，需要发送订阅消息
         subscribe_message = {
             "method": "SUBSCRIBE",
-            "params": params,
-            "id": "xt_user_stream_1"
+            "params": [
+                f"order@{self.listen_key}"
+            ],
+            "id": "test1"
         }
-        
-        await self.websocket.send(json.dumps(subscribe_message))
-        logger.info("Subscribed to XT user data channels")
+
+        await self.websocket.send(json.dumps(subscribe_message, cls=DecimalEncoder))
+        logger.info("Subscribed to XT user data stream with listenKey")
     
     async def _handle_message(self, message: str) -> None:
         """处理WebSocket消息."""
         try:
+            # 检查消息是否为空或只包含空白字符
+            if not message or not message.strip():
+                logger.debug("Received empty WebSocket message")
+                return
+            
             data = json.loads(message)
             
             # 更新消息统计
             await self._update_message_stats()
-            
+
             # XT WebSocket消息格式处理
             # 检查是否是订阅确认消息
-            if "result" in data and data.get("id") == "xt_user_stream_1":
-                logger.info("Subscription confirmed", result=data.get("result"))
+            if "result" in data and data.get("id") == 1:
+                logger.info("Subscription confirmed", extra={"result": data.get("result")})
                 return
-            
+
             # 检查是否是错误消息
             if "error" in data:
-                error_code = data.get("error", {}).get("code")
-                error_msg = data.get("error", {}).get("message", "")
-                
-                if error_code == "invalid_listen_key":
-                    logger.error("Listen key expired or invalid, need to refresh", error=error_msg)
+                error_code = data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else data.get("error")
+                error_msg = data.get("error", {}).get("message", "") if isinstance(data.get("error"), dict) else str(data.get("error"))
+
+                if "invalid_listen_key" in str(error_code) or "invalid_listen_key" in str(error_msg):
+                    logger.error("Listen key expired or invalid, need to refresh", extra={"error": error_msg})
                     await self._get_listen_key()
                     await self._subscribe_user_data()
                     return
                 else:
-                    logger.error("WebSocket error")
+                    logger.error("WebSocket error", extra={"error_code": error_code, "error_msg": error_msg})
                     return
-            
+
             # 处理数据推送消息
             stream = data.get("stream", "")
             if "@" in stream:
                 channel = stream.split("@")[0]
                 listen_key = stream.split("@")[1]
                 
-                # 暂时跳过listenKey验证，因为我们现在使用test
-                logger.info("Received WebSocket message", channel=channel, stream=stream)
+                logger.info("Received WebSocket message", extra={"channel": channel, "stream": stream})
                 
                 # 根据频道类型处理数据
-                if channel == "balance":
+                if channel == "balance" and "account" in self.enabled_channels:
                     await self._handle_account_update(data)
-                elif channel == "position":
+                elif channel == "position" and "position" in self.enabled_channels:
                     await self._handle_position_update(data)
-                elif channel == "order":
+                elif channel == "order" and "order" in self.enabled_channels:
                     await self._handle_order_update(data)
-                elif channel == "trade":
+                elif channel == "trade" and "trade" in self.enabled_channels:
                     await self._handle_trade_update(data)
                 else:
-                    logger.debug("Unknown channel")
+                    logger.debug("Unknown channel or channel disabled", extra={"channel": channel})
             else:
-                logger.debug("Unknown message format")
+                logger.debug("Unknown message format", extra={"data_sample": str(data)[:200]})
                 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse WebSocket message: {e}")
+            logger.debug(f"Failed to parse WebSocket message: {e}")
+            # 记录原始消息内容以便调试
+            logger.debug(f"Raw message content: {repr(message[:200])}")
         except Exception as e:
             logger.error(f"Error handling WebSocket message: {e}")
     
@@ -453,7 +448,7 @@ class XTUserStreamService:
     async def _display_account_update(self, data: Dict[str, Any]) -> None:
         """显示账户更新."""
         if self.display_format == "json":
-            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
         else:
             # 表格格式显示
             from rich.console import Console
@@ -490,7 +485,7 @@ class XTUserStreamService:
     async def _display_position_update(self, data: Dict[str, Any]) -> None:
         """显示持仓更新."""
         if self.display_format == "json":
-            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
         else:
             # 表格格式显示
             from rich.console import Console
@@ -533,7 +528,7 @@ class XTUserStreamService:
     async def _display_order_update(self, data: Dict[str, Any]) -> None:
         """显示订单更新."""
         if self.display_format == "json":
-            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
         else:
             # 表格格式显示
             from rich.console import Console
@@ -576,7 +571,7 @@ class XTUserStreamService:
     async def _display_trade_update(self, data: Dict[str, Any]) -> None:
         """显示成交更新."""
         if self.display_format == "json":
-            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
         else:
             # 表格格式显示
             from rich.console import Console
@@ -638,7 +633,7 @@ class XTUserStreamService:
                         available=available,
                         frozen=frozen,
                         total=total,
-                        raw_data=json.dumps(balance),
+                        raw_data=json.dumps(balance, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
@@ -679,7 +674,7 @@ class XTUserStreamService:
                         leverage=self._safe_int(position.get("leverage", "1")),
                         margin=self._safe_decimal(position.get("margin", "0")),
                         roe=self._safe_decimal(position.get("roe", "0")),
-                        raw_data=json.dumps(position),
+                        raw_data=json.dumps(position, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
@@ -724,7 +719,7 @@ class XTUserStreamService:
                         time_in_force=order.get("time_in_force", ""),
                         create_time=self._parse_timestamp(order.get("create_time")),
                         update_time_order=self._parse_timestamp(order.get("update_time")),
-                        raw_data=json.dumps(order),
+                        raw_data=json.dumps(order, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
@@ -766,7 +761,7 @@ class XTUserStreamService:
                         commission_asset=trade.get("commission_asset", ""),
                         is_maker=trade.get("is_maker", False),
                         position_side=trade.get("position_side", ""),
-                        raw_data=json.dumps(trade),
+                        raw_data=json.dumps(trade, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
@@ -779,7 +774,7 @@ class XTUserStreamService:
     async def _sync_missing_data(self) -> None:
         """补充断线期间缺失的数据.
 
-        仅在重连后调用，使用断线时间区间查询订单和成交数据。
+        仅在重连后调用，固定回补1小时内的订单和成交数据。
         账户和持仓数据直接获取最新状态。
         """
         if not self.enable_data_sync or not self.rest_client:
@@ -787,19 +782,19 @@ class XTUserStreamService:
             return
 
         try:
-            # 判断是否有断线时间记录
-            has_disconnect_period = bool(self.disconnect_time and self.reconnect_time)
-
-            if has_disconnect_period:
-                disconnect_duration = (self.reconnect_time - self.disconnect_time).total_seconds()
-                logger.info(
-                    "Syncing missing data for disconnection period",
-                    duration_seconds=disconnect_duration,
-                    start=self.disconnect_time.isoformat(),
-                    end=self.reconnect_time.isoformat()
-                )
-            else:
-                logger.info("Syncing current state (no disconnection period)")
+            # 固定回补时间为1小时
+            lookback_hours = 1
+            end_time = datetime.utcnow()
+            start_time = end_time - timedelta(hours=lookback_hours)
+            
+            logger.debug(
+                "Syncing missing data for fixed 1-hour lookback period",
+                extra={
+                    "lookback_hours": lookback_hours,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat()
+                }
+            )
 
             # 同步账户余额（总是同步最新状态）
             if "account" in self.enabled_channels:
@@ -809,17 +804,17 @@ class XTUserStreamService:
             if "position" in self.enabled_channels:
                 await self._sync_position_data()
 
-            # 同步订单数据（如果有断线期间，使用时间区间查询）
+            # 同步订单数据（固定1小时回补）
             if "order" in self.enabled_channels:
-                await self._sync_order_data(use_disconnect_period=has_disconnect_period)
+                await self._sync_order_data_fixed_lookback(start_time, end_time)
 
-            # 同步成交数据（如果有断线期间，使用时间区间查询）
+            # 同步成交数据（固定1小时回补）
             if "trade" in self.enabled_channels:
-                await self._sync_trade_data(use_disconnect_period=has_disconnect_period)
+                await self._sync_trade_data_fixed_lookback(start_time, end_time)
 
             # 清除断线时间记录
             if self.disconnect_time:
-                logger.info("Clearing disconnect time after sync")
+                logger.debug("Clearing disconnect time after sync")
                 self.disconnect_time = None
 
             # 更新同步统计（记录重连补充数据的次数）
@@ -849,13 +844,17 @@ class XTUserStreamService:
                         raw_data=json.dumps({
                             "source": "rest_sync",
                             "currency": currency,
-                            "balance_data": balance_data,
-                        }),
+                            "balance_data": {
+                                "available": str(balance_data.get("available", Decimal("0"))),
+                                "frozen": str(balance_data.get("frozen", Decimal("0"))),
+                                "total": str(balance_data.get("total", Decimal("0"))),
+                            },
+                        }, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
                 await session.commit()
-                logger.info("Synced account data from REST API")
+                logger.debug("Synced account data from REST API")
                 
         except Exception as e:
             logger.error(f"Failed to sync account data: {e}")
@@ -885,12 +884,12 @@ class XTUserStreamService:
                         raw_data=json.dumps({
                             "source": "rest_sync",
                             "position": position.__dict__,
-                        }),
+                        }, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
                 await session.commit()
-                logger.info("Synced position data from REST API")
+                logger.debug("Synced position data from REST API")
                 
         except Exception as e:
             logger.error(f"Failed to sync position data: {e}")
@@ -914,8 +913,10 @@ class XTUserStreamService:
                 end_time = int(self.reconnect_time.timestamp() * 1000)
                 logger.info(
                     "Syncing orders for disconnection period",
-                    start_time=self.disconnect_time.isoformat(),
-                    end_time=self.reconnect_time.isoformat()
+                    extra={
+                        "start_time": self.disconnect_time.isoformat(),
+                        "end_time": self.reconnect_time.isoformat()
+                    }
                 )
             else:
                 logger.info("Syncing recent orders")
@@ -972,7 +973,7 @@ class XTUserStreamService:
                             raw_data=json.dumps({
                                 "source": "rest_sync",
                                 "order_id": order.exchange_order_id,
-                            }),
+                            }, cls=DecimalEncoder),
                         )
                         session.add(record)
                         saved_count += 1
@@ -982,7 +983,7 @@ class XTUserStreamService:
                         continue
 
                 await session.commit()
-                logger.info("Synced order data from REST API", saved=saved_count, skipped=skipped_count)
+                logger.debug("Synced order data from REST API", extra={"saved": saved_count, "skipped": skipped_count})
 
         except Exception as e:
             logger.error(f"Failed to sync order data: {e}")
@@ -1006,8 +1007,10 @@ class XTUserStreamService:
                 end_time = int(self.reconnect_time.timestamp() * 1000)
                 logger.info(
                     "Syncing trades for disconnection period",
-                    start_time=self.disconnect_time.isoformat(),
-                    end_time=self.reconnect_time.isoformat(),
+                    extra={
+                        "start_time": self.disconnect_time.isoformat(),
+                        "end_time": self.reconnect_time.isoformat(),
+                    }
                 )
             else:
                 logger.info("Syncing recent trades")
@@ -1065,24 +1068,209 @@ class XTUserStreamService:
                             raw_data=json.dumps({
                                 "source": "rest_sync",
                                 "trade": trade,
-                            }),
+                            }, cls=DecimalEncoder),
                         )
                         session.add(record)
                         saved_count += 1
 
                     except Exception as e:
-                        logger.warning(f"Failed to save trade: {e}", trade_id=trade.get("id"))
+                        logger.warning(f"Failed to save trade: {e}", extra={"trade_id": trade.get("id")})
                         continue
 
                 await session.commit()
-                logger.info("Synced trade data from REST API", saved=saved_count, skipped=skipped_count)
+                logger.debug("Synced trade data from REST API", extra={"saved": saved_count, "skipped": skipped_count})
 
         except Exception as e:
             logger.error(f"Failed to sync trade data: {e}")
     
+    async def _sync_order_data_fixed_lookback(self, start_time: datetime, end_time: datetime) -> None:
+        """同步订单数据（固定回补时间）.
+
+        使用 REST API 查询指定时间范围内的订单历史。
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+        """
+        try:
+            # 转换为毫秒时间戳
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(end_time.timestamp() * 1000)
+            
+            logger.info(
+                "Syncing orders for fixed lookback period",
+                extra={
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "start_timestamp": start_timestamp,
+                    "end_timestamp": end_timestamp
+                }
+            )
+
+            # 查询订单列表
+            orders = await self.rest_client.get_order_list(
+                symbol=None,  # 查询所有交易对
+                start_time=start_timestamp,
+                end_time=end_timestamp,
+                limit=1000,  # 增加查询限制
+            )
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for order in orders:
+                    try:
+                        symbol = f"{order.trading_pair.base_currency}_{order.trading_pair.quote_currency}".lower()
+                        order_id = order.exchange_order_id
+
+                        # 检查订单是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTOrderUpdate).where(
+                                XTOrderUpdate.order_id == order_id,
+                                XTOrderUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_order = existing_result.scalar_one_or_none()
+
+                        if existing_order:
+                            logger.debug(f"Order {order_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        record = XTOrderUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=order_id,
+                            client_order_id="",
+                            side=order.side.value,
+                            order_type=order.order_type.value,
+                            position_side=order.position_side or "LONG",
+                            quantity=order.quantity,
+                            price=order.price or Decimal("0"),
+                            filled_quantity=Decimal("0"),  # 填充数量需要从详细信息获取
+                            status=order.status.value,
+                            time_in_force="GTC",
+                            create_time=order.timestamp,
+                            update_time_order=order.timestamp,
+                            raw_data=json.dumps({
+                                "source": "rest_sync_fixed_lookback",
+                                "order_id": order.exchange_order_id,
+                                "lookback_hours": 1,
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save order: {e}")
+                        continue
+
+                await session.commit()
+                logger.info("Synced order data from REST API (fixed lookback)", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync order data (fixed lookback): {e}")
+    
+    async def _sync_trade_data_fixed_lookback(self, start_time: datetime, end_time: datetime) -> None:
+        """同步成交数据（固定回补时间）.
+
+        使用 REST API 查询指定时间范围内的成交历史。
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+        """
+        try:
+            # 转换为毫秒时间戳
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(end_time.timestamp() * 1000)
+            
+            logger.info(
+                "Syncing trades for fixed lookback period",
+                extra={
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "start_timestamp": start_timestamp,
+                    "end_timestamp": end_timestamp
+                }
+            )
+
+            # 查询成交列表
+            trades = await self.rest_client.get_user_trades(
+                symbol=None,  # 查询所有交易对
+                start_time=start_timestamp,
+                end_time=end_timestamp,
+                limit=1000,  # 增加查询限制
+            )
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for trade in trades:
+                    try:
+                        symbol = trade.get("symbol", "")
+                        trade_id = trade.get("id", "")
+
+                        if not trade_id:
+                            continue
+
+                        # 检查成交是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTTradeUpdate).where(
+                                XTTradeUpdate.trade_id == str(trade_id),
+                                XTTradeUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_trade = existing_result.scalar_one_or_none()
+
+                        if existing_trade:
+                            logger.debug(f"Trade {trade_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        record = XTTradeUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=str(trade.get("orderId", "")),
+                            trade_id=str(trade_id),
+                            side=trade.get("side", ""),
+                            price=self._safe_decimal(trade.get("price", "0")),
+                            quantity=self._safe_decimal(trade.get("qty", "0")),
+                            quote_quantity=self._safe_decimal(trade.get("quoteQty", "0")),
+                            commission=self._safe_decimal(trade.get("commission", "0")),
+                            commission_asset=trade.get("commissionAsset", ""),
+                            is_maker=trade.get("isMaker", False),
+                            position_side=trade.get("positionSide", ""),
+                            raw_data=json.dumps({
+                                "source": "rest_sync_fixed_lookback",
+                                "trade": trade,
+                                "lookback_hours": 1,
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save trade: {e}", extra={"trade_id": trade.get("id")})
+                        continue
+
+                await session.commit()
+                logger.info("Synced trade data from REST API (fixed lookback)", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync trade data (fixed lookback): {e}")
+    
     async def _display_test_data(self) -> None:
         """显示测试数据以验证表格功能."""
-        logger.info("Displaying test data to verify table functionality")
+        logger.debug("Displaying test data to verify table functionality")
         
         # 测试账户数据
         test_account_data = {
@@ -1132,6 +1320,22 @@ class XTUserStreamService:
             ]
         }
         await self._display_order_update(test_order_data)
+        
+        # 测试成交数据
+        test_trade_data = {
+            "trades": [
+                {
+                    "trade_id": "987654321",
+                    "order_id": "123456789",
+                    "symbol": "BTC_USDT",
+                    "side": "BUY",
+                    "price": "45000.00",
+                    "quantity": "0.001",
+                    "quote_quantity": "45.00"
+                }
+            ]
+        }
+        await self._display_trade_update(test_trade_data)
 
     # 数据变化检查方法
 
@@ -1139,7 +1343,7 @@ class XTUserStreamService:
         """检查账户数据是否有变化."""
         # 将数据转换为可比较的格式，处理Decimal类型
         try:
-            data_key = json.dumps(account_data, sort_keys=True, default=str)
+            data_key = json.dumps(account_data, sort_keys=True, cls=DecimalEncoder)
         except (TypeError, ValueError):
             # 如果JSON序列化失败，使用字符串表示
             data_key = str(sorted(account_data.items()))
@@ -1157,7 +1361,7 @@ class XTUserStreamService:
         """检查持仓数据是否有变化."""
         # 将数据转换为可比较的格式，处理Decimal类型
         try:
-            data_key = json.dumps(position_data, sort_keys=True, default=str)
+            data_key = json.dumps(position_data, sort_keys=True, cls=DecimalEncoder)
         except (TypeError, ValueError):
             # 如果JSON序列化失败，使用字符串表示
             data_key = str(sorted(position_data.items()))
@@ -1270,7 +1474,7 @@ class XTUserStreamService:
                     raw_data=json.dumps({
                         "enabled_channels": list(self.enabled_channels),
                         "auto_reconnect": self.auto_reconnect,
-                    }),
+                    }, cls=DecimalEncoder),
                 )
                 session.add(record)
                 await session.commit()

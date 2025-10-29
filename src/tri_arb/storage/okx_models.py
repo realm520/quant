@@ -6,7 +6,7 @@ OKX的数据结构与Binance不同，使用独立的表结构。
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -151,6 +151,7 @@ class OKXOrder(Base):
     __table_args__ = (
         Index('idx_okx_order_inst_state', 'inst_id', 'state'),
         Index('idx_okx_order_time', 'u_time'),
+        UniqueConstraint('ord_id', 'u_time', name='uq_okx_order_id_time'),  # 防止重复订单更新
     )
 
 
@@ -189,5 +190,6 @@ class OKXTrade(Base):
     
     __table_args__ = (
         Index('idx_okx_trade_inst_time', 'inst_id', 'fill_time'),
+        UniqueConstraint('trade_id', name='uq_okx_trade_id'),  # 防止重复成交记录
     )
 

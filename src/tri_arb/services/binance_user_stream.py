@@ -19,6 +19,7 @@ from tri_arb.config.logging import get_logger
 from tri_arb.exchanges.binance_perp import BinancePerpExchange
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.models import AccountUpdate, OrderUpdate, TradeUpdate, ConnectionStatus
+from tri_arb.services.binance_reconciliation import BinanceReconciliationService
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -43,7 +44,7 @@ class BinanceUserStreamService:
         enabled_channels: list[str] | None = None,
     ):
         """初始化用户数据流服务.
-        
+
         Args:
             api_key: Binance API key
             api_secret: Binance API secret
@@ -57,26 +58,34 @@ class BinanceUserStreamService:
         self.db_manager = db_manager
         self.auto_reconnect = auto_reconnect
         self.display_format = display_format
-        
+
         # 设置启用的频道（Binance推送所有数据，这里仅用于过滤）
         if enabled_channels is None:
             self.enabled_channels = {"account", "order", "trade"}
         else:
             self.enabled_channels = set(enabled_channels)
-        
+
         self.exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
         self.listen_key: Optional[str] = None
         self.ws_url: Optional[str] = None
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.is_running = False
 
-        # 断线重连相关
-        self.last_message_time: Optional[datetime] = None
+        # 对账服务（按需对账，仅在重连时触发）
+        self.reconciliation_service = BinanceReconciliationService(
+            exchange=self.exchange,
+            db_manager=db_manager,
+            poll_interval=60,  # 保留参数但不启动定时任务
+            lookback_window=3600,  # 重连时回溯1小时
+        )
+
+        # 记录断线时间，用于重连后计算回溯时间
         self.disconnect_time: Optional[datetime] = None
 
         logger.info("BinanceUserStreamService initialized",
                    display_format=display_format,
-                   enabled_channels=list(self.enabled_channels))
+                   enabled_channels=list(self.enabled_channels),
+                   reconciliation_mode="on_reconnect")
     
     async def get_listen_key(self) -> str:
         """获取ListenKey用于WebSocket连接.
@@ -253,11 +262,26 @@ class BinanceUserStreamService:
         """
         logger.info("=== Starting data recovery process ===")
 
+        # 显示数据恢复开始信息
+        if self.display_format != "none":
+            console.print(Panel(
+                "[yellow]⏳ 正在启动数据恢复流程...[/yellow]",
+                title="[bold cyan]📦 数据恢复[/bold cyan]",
+                border_style="cyan"
+            ))
+
+        # 确保 exchange 已连接（数据恢复需要调用 API）
+        if not self.exchange.is_connected:
+            logger.info("Exchange not connected, connecting now for data recovery")
+            await self.exchange.connect()
+
         # 获取连接状态
         status = await self.get_or_create_connection_status()
 
         if status.last_disconnected_at is None:
             logger.info("No disconnection detected, skipping data recovery")
+            if self.display_format != "none":
+                console.print("[green]✅ 无需数据恢复（未检测到断线）[/green]")
             return
 
         # 计算查询时间范围
@@ -267,14 +291,28 @@ class BinanceUserStreamService:
 
         logger.info(
             "Data recovery time range",
-            start_time=start_time,
-            end_time=end_time,
+            start_time=start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            end_time=end_time.strftime("%Y-%m-%d %H:%M:%S"),
             gap_seconds=gap_seconds,
+            gap_minutes=round(gap_seconds / 60, 2),
         )
+
+        # 显示断线时间信息
+        if self.display_format != "none":
+            console.print(f"[cyan]断线开始: {start_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
+            console.print(f"[cyan]恢复时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
+            console.print(f"[yellow]断线时长: {gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)[/yellow]\n")
 
         # 如果没有指定交易对，从数据库中获取最近活跃的交易对
         if symbols is None:
             symbols = await self._get_active_symbols()
+            if not symbols:
+                logger.warning(
+                    "No active symbols found in database (last 24 hours). "
+                    "Data recovery skipped. If you need to recover specific symbols, "
+                    "call query_missing_data(symbols=['BTCUSDT', 'ETHUSDT'])"
+                )
+                return
             logger.info(f"Auto-detected {len(symbols)} active symbols: {symbols}")
         else:
             logger.info(f"Using provided symbols: {symbols}")
@@ -287,7 +325,7 @@ class BinanceUserStreamService:
         start_time_ms = int(start_time.timestamp() * 1000)
         end_time_ms = int(end_time.timestamp() * 1000)
 
-        logger.info(
+        logger.debug(
             "Query parameters",
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
@@ -340,14 +378,52 @@ class BinanceUserStreamService:
                 logger.error(f"Failed to query data for {symbol}", error=str(e), exc_info=True)
                 continue
 
+        # 计算去重统计
+        duplicate_orders = total_orders - recovered_orders
+        duplicate_trades = total_trades - recovered_trades
+
         logger.info(
             "=== Data recovery completed ===",
             total_orders_retrieved=total_orders,
             total_trades_retrieved=total_trades,
             new_orders_saved=recovered_orders,
             new_trades_saved=recovered_trades,
+            duplicate_orders_skipped=duplicate_orders,
+            duplicate_trades_skipped=duplicate_trades,
             gap_seconds=gap_seconds,
+            gap_minutes=round(gap_seconds / 60, 2),
         )
+
+        # 显示数据恢复汇总表格
+        if self.display_format != "none":
+            console.print()  # 空行
+            table = Table(title="📊 数据恢复汇总", box=box.ROUNDED, border_style="green")
+            table.add_column("项目", style="cyan", justify="left", width=20)
+            table.add_column("数量", style="white", justify="right", width=15)
+
+            # 断线时长
+            table.add_row(
+                "断线时长",
+                f"{gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)"
+            )
+
+            # 订单统计
+            table.add_row("", "")  # 空行分隔
+            table.add_row("检索订单总数", f"[yellow]{total_orders}[/yellow]")
+            table.add_row("新增订单", f"[green]{recovered_orders}[/green]")
+            table.add_row("重复订单(跳过)", f"[red]{duplicate_orders}[/red]")
+
+            # 成交统计
+            table.add_row("", "")  # 空行分隔
+            table.add_row("检索成交总数", f"[yellow]{total_trades}[/yellow]")
+            table.add_row("新增成交", f"[green]{recovered_trades}[/green]")
+            table.add_row("重复成交(跳过)", f"[red]{duplicate_trades}[/red]")
+
+            console.print(table)
+            console.print(Panel(
+                "[green]✅ 数据恢复完成！所有丢失的订单和成交已恢复。[/green]",
+                border_style="green"
+            ))
 
     async def _get_active_symbols(self) -> list[str]:
         """从数据库中获取最近活跃的交易对.
@@ -356,7 +432,7 @@ class BinanceUserStreamService:
             交易对列表，如["BTCUSDT", "ETHUSDT"]
         """
         async with self.db_manager.session() as session:
-            # 查询最近24小时内有订单或成交的交易对
+            # 先尝试最近24小时
             cutoff_time = datetime.now() - timedelta(hours=24)
 
             # 从订单表获取
@@ -380,14 +456,66 @@ class BinanceUserStreamService:
             # 合并去重
             symbols = list(set(symbols_from_orders + symbols_from_trades))
 
-            logger.info(f"Found {len(symbols)} active symbols in last 24 hours")
+            if symbols:
+                logger.info(
+                    f"Found {len(symbols)} active symbols in last 24 hours",
+                    symbols=symbols,
+                    from_orders=len(symbols_from_orders),
+                    from_trades=len(symbols_from_trades),
+                )
+            else:
+                # 如果24小时内没有数据，尝试扩展到7天
+                logger.info("No symbols found in last 24 hours, extending search to 7 days")
+                cutoff_time = datetime.now() - timedelta(days=7)
+
+                # 从订单表获取
+                result = await session.execute(
+                    select(OrderUpdate.symbol)
+                    .where(OrderUpdate.exchange == "binance_perp")
+                    .where(OrderUpdate.event_time >= cutoff_time)
+                    .distinct()
+                )
+                symbols_from_orders = [row[0] for row in result.fetchall()]
+
+                # 从成交表获取
+                result = await session.execute(
+                    select(TradeUpdate.symbol)
+                    .where(TradeUpdate.exchange == "binance_perp")
+                    .where(TradeUpdate.event_time >= cutoff_time)
+                    .distinct()
+                )
+                symbols_from_trades = [row[0] for row in result.fetchall()]
+
+                # 合并去重
+                symbols = list(set(symbols_from_orders + symbols_from_trades))
+
+                if symbols:
+                    logger.info(
+                        f"Found {len(symbols)} active symbols in last 7 days",
+                        symbols=symbols,
+                        from_orders=len(symbols_from_orders),
+                        from_trades=len(symbols_from_trades),
+                    )
+                else:
+                    logger.warning(
+                        "No active symbols found in last 7 days. "
+                        "This may indicate:\n"
+                        "  1. First time running (no historical data)\n"
+                        "  2. No trading activity in the past week\n"
+                        "  3. Database was recently cleared\n"
+                        "Consider manually specifying symbols for data recovery."
+                    )
+
             return symbols
 
-    async def _save_order_with_dedup(self, order_data: dict):
+    async def _save_order_with_dedup(self, order_data: dict) -> bool:
         """保存订单数据，自动去重（使用数据库唯一约束）.
 
         Args:
             order_data: Binance API返回的订单数据
+
+        Returns:
+            bool: True 表示新数据已保存，False 表示数据已存在（去重）
         """
         order_id = int(order_data.get("orderId", 0))
         update_time = datetime.fromtimestamp(order_data.get("updateTime", 0) / 1000)
@@ -428,17 +556,53 @@ class BinanceUserStreamService:
                     symbol=order_data.get("symbol"),
                     status=order_data.get("status"),
                 )
+
+                # 显示恢复的订单信息
+                if self.display_format != "none":
+                    status = order_data.get("status", "")
+                    side = order_data.get("side", "")
+                    symbol = order_data.get("symbol", "")
+
+                    # 订单状态颜色
+                    status_colors = {
+                        "NEW": "blue",
+                        "PARTIALLY_FILLED": "yellow",
+                        "FILLED": "green",
+                        "CANCELED": "red",
+                        "REJECTED": "red",
+                        "EXPIRED": "red"
+                    }
+                    status_color = status_colors.get(status, "white")
+                    side_color = "green" if side == "BUY" else "red"
+
+                    # 简洁的订单信息输出
+                    console.print(
+                        f"[green]✅ 恢复订单:[/green] "
+                        f"[{side_color}]{side}[/{side_color}] "
+                        f"[cyan]{symbol}[/cyan] "
+                        f"ID:{order_id} "
+                        f"状态:[{status_color}]{status}[/{status_color}] "
+                        f"价格:{float(order_data.get('price', 0)):.4f} "
+                        f"数量:{float(order_data.get('origQty', 0)):.8f} "
+                        f"成交:{float(order_data.get('executedQty', 0)):.8f}"
+                    )
+
+                return True
         except IntegrityError:
             # 违反唯一性约束，说明记录已存在
             logger.debug(
                 f"Order {order_id} at {update_time} already exists (IntegrityError), skipping"
             )
+            return False
 
-    async def _save_trade_with_dedup(self, trade_data: dict):
+    async def _save_trade_with_dedup(self, trade_data: dict) -> bool:
         """保存成交数据，自动去重（使用数据库唯一约束）.
 
         Args:
             trade_data: Binance API返回的成交数据
+
+        Returns:
+            bool: True 表示新数据已保存，False 表示数据已存在（去重）
         """
         trade_id = int(trade_data.get("id", 0))
 
@@ -474,9 +638,39 @@ class BinanceUserStreamService:
                     order_id=trade_data.get("orderId"),
                     symbol=trade_data.get("symbol"),
                 )
+
+                # 显示恢复的成交信息
+                if self.display_format != "none":
+                    side = trade_data.get("side", "")
+                    symbol = trade_data.get("symbol", "")
+                    price = float(trade_data.get("price", 0))
+                    qty = float(trade_data.get("qty", 0))
+                    quote_qty = float(trade_data.get("quoteQty", 0))
+                    commission = float(trade_data.get("commission", 0))
+                    commission_asset = trade_data.get("commissionAsset", "")
+                    is_maker = trade_data.get("maker", False)
+
+                    side_color = "green" if side == "BUY" else "red"
+                    maker_str = "Maker" if is_maker else "Taker"
+
+                    # 简洁的成交信息输出
+                    console.print(
+                        f"[green]💰 恢复成交:[/green] "
+                        f"[{side_color}]{side}[/{side_color}] "
+                        f"[cyan]{symbol}[/cyan] "
+                        f"ID:{trade_id} "
+                        f"价格:{price:.4f} "
+                        f"数量:{qty:.8f} "
+                        f"金额:{quote_qty:.4f} "
+                        f"[yellow]{maker_str}[/yellow] "
+                        f"手续费:{commission:.8f} {commission_asset}"
+                    )
+
+                return True
         except IntegrityError:
             # 违反唯一性约束，说明记录已存在
             logger.debug(f"Trade {trade_id} already exists (IntegrityError), skipping")
+            return False
 
     def display_account_update(self, event: dict):
         """显示账户更新信息.
@@ -845,6 +1039,71 @@ class BinanceUserStreamService:
             except Exception as e:
                 logger.error("Keepalive task error", error=str(e))
     
+    async def _check_needs_recovery(self, status: ConnectionStatus) -> tuple[bool, str, datetime | None]:
+        """检查是否需要数据恢复.
+
+        Args:
+            status: 连接状态对象
+
+        Returns:
+            (需要恢复, 原因, 断线时间)
+        """
+        if status.last_disconnected_at is None:
+            return False, "", None
+
+        # 检查是否需要恢复
+        if not status.is_connected:
+            return True, "connection status shows disconnected", status.last_disconnected_at
+        elif status.last_connected_at is None:
+            return True, "never connected but has disconnection record", status.last_disconnected_at
+        elif status.last_disconnected_at > status.last_connected_at:
+            return True, "disconnection time is later than last connection time", status.last_disconnected_at
+
+        return False, "", None
+
+    async def _recover_data_with_retry(self, max_retries: int = 3, retry_delay: int = 2):
+        """带重试机制的数据恢复.
+
+        Args:
+            max_retries: 最大重试次数
+            retry_delay: 重试延迟（秒）
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(
+                    "Attempting data recovery",
+                    attempt=attempt,
+                    max_retries=max_retries,
+                )
+
+                # 确保 exchange 已连接
+                if not self.exchange.is_connected:
+                    await self.exchange.connect()
+
+                # 执行数据恢复
+                await self.query_missing_data()
+                logger.info("Data recovery completed successfully", attempt=attempt)
+                return  # 成功，退出
+
+            except Exception as e:
+                logger.warning(
+                    "Data recovery failed",
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    error=str(e),
+                )
+
+                if attempt < max_retries:
+                    logger.info(f"Retrying data recovery in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(
+                        "Data recovery failed after all retries",
+                        max_retries=max_retries,
+                        error=str(e),
+                    )
+                    # 不抛出异常，允许程序继续运行
+
     async def start(self):
         """启动用户数据流订阅."""
         self.is_running = True
@@ -853,48 +1112,11 @@ class BinanceUserStreamService:
             # 获取或创建连接状态记录
             status = await self.get_or_create_connection_status()
 
-            # 检查是否需要补全数据（从上次断线恢复）
-            # 条件：有断线记录 AND (状态为断开 OR 断线时间晚于连接时间)
-            needs_recovery = False
-            if status.last_disconnected_at is not None:
-                if not status.is_connected:
-                    # 状态显示未连接
-                    needs_recovery = True
-                elif status.last_connected_at is None or status.last_disconnected_at > status.last_connected_at:
-                    # 断线时间晚于连接时间，说明有一次断线还未处理
-                    needs_recovery = True
-
-            if needs_recovery:
-                logger.info(
-                    "Detected previous disconnection, starting data recovery",
-                    last_disconnected_at=status.last_disconnected_at,
-                    last_connected_at=status.last_connected_at,
-                    is_connected=status.is_connected,
-                )
-                self.disconnect_time = status.last_disconnected_at
-
-                # 补全断线期间的数据
-                try:
-                    await self.query_missing_data()
-                    logger.info("Data recovery completed successfully")
-                except Exception as e:
-                    logger.error("Failed to recover missing data", error=str(e))
-                    # 继续连接，不因为数据补全失败而中断
-            else:
-                logger.info(
-                    "No data recovery needed",
-                    last_disconnected_at=status.last_disconnected_at,
-                    last_connected_at=status.last_connected_at,
-                )
-
             # 获取listen key
             self.listen_key = await self.get_listen_key()
             self.ws_url = f"wss://fstream.binance.com/ws/{self.listen_key}"
 
             logger.info("Starting user data stream", ws_url=self.ws_url)
-
-            # 更新连接状态为已连接
-            await self.update_connection_status(is_connected=True)
 
             # 启动keepalive任务
             keepalive_task = asyncio.create_task(self.keepalive_task())
@@ -903,6 +1125,32 @@ class BinanceUserStreamService:
             async with websockets.connect(self.ws_url) as websocket:
                 self.websocket = websocket
                 logger.info("WebSocket connected successfully")
+
+                # 更新连接状态
+                await self.update_connection_status(is_connected=True)
+
+                # 如果是重连（有断线时间记录），则触发对账
+                if self.disconnect_time is not None:
+                    disconnect_duration = int((datetime.now() - self.disconnect_time).total_seconds())
+                    logger.info(
+                        "Reconnected after disconnection, triggering reconciliation",
+                        disconnect_duration=disconnect_duration,
+                    )
+
+                    try:
+                        # 回溯时间为断线时长 + 额外缓冲时间（300秒）
+                        lookback = max(disconnect_duration + 300, 600)  # 至少回溯10分钟
+                        await self.reconciliation_service.reconcile_once(lookback_seconds=lookback)
+                        logger.info("Reconnection reconciliation completed", lookback_seconds=lookback)
+                    except Exception as e:
+                        logger.error(
+                            "Reconnection reconciliation failed",
+                            error=str(e),
+                            exc_info=True,
+                        )
+
+                    # 清除断线时间记录
+                    self.disconnect_time = None
 
                 # 接收消息循环
                 async for message in websocket:
@@ -923,13 +1171,25 @@ class BinanceUserStreamService:
                 await asyncio.sleep(5)
                 await self.start()
         except Exception as e:
-            logger.error("User data stream error", error=str(e))
+            logger.error("User data stream error", error=str(e), exc_info=True)
 
             # 记录断线
             await self.update_connection_status(is_connected=False)
-            raise
+
+            # 不要直接raise，而是尝试重连
+            if self.auto_reconnect and self.is_running:
+                logger.info("Attempting to reconnect after error in 5 seconds...")
+                await asyncio.sleep(5)
+                await self.start()
+            else:
+                raise
         finally:
-            keepalive_task.cancel()
+            # 安全取消 keepalive 任务（可能未创建）
+            try:
+                keepalive_task.cancel()
+            except NameError:
+                pass  # keepalive_task 未创建，忽略
+
             if self.listen_key:
                 await self.close_listen_key(self.listen_key)
             await self.exchange.disconnect()
@@ -937,6 +1197,9 @@ class BinanceUserStreamService:
     async def stop(self):
         """停止用户数据流订阅."""
         self.is_running = False
+
+        # 注意：不需要停止对账服务，因为我们使用按需对账而非定时对账
+
         if self.websocket:
             await self.websocket.close()
         logger.info("User data stream stopped")

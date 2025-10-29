@@ -688,3 +688,194 @@ class OKXPerpExchange(BaseExchange):
         raise NotImplementedError("Order book subscription not yet implemented for OKX Futures")
         yield  # Make this a generator
 
+    async def get_all_orders(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询所有订单（包括历史订单）.
+
+        注意: OKX 区分不同时间范围的订单查询端点：
+        - orders-history: 最近7天的订单（断线恢复场景）
+        - orders-history-archive: 3个月前的归档订单
+
+        重要: OKX API 的时间参数说明：
+        - begin: 筛选的开始时间戳（毫秒）
+        - end: 筛选的结束时间戳（毫秒）
+        - 注意: begin < end，且时间范围不要超过90天
+
+        Args:
+            symbol: 交易对符号，如"BTC-USDT-SWAP"
+            start_time: 起始时间戳（毫秒），可选
+            end_time: 结束时间戳（毫秒），可选
+            limit: 返回数量限制，默认100
+
+        Returns:
+            订单列表，每个订单包含完整信息
+
+        Raises:
+            ValueError: 缺少API凭证
+        """
+        self._require_credentials()
+
+        params: dict[str, Any] = {
+            "instType": "SWAP",
+            "instId": symbol,
+        }
+
+        # OKX API 使用 begin/end 参数，单位是毫秒
+        # 注意：OKX要求 begin < end，begin是筛选的开始时间，end是结束时间
+        if start_time is not None:
+            params["begin"] = str(start_time)
+        if end_time is not None:
+            params["end"] = str(end_time)
+
+        # OKX limit 参数最大100
+        params["limit"] = str(min(limit, 100))
+
+        # ✅ 修复：根据时间范围选择正确的端点
+        now_ms = int(time.time() * 1000)
+        seven_days_ms = 7 * 24 * 60 * 60 * 1000
+
+        # 如果查询时间在最近7天内，使用 orders-history（断线恢复场景）
+        if start_time is None or (now_ms - start_time) < seven_days_ms:
+            path = "/api/v5/trade/orders-history"  # ✅ 最近7天
+            logger.info("Using orders-history endpoint for recent orders",
+                       symbol=symbol,
+                       start_time=start_time,
+                       end_time=end_time,
+                       params=params)
+        else:
+            path = "/api/v5/trade/orders-history-archive"  # 归档订单
+            logger.info("Using orders-history-archive endpoint for archived orders",
+                       symbol=symbol,
+                       start_time=start_time,
+                       end_time=end_time,
+                       params=params)
+
+        response = await self._request(
+            method="GET",
+            path=path,  # ✅ 动态选择端点
+            params=params,
+            authenticated=True,
+        )
+
+        data = response.json()
+
+        logger.info(
+            "OKX API response for orders",
+            code=data.get("code"),
+            msg=data.get("msg"),
+            endpoint=path,
+            data_count=len(data.get("data", [])),
+        )
+
+        # Check for API error
+        if data.get("code") != "0":
+            error_msg = f"OKX API error: code={data.get('code')}, msg={data.get('msg')}"
+            logger.error(error_msg,
+                        endpoint=path,
+                        params=params,
+                        response=data)
+            raise ValueError(error_msg)
+
+        orders = data.get("data", [])
+        logger.info(
+            "Retrieved historical orders",
+            symbol=symbol,
+            count=len(orders),
+            endpoint=path,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        # 打印前几个订单的详细信息用于调试
+        if orders:
+            logger.debug("First order sample", order=orders[0])
+
+        return orders
+
+    async def get_user_trades(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询账户成交历史.
+
+        Args:
+            symbol: 交易对符号，如"BTC-USDT-SWAP"
+            start_time: 起始时间戳（毫秒），可选
+            end_time: 结束时间戳（毫秒），可选
+            limit: 返回数量限制，默认100
+
+        Returns:
+            成交列表，每个成交包含完整信息
+
+        Raises:
+            ValueError: 缺少API凭证
+        """
+        self._require_credentials()
+
+        params: dict[str, Any] = {
+            "instType": "SWAP",
+            "instId": symbol,
+        }
+
+        # OKX API 使用 begin/end 参数
+        if start_time is not None:
+            params["begin"] = str(start_time)
+        if end_time is not None:
+            params["end"] = str(end_time)
+
+        params["limit"] = str(min(limit, 100))
+
+        logger.info("Querying OKX trades",
+                   symbol=symbol,
+                   start_time=start_time,
+                   end_time=end_time,
+                   params=params)
+
+        response = await self._request(
+            method="GET",
+            path="/api/v5/trade/fills-history",
+            params=params,
+            authenticated=True,
+        )
+
+        data = response.json()
+
+        logger.info(
+            "OKX API response for trades",
+            code=data.get("code"),
+            msg=data.get("msg"),
+            data_count=len(data.get("data", [])),
+        )
+
+        # Check for API error
+        if data.get("code") != "0":
+            error_msg = f"OKX API error: code={data.get('code')}, msg={data.get('msg')}"
+            logger.error(error_msg,
+                        endpoint="/api/v5/trade/fills-history",
+                        params=params,
+                        response=data)
+            raise ValueError(error_msg)
+
+        trades = data.get("data", [])
+        logger.info(
+            "Retrieved user trades",
+            symbol=symbol,
+            count=len(trades),
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        # 打印前几个成交的详细信息用于调试
+        if trades:
+            logger.debug("First trade sample", trade=trades[0])
+
+        return trades
+

@@ -6,7 +6,7 @@ Gate.io的数据结构，使用独立的表结构。
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -110,6 +110,9 @@ class GateOrder(Base):
     __table_args__ = (
         Index('idx_gate_order_contract_status', 'contract', 'status'),
         Index('idx_gate_order_time', 'update_time'),
+        # 唯一约束：防止重复订单记录（对账服务依赖此约束）
+        # Gate 使用 order_id + update_time 作为唯一键
+        UniqueConstraint('order_id', 'update_time', name='uq_gate_order_id_time'),
     )
 
 

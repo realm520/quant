@@ -6,6 +6,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from dotenv import load_dotenv
 
 from tri_arb.cli.utils.exchange_factory import ExchangeName
 from tri_arb.services.binance_user_stream import BinanceUserStreamService
@@ -16,6 +17,7 @@ from tri_arb.storage.database import DatabaseManager
 
 app = typer.Typer(help="WebSocket订阅命令")
 console = Console()
+load_dotenv()
 
 
 @app.command("user-stream")
@@ -180,7 +182,7 @@ def user_stream(
         # 获取数据库URL
         db_url = database_url or os.getenv(
             "DATABASE_URL",
-            "postgresql+asyncpg://postgres:postgres@localhost:5432/trading"
+            "postgresql+asyncpg://oliver@localhost:5432/trading"
         )
         
         # 解析订阅频道
@@ -368,4 +370,3 @@ def okx_user_stream_shortcut(
 
 if __name__ == "__main__":
     app()
-

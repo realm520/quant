@@ -193,8 +193,15 @@ class XTUserStreamService:
         try:
             logger.debug("Connecting to XT WebSocket")
 
-            # 建立WebSocket连接，添加必需的请求头
-            self.websocket = await websockets.connect(ws_url)
+            # 建立WebSocket连接，提升握手与读写容忍度
+            self.websocket = await websockets.connect(
+                ws_url,
+                open_timeout=60,
+                close_timeout=30,
+                ping_interval=20,
+                ping_timeout=20,
+                max_queue=None,
+            )
             self.is_connected = True
             self.reconnect_attempts = 0
 

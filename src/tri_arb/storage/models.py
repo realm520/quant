@@ -202,3 +202,28 @@ class ConnectionStatus(Base):
         Index('idx_exchange_connected', 'exchange', 'is_connected'),
     )
 
+
+class BinanceAccountBalance(Base):
+    """Binance 账户余额记录.
+    
+    存储通过 REST/定时查询得到的余额快照（按资产维度）。
+    """
+    __tablename__ = "binance_account_balances"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    update_time = Column(DateTime, nullable=False, index=True)
+
+    # 币种余额
+    asset = Column(String(20), nullable=False, index=True)
+    free = Column(Numeric(30, 10), nullable=False)
+    locked = Column(Numeric(30, 10), nullable=False)
+    total = Column(Numeric(30, 10), nullable=False)
+
+    # 原始数据
+    raw_data = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('idx_binance_balance_asset_time', 'asset', 'update_time'),
+    )
+

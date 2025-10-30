@@ -14,6 +14,11 @@ from tri_arb.cli.formatters.table import format_balance_table, format_positions_
 from tri_arb.cli.formatters.json import print_json
 from tri_arb.cli.formatters.csv import print_csv
 from tri_arb.cli.utils.validators import validate_symbol
+from tri_arb.storage.database import DatabaseManager
+from tri_arb.storage.models import BinanceAccountBalance
+from tri_arb.storage.okx_models import OKXAccountBalance
+from tri_arb.storage.gate_models import GateAccountBalance
+import json
 
 app = typer.Typer(help="账户管理命令")
 console = Console()
@@ -556,6 +561,53 @@ def watch_balance(
                                 print_json(balance_data)
                             else:  # table (default)
                                 format_balance_table(balance_data,exchange_instance)
+
+                            # 保存到数据库（Binance/OKX/Gate 每个交易所一张表）
+                            try:
+                                db_manager = DatabaseManager()
+                                now = datetime.datetime.utcnow()
+                                # 标准化余额数据: {currency: {available, frozen, total, raw}}
+                                for currency, data in balance_data.items():
+                                    available = Decimal(str(data.get("available", 0)))
+                                    frozen = Decimal(str(data.get("frozen", 0)))
+                                    total = Decimal(str(data.get("total", 0)))
+                                    raw_json = json.dumps(data)
+
+                                    async with db_manager.session() as session:
+                                        if exchange == ExchangeName.BINANCE:
+                                            record = BinanceAccountBalance(
+                                                update_time=now,
+                                                asset=currency.upper(),
+                                                free=available,
+                                                locked=frozen,
+                                                total=total,
+                                                raw_data=raw_json,
+                                            )
+                                        elif exchange == ExchangeName.OKX:
+                                            record = OKXAccountBalance(
+                                                update_time=now,
+                                                currency=currency.upper(),
+                                                available_bal=available,
+                                                frozen_bal=frozen,
+                                                equity=total,
+                                                raw_data=raw_json,
+                                            )
+                                        elif exchange == ExchangeName.GATE:
+                                            record = GateAccountBalance(
+                                                update_time=now,
+                                                currency=currency.upper(),
+                                                available=available,
+                                                total=total,
+                                                raw_data=raw_json,
+                                            )
+                                        else:
+                                            record = None
+
+                                        if record is not None:
+                                            session.add(record)
+                                # 提交由 session ctx 管理
+                            except Exception as save_exc:
+                                logger.warning(f"保存余额到数据库失败: {save_exc}")
                         
                         # 显示下次查询时间
                         next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)

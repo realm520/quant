@@ -212,6 +212,12 @@ class XTUserStreamService:
             self.reconnect_time = datetime.utcnow()
             logger.debug("Recorded reconnect time")
 
+            # 重连后执行断线回补（固定1小时回补 + 账户/持仓最新状态）
+            try:
+                await self._sync_missing_data()
+            except Exception as sync_exc:
+                logger.error(f"Failed to run missing data sync after reconnect: {sync_exc}")
+
             # 监听消息
             logger.debug("Starting WebSocket message loop")
             message_count = 0
@@ -332,7 +338,6 @@ class XTUserStreamService:
                 return
             
             data = json.loads(message)
-            logger.info(f"Received WebSocket message: {message[:500]}")
             logger.debug("Parsed WebSocket message", extra={"data_sample": str(data)[:200]})
             # 更新消息统计
             await self._update_message_stats()
@@ -370,7 +375,7 @@ class XTUserStreamService:
             event = data.get("event", "")
             
             if topic and event:
-                logger.info("Received XT WebSocket message", extra={"topic": topic, "event": event})
+                logger.debug("XT message", extra={"topic": topic, "event": event})
                 
                 # 根据topic类型处理数据
                 if topic == "balance" and "account" in self.enabled_channels:
@@ -390,7 +395,7 @@ class XTUserStreamService:
                     channel = stream.split("@")[0]
                     listen_key = stream.split("@")[1]
                     
-                    logger.info("Received WebSocket message (legacy format)", extra={"channel": channel, "stream": stream})
+                    logger.debug("Legacy message", extra={"channel": channel, "stream": stream})
                     
                     # 根据频道类型处理数据
                     if channel == "balance" and "account" in self.enabled_channels:

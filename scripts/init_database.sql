@@ -166,6 +166,38 @@ COMMENT ON TABLE trade_updates IS 'Binance成交记录（通用）';
 COMMENT ON TABLE listen_keys IS 'Binance WebSocket ListenKey记录';
 
 -- ============================================================
+-- 连接状态表（用于重连与数据补全）
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS connection_status (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) NOT NULL UNIQUE,
+    is_connected BOOLEAN DEFAULT FALSE,
+    last_connected_at TIMESTAMP,
+    last_disconnected_at TIMESTAMP,
+    last_order_event_time TIMESTAMP,
+    last_trade_event_time TIMESTAMP,
+    last_account_event_time TIMESTAMP,
+    last_order_id BIGINT,
+    last_trade_id BIGINT,
+    total_reconnect_count INTEGER DEFAULT 0,
+    last_data_gap_seconds INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_connected
+ON connection_status (exchange, is_connected);
+
+CREATE INDEX IF NOT EXISTS idx_last_order_event_time
+ON connection_status (last_order_event_time);
+
+CREATE INDEX IF NOT EXISTS idx_last_trade_event_time
+ON connection_status (last_trade_event_time);
+
+CREATE INDEX IF NOT EXISTS idx_last_account_event_time
+ON connection_status (last_account_event_time);
+
+-- ============================================================
 -- OKX 表结构
 -- ============================================================
 

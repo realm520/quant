@@ -59,10 +59,7 @@ pip install -r requirements-db.txt
 # 2. 配置PostgreSQL
 bash scripts/configure_postgres_trust.sh
 
-# 3. 初始化数据库
-psql -U postgres -d trading -f scripts/init_database.sql
-
-# 4. 启动订阅（默认订阅永续合约）
+# 3. 启动订阅（首次运行会自动建表）
 export DATABASE_URL="postgresql+asyncpg://postgres@localhost:5432/trading"
 cextools subscribe user-stream -x binance        # Binance永续合约
 cextools subscribe user-stream -x okx            # OKX永续合约

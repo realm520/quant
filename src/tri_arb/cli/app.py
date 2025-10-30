@@ -6,11 +6,13 @@ placeholder commands.
 """
 
 from typing import Optional
+import asyncio
 
 import typer
 
 from tri_arb.config.logging import configure_logging, get_logger
 from tri_arb.config.settings import settings
+from tri_arb.storage.database import DatabaseManager
 
 # Configure logging at module level
 configure_logging()
@@ -62,6 +64,12 @@ def main(
     # Store common options in context
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+
+    # Ensure DB tables exist on first run; non-fatal if fails
+    try:
+        asyncio.run(DatabaseManager().create_tables())
+    except Exception as exc:
+        logger.warning("Skipping DB table creation", error=str(exc))
 
 
 # Command registration will be done via imports in commands/__init__.py

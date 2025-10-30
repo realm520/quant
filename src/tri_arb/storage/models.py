@@ -56,7 +56,7 @@ class OrderUpdate(Base):
     存储Binance WebSocket推送的订单状态变化。
     """
     
-    __tablename__ = "order_updates"
+    __tablename__ = "binance_order_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)  # binance_perp
@@ -110,7 +110,7 @@ class TradeUpdate(Base):
     存储Binance WebSocket推送的实时成交信息。
     """
     
-    __tablename__ = "trade_updates"
+    __tablename__ = "binance_trade_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)  # binance_perp
@@ -208,7 +208,7 @@ class BinanceAccountBalance(Base):
     
     存储通过 REST/定时查询得到的余额快照（按资产维度）。
     """
-    __tablename__ = "binance_account_balances"
+    __tablename__ = "binance_account_updates"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)

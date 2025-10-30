@@ -18,6 +18,7 @@ from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.models import BinanceAccountBalance
 from tri_arb.storage.okx_models import OKXAccountBalance
 from tri_arb.storage.gate_models import GateAccountBalance
+from tri_arb.storage.xt_websocket_models import XTAccountUpdate
 import json
 
 app = typer.Typer(help="账户管理命令")
@@ -481,10 +482,10 @@ def watch_balance(
         help="交易所 (xt, binance, okx, gate)，默认 xt"
     ),
     interval: int = typer.Option(
-        1,
+        5,
         "--interval",
         "-i",
-        help="查询间隔（分钟），默认1分钟"
+        help="查询间隔（分钟），默认5分钟"
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -535,11 +536,19 @@ def watch_balance(
         console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
         console.print(f"[yellow]按 Ctrl+C 停止监控[/yellow]\n")
         
+        # 预初始化数据库（创建一次表结构）
+        db_manager = DatabaseManager()
+
         # 定时查询函数
         async def watch_loop():
             iteration = 0
             try:
                 await exchange_instance.connect()
+                # 确保所需表存在（只执行一次）
+                try:
+                    await db_manager.create_tables()
+                except Exception as init_exc:
+                    logger.warning(f"初始化数据库表失败: {init_exc}")
                 
                 while True:
                     iteration += 1
@@ -552,6 +561,14 @@ def watch_balance(
                     try:
                         # 查询余额
                         balance_data = await exchange_instance.get_balance()
+
+                        # OKX 仅保留 USDT 合约余额
+                        if exchange == ExchangeName.OKX and exchange_type == ExchangeType.PERP and balance_data:
+                            filtered = {}
+                            for k, v in balance_data.items():
+                                if (k or "").upper() == "USDT":
+                                    filtered["USDT"] = v
+                            balance_data = filtered
                         
                         if not balance_data:
                             console.print("[yellow]账户余额为空或所有币种余额为0[/yellow]")
@@ -564,14 +581,14 @@ def watch_balance(
 
                             # 保存到数据库（Binance/OKX/Gate 每个交易所一张表）
                             try:
-                                db_manager = DatabaseManager()
                                 now = datetime.datetime.utcnow()
                                 # 标准化余额数据: {currency: {available, frozen, total, raw}}
                                 for currency, data in balance_data.items():
                                     available = Decimal(str(data.get("available", 0)))
                                     frozen = Decimal(str(data.get("frozen", 0)))
                                     total = Decimal(str(data.get("total", 0)))
-                                    raw_json = json.dumps(data)
+                                    # 原始数据可能包含 Decimal，使用 default=str 以避免序列化错误
+                                    raw_json = json.dumps(data, default=str)
 
                                     async with db_manager.session() as session:
                                         if exchange == ExchangeName.BINANCE:
@@ -597,6 +614,16 @@ def watch_balance(
                                                 update_time=now,
                                                 currency=currency.upper(),
                                                 available=available,
+                                                total=total,
+                                                raw_data=raw_json,
+                                            )
+                                        elif exchange == ExchangeName.XT:
+                                            # 复用 XT WebSocket 的账户更新表，记录 REST 快照
+                                            record = XTAccountUpdate(
+                                                update_time=now,
+                                                currency=currency.upper(),
+                                                available=available,
+                                                frozen=frozen,
                                                 total=total,
                                                 raw_data=raw_json,
                                             )

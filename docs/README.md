@@ -15,6 +15,7 @@
 ## 🚀 快速开始
 - 首次使用：阅读 [cextools-usage.md](cextools-usage.md)
 - 本地部署：参考 [DEPLOYMENT_MACOS.md](DEPLOYMENT_MACOS.md) 或 [DEPLOYMENT_LINUX.md](DEPLOYMENT_LINUX.md)
+- 现在支持“首次运行自动建表”，无需执行数据库初始化 SQL 脚本
 - 无需安装：直接使用 [UV_GIT_EXECUTION.md](UV_GIT_EXECUTION.md)
 
 ---

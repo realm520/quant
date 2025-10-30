@@ -30,9 +30,8 @@ source ~/.zshrc
 ## 3. 创建数据库
 ```bash
 createdb trading || true
-psql -d trading -f scripts/init_database.sql || true
 ```
-注意：`scripts/init_database.sql` 如重复执行，个别对象已存在会报 Warning，可忽略。
+说明：表结构会在首次运行命令时自动创建，无需执行初始化 SQL。
 
 ## 4. 获取代码与创建虚拟环境
 ```bash

@@ -170,11 +170,11 @@ export DATABASE_URL="postgresql+asyncpg://oliver@localhost:5432/trading"
 # source load_env.sh
 ```
 
-确保数据库已创建并初始化（首次使用）：
+确保数据库已创建（首次使用）：
 ```bash
 createdb trading || true
-psql -d trading -f scripts/init_database.sql || true
 ```
+说明：表结构会在首次运行命令时自动创建，无需执行初始化 SQL。
 
 ## 选择版本与缓存
 - 推荐为生产/验证指定**稳定 Tag 或 Commit**，例如：
@@ -191,7 +191,7 @@ uvx --no-cache --from git+https://github.com/realm520/quant.git@feat/oliver cext
 - externally-managed-environment：使用 uv/uvx 时不会触发系统 Python 的 PEP 668 限制。
 - 认证失败（401/403）：检查环境变量是否已导出，API Key 权限是否正确；OKX 需 3 个参数。
 - XT 获取 listen key 出现 403：为接口时间漂移所致，程序会自动重试，一般稍后成功。
-- 数据入库失败：确认 `DATABASE_URL` 用户名/主机/端口正确，数据库存在且执行了初始化 SQL。
+- 数据入库失败：确认 `DATABASE_URL` 用户名/主机/端口正确，数据库存在（表会自动创建）。
 
 ## 调试与最佳实践
 - 使用 `--debug` 查看更详细日志（例如：`cextools account balance -e perp --debug`）。

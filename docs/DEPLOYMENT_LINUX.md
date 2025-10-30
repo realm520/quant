@@ -26,9 +26,9 @@ PEP 668 外部托管环境提示（externally-managed-environment）：
 sudo -u postgres createdb trading || true
 # 或使用本机普通用户如已配置
 # createdb trading || true
-
-psql -d trading -f scripts/init_database.sql || true
 ```
+
+说明：表结构会在首次运行命令时自动创建，无需执行初始化 SQL。
 
 ## 4. 获取代码与创建虚拟环境
 ```bash

@@ -18,7 +18,7 @@ class OKXAccountBalance(Base):
     存储OKX WebSocket推送的账户余额数据。
     """
     
-    __tablename__ = "okx_account_balances"
+    __tablename__ = "okx_account_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
@@ -52,7 +52,7 @@ class OKXPosition(Base):
     存储OKX WebSocket推送的持仓数据。
     """
     
-    __tablename__ = "okx_positions"
+    __tablename__ = "okx_position_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
@@ -99,7 +99,7 @@ class OKXOrder(Base):
     存储OKX WebSocket推送的订单数据。
     """
     
-    __tablename__ = "okx_orders"
+    __tablename__ = "okx_order_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     
@@ -161,7 +161,7 @@ class OKXTrade(Base):
     从订单更新中提取的成交信息。
     """
     
-    __tablename__ = "okx_trades"
+    __tablename__ = "okx_trade_updates"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     

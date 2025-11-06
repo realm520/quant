@@ -19,7 +19,10 @@ from tri_arb.storage.models import BinanceAccountBalance
 from tri_arb.storage.okx_models import OKXAccountBalance
 from tri_arb.storage.gate_models import GateAccountBalance
 from tri_arb.storage.xt_websocket_models import XTAccountUpdate
+from decimal import Decimal
+from typing import Any
 import json
+import os
 
 app = typer.Typer(help="账户管理命令")
 console = Console()
@@ -661,6 +664,396 @@ def watch_balance(
         console.print("\n[yellow]监控已停止[/yellow]")
     except ValueError as e:
         error_msg = str(e) if str(e) else "配置错误，请检查交易所和API凭证"
+        console.print(f"[red]配置错误:[/red] {error_msg}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        if debug:
+            console.print_exception()
+        else:
+            error_msg = str(e) if str(e) else f"未知错误: {type(e).__name__}"
+            console.print(f"[red]错误:[/red] {error_msg}")
+        raise typer.Exit(code=1)
+
+
+@app.command("watch-account")
+def watch_account(
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt, binance, okx, gate)，默认 xt"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="API 密钥（覆盖环境变量）"
+    ),
+    api_secret: Optional[str] = typer.Option(
+        None,
+        "--api-secret",
+        help="API 密钥（覆盖环境变量）"
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="启用调试模式"
+    )
+):
+    """定时获取账户数据（现货余额、合约余额、合约仓位）.
+    
+    每10分钟自动获取一次交易所的：
+    - 现货账户余额
+    - 合约账户余额  
+    - 合约账户仓位
+    
+    数据自动保存到PostgreSQL数据库。
+    按 Ctrl+C 停止监控。
+    
+    示例:
+        # 使用环境变量中的API密钥（XT交易所）
+        cextools account watch-account -x xt
+        
+        # 通过命令行参数提供API密钥
+        cextools account watch-account -x xt --api-key YOUR_KEY --api-secret YOUR_SECRET
+        
+        # 启用调试模式
+        cextools account watch-account -x xt --debug
+    """
+    try:
+        # 检查交易所支持情况
+        if exchange != ExchangeName.XT:
+            console.print(f"[red]错误:[/red] 交易所 '{exchange.value}' 暂时不支持 watch-account 功能")
+            console.print("\n目前仅支持以下交易所:")
+            console.print("  • xt (XT交易所)")
+            console.print("\n请使用: [cyan]cextools account watch-account -x xt[/cyan]")
+            raise typer.Exit(code=1)
+        
+        # 获取API密钥（优先使用命令行参数，否则使用环境变量）
+        final_api_key = api_key or os.getenv("XT_API_KEY", "")
+        final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
+        
+        if not final_api_key or not final_api_secret:
+            console.print("[red]错误:[/red] 缺少XT API密钥配置")
+            console.print("\n请设置环境变量或使用命令行参数:")
+            console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
+            console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+            console.print("\n注意: XT交易所的现货和合约使用同一套API密钥")
+            raise typer.Exit(code=1)
+        
+        console.print("[cyan]启动XT账户定时任务服务[/cyan]")
+        console.print("[cyan]查询间隔: 10分钟（固定）[/cyan]")
+        console.print("[cyan]监控内容:[/cyan]")
+        console.print("  • 现货账户余额")
+        console.print("  • 合约账户余额")
+        console.print("  • 合约账户仓位")
+        console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+        
+        # 初始化数据库管理器
+        db_manager = DatabaseManager()
+        
+        # 创建交易所实例
+        from tri_arb.exchanges.xt_spot import XTSpotExchange
+        from tri_arb.exchanges.xt_perp import XTPerpExchange
+        from tri_arb.services.xt_rest_data_service import XTRestDataService
+        
+        spot_exchange = XTSpotExchange(
+            name="xt",
+            api_key=final_api_key,
+            api_secret=final_api_secret,
+        )
+        perp_exchange = XTPerpExchange(
+            api_key=final_api_key,
+            api_secret=final_api_secret,
+        )
+        xt_rest_service = XTRestDataService(db_manager)
+        
+        # 异步运行定时任务
+        async def run_scheduler():
+            iteration = 0
+            try:
+                # 创建数据库表（如果不存在）
+                await db_manager.create_tables()
+                console.print("[green]✓[/green] 数据库表已就绪\n")
+                
+                # 连接交易所
+                await spot_exchange.connect()
+                await perp_exchange.connect()
+                console.print("[green]✓[/green] 交易所连接成功\n")
+                
+                # 立即执行一次查询并显示
+                iteration = 1
+                await fetch_and_display(iteration)
+                
+                # 定时查询循环（每10分钟）
+                try:
+                    while True:
+                        await asyncio.sleep(10 * 60)  # 等待10分钟
+                        iteration += 1
+                        await fetch_and_display(iteration)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]收到停止信号，正在关闭...[/yellow]")
+                finally:
+                    await spot_exchange.disconnect()
+                    await perp_exchange.disconnect()
+                    await db_manager.close()
+                    console.print("[green]✓[/green] 服务已停止")
+                    
+            except Exception as e:
+                console.print(f"[red]错误:[/red] {e}")
+                if debug:
+                    console.print_exception()
+                raise typer.Exit(code=1)
+        
+        async def fetch_and_display(iteration_num: int):
+            """获取数据并显示表格."""
+            from rich.table import Table
+            
+            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            console.print(f"\n{'='*60}")
+            console.print(f"[bold]第 {iteration_num} 次查询 - {current_time}[/bold]")
+            console.print(f"{'='*60}\n")
+            
+            try:
+                # 1. 获取并显示现货账户余额
+                try:
+                    spot_balances = await spot_exchange.get_balance()
+                    if spot_balances:
+                        # 创建现货余额表格
+                        spot_table = Table(
+                            title="XT 现货账户余额",
+                            show_header=True,
+                            header_style="bold magenta"
+                        )
+                        spot_table.add_column("Currency", style="cyan", width=12)
+                        spot_table.add_column("Available", justify="right", style="green")
+                        spot_table.add_column("Frozen", justify="right", style="yellow")
+                        spot_table.add_column("Total", justify="right", style="white")
+                        
+                        for currency, data in spot_balances.items():
+                            available = data.get('available', Decimal('0'))
+                            frozen = data.get('frozen', Decimal('0'))
+                            total = data.get('total', available + frozen)
+                            
+                            spot_table.add_row(
+                                currency,
+                                f"{available:.8f}",
+                                f"{frozen:.8f}",
+                                f"{total:.8f}",
+                            )
+                        
+                        console.print(spot_table)
+                        console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                        
+                        # 保存到数据库（XT专用表）
+                        await xt_rest_service.save_spot_balance(
+                            balances_data=spot_balances,
+                            query_type="scheduled",
+                        )
+                    else:
+                        console.print("[yellow]XT 现货账户余额为空[/yellow]\n")
+                except Exception as e:
+                    console.print(f"[red]获取现货余额失败:[/red] {e}\n")
+                    if debug:
+                        console.print_exception()
+                
+                # 2. 获取并显示合约账户余额
+                try:
+                    perp_balances = await perp_exchange.get_balance()
+                    if perp_balances:
+                        # 转换为标准格式（包含所有字段）
+                        balances_data: dict[str, dict[str, Any]] = {}
+                        for currency, balance_info in perp_balances.items():
+                            balances_data[currency] = {
+                                "available": balance_info.get("available", Decimal("0")),
+                                "frozen": balance_info.get("frozen", Decimal("0")),
+                                "total": balance_info.get("total", Decimal("0")),
+                                "unrealized_pnl": balance_info.get("unrealized_pnl", Decimal("0")),
+                                "realized_pnl": balance_info.get("realized_pnl", Decimal("0")),
+                                "equity": balance_info.get("equity", balance_info.get("total", Decimal("0")) + balance_info.get("unrealized_pnl", Decimal("0"))),
+                                "margin": balance_info.get("margin", Decimal("0")),
+                                "margin_ratio": balance_info.get("margin_ratio", Decimal("0")),
+                            }
+                        
+                        # 创建合约余额表格
+                        perp_balance_table = Table(
+                            title="XT 合约账户余额",
+                            show_header=True,
+                            header_style="bold magenta"
+                        )
+                        perp_balance_table.add_column("Currency", style="cyan", width=12)
+                        perp_balance_table.add_column("Available", justify="right", style="green")
+                        perp_balance_table.add_column("Frozen", justify="right", style="yellow")
+                        perp_balance_table.add_column("Total", justify="right", style="white")
+                        perp_balance_table.add_column("Unrealized PnL", justify="right", style="white")
+                        perp_balance_table.add_column("Realized PnL", justify="right", style="white")
+                        perp_balance_table.add_column("Equity", justify="right", style="cyan")
+                        perp_balance_table.add_column("Margin", justify="right", style="yellow")
+                        
+                        for currency, data in balances_data.items():
+                            available = data.get("available", Decimal("0"))
+                            frozen = data.get("frozen", Decimal("0"))
+                            total = data.get("total", Decimal("0"))
+                            unrealized_pnl = data.get("unrealized_pnl", Decimal("0"))
+                            realized_pnl = data.get("realized_pnl", Decimal("0"))
+                            equity = data.get("equity", total + unrealized_pnl)
+                            margin = data.get("margin", Decimal("0"))
+                            
+                            # 格式化PnL颜色
+                            unrealized_pnl_style = "green" if unrealized_pnl >= 0 else "red"
+                            realized_pnl_style = "green" if realized_pnl >= 0 else "red"
+                            unrealized_pnl_text = f"[{unrealized_pnl_style}]{unrealized_pnl:.8f}[/{unrealized_pnl_style}]"
+                            realized_pnl_text = f"[{realized_pnl_style}]{realized_pnl:.8f}[/{realized_pnl_style}]"
+                            
+                            perp_balance_table.add_row(
+                                currency,
+                                f"{available:.8f}",
+                                f"{frozen:.8f}",
+                                f"{total:.8f}",
+                                unrealized_pnl_text,
+                                realized_pnl_text,
+                                f"{equity:.8f}",
+                                f"{margin:.8f}",
+                            )
+                        
+                        console.print(perp_balance_table)
+                        console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                        
+                        # 保存到数据库（XT专用表）
+                        await xt_rest_service.save_perp_balance(
+                            balances_data=balances_data,
+                            query_type="scheduled",
+                        )
+                    else:
+                        console.print("[yellow]XT 合约账户余额为空[/yellow]\n")
+                except Exception as e:
+                    console.print(f"[red]获取合约余额失败:[/red] {e}\n")
+                    if debug:
+                        console.print_exception()
+                
+                # 3. 获取并显示合约账户仓位
+                try:
+                    positions = await perp_exchange.get_positions(symbol=None)
+                    if positions:
+                        # 创建仓位表格
+                        position_table = Table(
+                            title="XT 合约账户仓位",
+                            show_header=True,
+                            header_style="bold magenta"
+                        )
+                        position_table.add_column("Symbol", style="cyan")
+                        position_table.add_column("Side", style="white")
+                        position_table.add_column("Quantity", justify="right")
+                        position_table.add_column("Entry Price", justify="right")
+                        position_table.add_column("Current Price", justify="right")
+                        position_table.add_column("Liquidation Price", justify="right")
+                        position_table.add_column("Unrealized PnL", justify="right")
+                        position_table.add_column("Realized PnL", justify="right")
+                        position_table.add_column("ROE", justify="right")
+                        position_table.add_column("Leverage", justify="right")
+                        
+                        # 转换为字典格式保存
+                        positions_data: list[dict[str, Any]] = []
+                        
+                        for pos in positions:
+                            if hasattr(pos, 'symbol'):
+                                # Position对象 (XT格式)
+                                symbol = pos.symbol
+                                side = pos.side
+                                quantity = pos.quantity
+                                entry_price = pos.entry_price
+                                mark_price = pos.mark_price
+                                unrealized_pnl = pos.unrealized_pnl
+                                realized_pnl = getattr(pos, 'realized_pnl', Decimal('0'))
+                                leverage = f"{pos.leverage}"
+                                roe = (pos.unrealized_pnl / pos.margin * 100) if hasattr(pos, 'margin') and pos.margin > 0 else Decimal('0')
+                                liquidation_price = pos.liquidation_price if hasattr(pos, 'liquidation_price') else Decimal('0')
+                                
+                                # 格式化未实现PnL
+                                unrealized_pnl_style = "green" if unrealized_pnl >= 0 else "red"
+                                unrealized_pnl_text = f"[{unrealized_pnl_style}]{unrealized_pnl:.8f}[/{unrealized_pnl_style}]"
+                                
+                                # 格式化已实现PnL
+                                realized_pnl_style = "green" if realized_pnl >= 0 else "red"
+                                realized_pnl_text = f"[{realized_pnl_style}]{realized_pnl:.8f}[/{realized_pnl_style}]"
+                                
+                                # 格式化ROE
+                                roe_style = "green" if roe >= 0 else "red"
+                                roe_text = f"[{roe_style}]{roe:.2f}%[/{roe_style}]"
+                                
+                                position_table.add_row(
+                                    symbol,
+                                    side,
+                                    f"{quantity:.8f}",
+                                    f"{entry_price:.8f}",
+                                    f"{mark_price:.8f}",
+                                    f"{liquidation_price:.8f}",
+                                    unrealized_pnl_text,
+                                    realized_pnl_text,
+                                    roe_text,
+                                    f"{leverage}x",
+                                )
+                                
+                                # 保存数据（使用XT API字段名）
+                                pos_dict = {
+                                    "symbol": symbol,
+                                    "positionSide": side,
+                                    "positionSize": str(quantity),  # XT API uses positionSize
+                                    "entryPrice": str(entry_price),
+                                    "calMarkPrice": str(mark_price),  # XT API uses calMarkPrice
+                                    "floatingPL": str(unrealized_pnl),  # XT API uses floatingPL
+                                    "realizedProfit": str(realized_pnl),  # XT API uses realizedProfit
+                                    "leverage": leverage,
+                                    "isolatedMargin": str(pos.margin) if hasattr(pos, 'margin') else "0",  # XT API uses isolatedMargin
+                                    "roe": str(roe),
+                                    "breakPrice": str(liquidation_price),  # XT API uses breakPrice
+                                    # 保留兼容字段名
+                                    "positionAmt": str(quantity),
+                                    "markPrice": str(mark_price),
+                                    "unRealizedProfit": str(unrealized_pnl),
+                                    "liquidationPrice": str(liquidation_price),
+                                    "margin": str(pos.margin) if hasattr(pos, 'margin') else "0",
+                                }
+                                positions_data.append(pos_dict)
+                            else:
+                                # 字典格式
+                                positions_data.append(pos)
+                        
+                        if positions_data:
+                            console.print(position_table)
+                            console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                            
+                            # 保存到数据库（XT专用表）
+                            await xt_rest_service.save_perp_positions(
+                                positions_data=positions_data,
+                                query_type="scheduled",
+                            )
+                        else:
+                            console.print("[yellow]XT 当前无持仓[/yellow]\n")
+                    else:
+                        console.print("[yellow]XT 当前无持仓[/yellow]\n")
+                except Exception as e:
+                    console.print(f"[red]获取仓位失败:[/red] {e}\n")
+                    if debug:
+                        console.print_exception()
+                
+                # 显示下次查询时间
+                next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=10)
+                console.print(f"\n[dim]下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+                console.print(f"[dim]等待 10 分钟...[/dim]\n")
+                
+            except Exception as e:
+                console.print(f"[red]查询过程出错:[/red] {e}")
+                if debug:
+                    console.print_exception()
+        
+        # 运行定时任务
+        asyncio.run(run_scheduler())
+        
+    except KeyboardInterrupt:
+        console.print("\n[yellow]监控已停止[/yellow]")
+    except ValueError as e:
+        error_msg = str(e) if str(e) else "配置错误，请检查API密钥"
         console.print(f"[red]配置错误:[/red] {error_msg}")
         raise typer.Exit(code=1)
     except Exception as e:

@@ -1047,21 +1047,52 @@ class XTPerpExchange(BaseExchange):
             frozen = Decimal(str(item.get("openOrderMarginFrozen", "0")))
             total = available + frozen
 
+            # Debug: Log all PnL related fields
+            not_profit = item.get("notProfit")
+            profit = item.get("profit")
+            margin_balance = item.get("marginBalance")
             logger.info(
                 "Processing perp balance item",
                 currency=currency,
                 available=str(available),
                 frozen=str(frozen),
                 total=str(total),
+                not_profit=str(not_profit) if not_profit is not None else "None",
+                profit=str(profit) if profit is not None else "None",
+                margin_balance=str(margin_balance) if margin_balance is not None else "None",
                 will_include=total > 0
             )
 
+            # Extract additional fields from API response
+            # XT API balance endpoint uses:
+            # - notProfit: 未实现盈亏（负数表示亏损）
+            # - profit: 已实现盈亏
+            # - marginBalance: 保证金余额（总权益）
+            # - crossedMargin: 全仓保证金
+            # - isolatedMargin: 逐仓保证金
+            unrealized_pnl = Decimal(str(item.get("notProfit", item.get("unrealizedPnl", item.get("unrealizedProfit", "0")))))
+            realized_pnl = Decimal(str(item.get("profit", item.get("realizedPnl", item.get("realizedProfit", "0")))))
+            # marginBalance is the total equity (wallet balance + unrealized PnL)
+            equity = Decimal(str(item.get("marginBalance", item.get("equity", item.get("totalEquity", str(total + unrealized_pnl))))))
+            # Use crossedMargin + isolatedMargin as total margin
+            crossed_margin = Decimal(str(item.get("crossedMargin", "0")))
+            isolated_margin = Decimal(str(item.get("isolatedMargin", "0")))
+            margin = crossed_margin + isolated_margin
+            # Calculate margin ratio if we have marginBalance and margin
+            margin_balance = Decimal(str(item.get("marginBalance", "0")))
+            margin_ratio = (margin / margin_balance * Decimal("100")) if margin_balance > 0 else Decimal("0")
+            
             # Only include non-zero balances
             if total > 0:
                 balances[currency] = {
                     "available": available,
                     "frozen": frozen,
                     "total": total,
+                    "unrealized_pnl": unrealized_pnl,
+                    "realized_pnl": realized_pnl,
+                    "equity": equity,
+                    "margin": margin,
+                    "margin_ratio": margin_ratio,
                 }
 
         logger.info("Perp balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
@@ -1083,58 +1114,94 @@ class XTPerpExchange(BaseExchange):
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
-        path = "/future/user/v1/position/list"
+        # Use /future/user/v1/position endpoint (not /position/list)
+        path = "/future/user/v1/position"
         params = {"symbol": symbol} if symbol else None
         data = await self._request("GET", path, params=params, body=None, require_auth=True)
-
-        # Debug: Log raw API response
-        logger.info(
-            "Raw positions API response",
-            response_type=type(data).__name__,
-            is_list=isinstance(data, list),
-            item_count=len(data) if isinstance(data, list) else "N/A",
-            sample_data=str(data)[:500] if data else "empty"
-        )
+        
+        # XT API returns {result: [...]} format, extract result array
+        if isinstance(data, dict) and "result" in data:
+            data = data["result"]
+        elif isinstance(data, dict) and "data" in data:
+            data = data["data"]
 
         # Parse positions response
         # Expected format: [{"symbol": "btc_usdt", "positionSide": "LONG", "positionAmt": "0.5", ...}]
         positions: list[Position] = []
 
         if isinstance(data, list):
-            logger.info("Parsing positions list", total_items=len(data))
+            logger.debug("Parsing positions list", total_items=len(data))
 
             for item in data:
+                # Extract all fields from API response
                 symbol_str = item.get("symbol", "")
                 side = item.get("positionSide", "LONG")
-                quantity = Decimal(str(item.get("positionSize", "0")))
-
-                # Log every position item (including zero quantity)
-                logger.info(
-                    "Processing position item",
-                    symbol=symbol_str,
-                    side=side,
-                    quantity=str(quantity),
-                    entry_price=str(item.get("entryPrice", "0")),
-                    unrealized_pnl=str(item.get("unrealizedProfit", "0")),
-                    will_skip=(quantity <= 0)
-                )
+                # XT API uses positionSize (in contracts/张)
+                position_size_raw = item.get("positionSize")
+                quantity = Decimal(str(position_size_raw)) if position_size_raw is not None else Decimal("0")
+                
+                # Extract all other fields
+                entry_price_raw = item.get("entryPrice")
+                cal_mark_price_raw = item.get("calMarkPrice")
+                break_price_raw = item.get("breakPrice")
+                floating_pl_raw = item.get("floatingPL")
+                realized_profit_raw = item.get("realizedProfit")
+                leverage_raw = item.get("leverage")
+                isolated_margin_raw = item.get("isolatedMargin")
 
                 # Skip closed positions (quantity = 0)
                 # API may return historical positions with zero quantity
                 if quantity <= 0:
-                    logger.info("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
+                    logger.debug("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
                     continue
 
-                entry_price = Decimal(str(item.get("entryPrice", "0")))
-                mark_price = Decimal(str(item.get("markPrice", "0")))
-                liquidation_price = Decimal(str(item.get("liquidationPrice", "0")))
-                unrealized_pnl = Decimal(str(item.get("unrealizedProfit", "0")))
-                leverage_val = int(item.get("leverage", 1))
-                margin = Decimal(str(item.get("isolatedMargin", "0")))
+                # Convert all fields to Decimal with proper handling
+                entry_price = Decimal(str(entry_price_raw)) if entry_price_raw is not None else Decimal("0")
+                # XT API uses calMarkPrice for mark price (计算标记价格)
+                mark_price = Decimal(str(cal_mark_price_raw)) if cal_mark_price_raw is not None else Decimal("0")
+                # XT API uses breakPrice for liquidation price (强平价格)
+                liquidation_price = Decimal(str(break_price_raw)) if break_price_raw is not None else Decimal("0")
+                
+                # XT API uses floatingPL for unrealized PnL (未实现盈亏)
+                if floating_pl_raw is not None:
+                    unrealized_pnl = Decimal(str(floating_pl_raw))
+                else:
+                    logger.warning(
+                        "floatingPL field not found",
+                        symbol=symbol_str
+                    )
+                    unrealized_pnl = Decimal("0")
+                
+                # XT API uses realizedProfit for realized PnL (已实现盈亏)
+                if realized_profit_raw is not None:
+                    realized_pnl = Decimal(str(realized_profit_raw))
+                else:
+                    realized_pnl = Decimal("0")
+                
+                # XT API uses leverage (杠杆倍数)
+                leverage_val = int(leverage_raw) if leverage_raw is not None else 1
+                
+                # XT API uses isolatedMargin for margin (仓位保证金)
+                # For CROSSED position type, margin might be 0, use crossedMargin from balance instead
+                if isolated_margin_raw is not None:
+                    margin = Decimal(str(isolated_margin_raw))
+                else:
+                    margin = Decimal("0")
+                
+                # Log position summary (only key fields)
+                logger.debug(
+                    "Position parsed",
+                    symbol=symbol_str,
+                    quantity=str(quantity),
+                    unrealized_pnl=str(unrealized_pnl),
+                    realized_pnl=str(realized_pnl),
+                )
 
                 # Calculate ROE (Return on Equity)
                 roe = (unrealized_pnl / margin * Decimal("100")) if margin > 0 else Decimal("0")
 
+                # Create position with all fields including realized_pnl
+                # Note: Position model may not have realized_pnl, so we'll store it separately
                 position = Position(
                     symbol=symbol_str,
                     side=side,
@@ -1147,6 +1214,8 @@ class XTPerpExchange(BaseExchange):
                     margin=margin,
                     roe=roe,
                 )
+                # Store realized_pnl as an attribute for later use
+                position.realized_pnl = realized_pnl
                 positions.append(position)
         else:
             logger.warning(

@@ -14,6 +14,7 @@
 ### 🔄 定时监控 (NEW!)
 - ✅ 定时查询余额 (`watch-balance`)
 - ✅ 定时查询订单 (`watch-orders`)
+- ✅ XT账户定时监控 (`watch-account`) - 现货余额、合约余额、合约仓位
 - ✅ 可配置时间间隔
 
 ### 📊 多交易所支持
@@ -46,11 +47,47 @@ cextools account balance -x xt -e spot  # XT现货
 cextools account positions -x binance -e perp --symbol BTC/USDT
 cextools account positions -x xt -e perp --symbol BTC/USDT
 
+# XT账户定时监控（每10分钟自动获取现货余额、合约余额、合约仓位）
+cextools account watch-account
+
+# 定时查询余额（支持所有交易所）
+cextools account watch-balance -x xt -e spot --interval 5
+cextools account watch-balance -x xt -e perp --interval 5
+
 # 下单
 cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG
 ```
 
-### 2. WebSocket实时订阅（推荐）
+### 2. XT账户定时监控（推荐）
+
+```bash
+# 配置XT API密钥（现货和合约共用）
+export XT_API_KEY="your_api_key"
+export XT_API_SECRET="your_api_secret"
+
+# 启动XT账户定时监控
+# 每10分钟自动获取：现货余额、合约余额、合约仓位
+# 数据自动保存到PostgreSQL数据库
+cextools account watch-account
+
+# 使用命令行参数提供API密钥
+cextools account watch-account --api-key YOUR_KEY --api-secret YOUR_SECRET
+
+# 启用调试模式
+cextools account watch-account --debug
+```
+
+**功能特性**：
+- ✅ 自动获取XT现货账户余额
+- ✅ 自动获取XT合约账户余额
+- ✅ 自动获取XT合约账户仓位
+- ✅ 数据自动保存到PostgreSQL（`rest_balances`和`rest_positions`表）
+- ✅ 实时表格显示（三个独立表格）
+- ✅ 固定10分钟间隔（无需配置）
+
+📚 **详细文档**：查看 [docs/XT_ACCOUNT_SCHEDULER.md](docs/XT_ACCOUNT_SCHEDULER.md)
+
+### 3. WebSocket实时订阅（推荐）
 
 ```bash
 # 1. 安装依赖

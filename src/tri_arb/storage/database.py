@@ -13,6 +13,8 @@ from tri_arb.storage.models import Base as BinanceBase
 from tri_arb.storage.okx_models import Base as OKXBase
 from tri_arb.storage.gate_models import Base as GateBase
 from tri_arb.storage.xt_websocket_models import Base as XTWebSocketBase
+from tri_arb.storage.rest_models import Base as RestBase
+from tri_arb.storage.xt_rest_models import Base as XTRestBase
 
 logger = get_logger(__name__)
 
@@ -60,7 +62,7 @@ class DatabaseManager:
         )
     
     async def create_tables(self):
-        """创建数据库表（Binance、OKX、Gate.io、XT WebSocket）。"""
+        """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API）。"""
         async with self.async_engine.begin() as conn:
             # 创建Binance表
             await conn.run_sync(BinanceBase.metadata.create_all)
@@ -70,7 +72,11 @@ class DatabaseManager:
             await conn.run_sync(GateBase.metadata.create_all)
             # 创建XT WebSocket表
             await conn.run_sync(XTWebSocketBase.metadata.create_all)
-        logger.info("Database tables created (Binance + OKX + Gate.io + XT WebSocket)")
+            # 创建REST API表
+            await conn.run_sync(RestBase.metadata.create_all)
+            # 创建XT REST API表（独立的现货、合约表）
+            await conn.run_sync(XTRestBase.metadata.create_all)
+        logger.info("Database tables created (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API)")
     
     async def drop_tables(self):
         """删除数据库表（谨慎使用）。"""
@@ -79,7 +85,9 @@ class DatabaseManager:
             await conn.run_sync(OKXBase.metadata.drop_all)
             await conn.run_sync(GateBase.metadata.drop_all)
             await conn.run_sync(XTWebSocketBase.metadata.drop_all)
-        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket)")
+            await conn.run_sync(RestBase.metadata.drop_all)
+            await conn.run_sync(XTRestBase.metadata.drop_all)
+        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API)")
     
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession, None]:

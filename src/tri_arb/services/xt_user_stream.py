@@ -2452,137 +2452,36 @@ class XTUserStreamService:
                 }
             )
             
-            # 5. 判断是划转还是交易
-            # 如果合约账户余额变化与账户余额变化方向相反，且金额相近，可能是划转
-            if perp_change is not None and spot_change is not None:
-                # 检查是否是划转：一个账户增加，另一个账户减少，且金额相近
-                if (balance_change > 0 and perp_change < 0 and abs(perp_change + balance_change) < Decimal("0.01")) or \
-                   (balance_change < 0 and perp_change > 0 and abs(perp_change + balance_change) < Decimal("0.01")):
-                    logger.info(
-                        f"Detected potential transfer: {currency} between spot and perp accounts",
-                        extra={
-                            "currency": currency,
-                            "account_change": str(balance_change),
-                            "perp_change": str(perp_change),
-                            "spot_change": str(spot_change),
-                        }
-                    )
-                    # 更新缓存
-                    if spot_total is not None:
-                        self._last_spot_balances[spot_cache_key] = {"total": spot_total}
-                    return None, None, False  # 不是交易，是划转
-            
-            # 6. 检查是否有成交记录匹配（30秒内）
-            time_threshold = datetime.utcnow() - timedelta(seconds=30)
-            
-            # 检查内存中的最近成交记录
-            for trade_id, trade_info in self._recent_trades.items():
-                if trade_info["timestamp"] >= time_threshold:
-                    symbol = trade_info.get("symbol", "")
-                    if self._trade_affects_currency(symbol, currency, trade_info):
-                        return trade_id, trade_info.get("order_id"), True
-            
-            # 查询REST API成交记录
-            recent_trades: list[dict[str, Any]] = []
-            try:
-                start_time_ms = int(time_threshold.timestamp() * 1000)
-                end_time_ms = int(datetime.utcnow().timestamp() * 1000)
+            transfer_detected = False
+            tolerance = Decimal("0.01")
+            if spot_change is not None:
+                if balance_change > 0 and spot_change < 0 and abs(balance_change + spot_change) <= tolerance:
+                    transfer_detected = True
+                elif balance_change < 0 and spot_change > 0 and abs(balance_change + spot_change) <= tolerance:
+                    transfer_detected = True
 
-                recent_trades = await self.rest_client.get_user_trades(
-                    symbol=None,
-                    start_time=start_time_ms,
-                    end_time=end_time_ms,
-                    limit=50
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to query recent trades within time window",
-                    extra={"currency": currency, "error": str(e)},
-                    exc_info=True,
-                )
-
-            trade_detected = False
-            for trade in recent_trades:
-                symbol = trade.get("symbol", "")
-                if not symbol:
-                    continue
-
-                trade_info = {
-                    "quantity": self._safe_decimal(trade.get("quantity", "0")),
-                    "price": self._safe_decimal(trade.get("price", "0")),
-                    "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity") or trade.get("quoteQty", "0")),
-                }
-
-                if self._trade_affects_currency(symbol, currency, trade_info):
-                    trade_detected = True
-                    trade_id = trade.get("tradeId") or trade.get("trade_id", "")
-                    order_id = trade.get("orderId") or trade.get("order_id", "")
-                    logger.info(
-                        f"Found matching trade for {currency}",
-                        extra={
-                            "currency": currency,
-                            "symbol": symbol,
-                            "trade_id": trade_id,
-                            "order_id": order_id,
-                        }
-                    )
-                    return str(trade_id), str(order_id) if order_id else None, True
-
-            if not trade_detected:
-                # 交易可能刚发生，给交易所一些时间写入成交记录
-                await asyncio.sleep(1)
-                logger.debug(
-                    "No matching trades found within time window, retrying after short delay",
-                    extra={"currency": currency}
-                )
-                # 如果基于时间窗口未找到成交记录，退回到最新成交列表进行匹配
-                try:
-                    fallback_trades = await self.rest_client.get_user_trades(symbol=None, limit=50)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to query latest trades during fallback",
-                        extra={"currency": currency, "error": str(e)},
-                        exc_info=True,
-                    )
-                    fallback_trades = []
-
-                for trade in fallback_trades:
-                    symbol = trade.get("symbol", "")
-                    if not symbol:
-                        continue
-
-                    trade_info = {
-                        "quantity": self._safe_decimal(trade.get("quantity", "0")),
-                        "price": self._safe_decimal(trade.get("price", "0")),
-                        "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity") or trade.get("quoteQty", "0")),
-                    }
-
-                    if self._trade_affects_currency(symbol, currency, trade_info):
-                        trade_id = trade.get("tradeId") or trade.get("trade_id", "")
-                        order_id = trade.get("orderId") or trade.get("order_id", "")
-                        logger.info(
-                            f"Found matching trade for {currency} (fallback mode)",
-                            extra={
-                                "currency": currency,
-                                "symbol": symbol,
-                                "trade_id": trade_id,
-                                "order_id": order_id,
-                            }
-                        )
-                        return str(trade_id), str(order_id) if order_id else None, True
-            
-            # 更新缓存
             if spot_total is not None:
                 self._last_spot_balances[spot_cache_key] = {"total": spot_total}
-            
-            # 如果无法确定，默认认为是交易导致的余额变化，避免误判为划转
+
+            if transfer_detected:
+                logger.info(
+                    f"Detected transfer via balance comparison: {currency}",
+                    extra={
+                        "currency": currency,
+                        "account_change": str(balance_change),
+                        "perp_change": str(perp_change),
+                        "spot_change": str(spot_change),
+                    }
+                )
+                return None, None, False
+
             logger.debug(
-                "Unable to determine balance change cause, defaulting to trade",
+                "Balance changes do not indicate transfer; treating as trade",
                 extra={
                     "currency": currency,
-                    "balance_change": str(balance_change),
-                    "spot_change": str(spot_change),
+                    "account_change": str(balance_change),
                     "perp_change": str(perp_change),
+                    "spot_change": str(spot_change),
                 }
             )
             return None, None, True

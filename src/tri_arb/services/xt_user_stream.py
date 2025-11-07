@@ -1140,6 +1140,20 @@ class XTUserStreamService:
         try:
             balances = await self.rest_client.get_balance()
             
+            # 初始化余额缓存（用于划转分析）
+            for currency, balance_data in balances.items():
+                self._last_account_balances[currency.lower()] = {
+                    "available": balance_data.get("available", Decimal("0")),
+                    "frozen": balance_data.get("frozen", Decimal("0")),
+                    "total": balance_data.get("total", Decimal("0")),
+                }
+            
+            logger.info(
+                "Initialized balance cache for transfer analysis",
+                currencies=list(self._last_account_balances.keys()),
+                currency_count=len(self._last_account_balances)
+            )
+            
             # 保存到数据库
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
@@ -2022,19 +2036,40 @@ class XTUserStreamService:
             
             # 比较余额变化
             for currency, current_balance in current_balances.items():
-                last_balance = self._last_account_balances.get(currency)
+                # 统一使用小写币种名
+                currency_key = currency.lower()
+                last_balance = self._last_account_balances.get(currency_key)
                 current_total = current_balance["total"]
                 
                 if last_balance is None:
                     # 首次记录，保存当前余额
-                    self._last_account_balances[currency] = current_balance
+                    logger.info(
+                        f"首次记录 {currency} 余额，初始化缓存",
+                        currency=currency,
+                        total=str(current_total),
+                    )
+                    self._last_account_balances[currency_key] = current_balance
                     continue
                 
                 last_total = last_balance["total"]
                 balance_change = current_total - last_total
                 
+                logger.debug(
+                    f"余额变化检测: {currency}",
+                    currency=currency,
+                    last_total=str(last_total),
+                    current_total=str(current_total),
+                    balance_change=str(balance_change),
+                )
+                
                 # 如果余额变化很小（可能是精度问题），忽略
                 if abs(balance_change) < Decimal("0.00000001"):
+                    logger.debug(
+                        f"余额变化太小，忽略: {currency}",
+                        balance_change=str(balance_change),
+                    )
+                    # 即使变化很小，也更新缓存
+                    self._last_account_balances[currency_key] = current_balance
                     continue
                 
                 # 检查是否有对应的订单或成交记录
@@ -2085,8 +2120,17 @@ class XTUserStreamService:
                         balance_after=current_total,
                     )
                 
-                # 更新缓存的余额
-                self._last_account_balances[currency] = current_balance
+                # 更新缓存的余额（使用小写币种名）
+                self._last_account_balances[currency_key] = current_balance
+                
+                logger.info(
+                    f"检测到余额变化: {currency}",
+                    currency=currency,
+                    amount=str(balance_change),
+                    transfer_type=transfer_type,
+                    balance_before=str(last_total),
+                    balance_after=str(current_total),
+                )
                 
         except Exception as e:
             logger.error(f"Failed to analyze transfer: {e}", exc_info=True)

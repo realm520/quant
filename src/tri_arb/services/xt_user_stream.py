@@ -688,8 +688,26 @@ class XTUserStreamService:
                 # XT API uses calMarkPrice, fallback to markPrice
                 mark_price = data.get("calMarkPrice") or data.get("markPrice", "0")
                 # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                unrealized_pnl = data.get("floatingPL") or data.get("unrealizedPnl") or data.get("unRealizedProfit", "0")
+                # 注意：floatingPL可能是None或空字符串，需要处理
+                floating_pl_value = data.get("floatingPL")
+                if floating_pl_value is None or floating_pl_value == "":
+                    floating_pl_value = data.get("unrealizedPnl") or data.get("unRealizedProfit") or data.get("unrealized_pnl")
+                unrealized_pnl = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
                 leverage = data.get("leverage", "1")
+                
+                # 调试日志：记录实际收到的数据
+                logger.debug(
+                    f"Position update data for {symbol}",
+                    extra={
+                        "symbol": symbol,
+                        "floatingPL": str(floating_pl_value) if floating_pl_value is not None else None,
+                        "unrealizedPnl": str(data.get("unrealizedPnl")) if data.get("unrealizedPnl") is not None else None,
+                        "unRealizedProfit": str(data.get("unRealizedProfit")) if data.get("unRealizedProfit") is not None else None,
+                        "unrealized_pnl": str(data.get("unrealized_pnl")) if data.get("unrealized_pnl") is not None else None,
+                        "final_unrealized_pnl": str(unrealized_pnl),
+                        "raw_data_keys": list(data.keys()),
+                    }
+                )
                 
                 table.add_row(
                     symbol,
@@ -713,7 +731,11 @@ class XTUserStreamService:
                     # XT API uses calMarkPrice, fallback to markPrice
                     mark_price = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
                     # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                    unrealized_pnl = position.get("floatingPL") or position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl", "0")
+                    # 注意：floatingPL可能是None或空字符串，需要处理
+                    floating_pl_value = position.get("floatingPL")
+                    if floating_pl_value is None or floating_pl_value == "":
+                        floating_pl_value = position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl")
+                    unrealized_pnl = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
                     leverage = position.get("leverage", "1")
                     
                     table.add_row(
@@ -930,7 +952,11 @@ class XTUserStreamService:
                     # XT API uses calMarkPrice, fallback to markPrice
                     mark_price_raw = data.get("calMarkPrice") or data.get("markPrice", "0")
                     # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                    unrealized_pnl_raw = data.get("floatingPL") or data.get("unrealizedPnl") or data.get("unRealizedProfit", "0")
+                    # 注意：floatingPL可能是None或空字符串，需要处理
+                    floating_pl_value = data.get("floatingPL")
+                    if floating_pl_value is None or floating_pl_value == "":
+                        floating_pl_value = data.get("unrealizedPnl") or data.get("unRealizedProfit") or data.get("unrealized_pnl")
+                    unrealized_pnl_raw = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
                     # XT API uses breakPrice, fallback to liquidationPrice
                     liquidation_price_raw = data.get("breakPrice") or data.get("liquidationPrice", "0")
                     
@@ -970,7 +996,11 @@ class XTUserStreamService:
                         # XT API uses calMarkPrice, fallback to markPrice
                         mark_price_raw = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
                         # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                        unrealized_pnl_raw = position.get("floatingPL") or position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl", "0")
+                        # 注意：floatingPL可能是None或空字符串，需要处理
+                        floating_pl_value = position.get("floatingPL")
+                        if floating_pl_value is None or floating_pl_value == "":
+                            floating_pl_value = position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl")
+                        unrealized_pnl_raw = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
                         # XT API uses breakPrice, fallback to liquidationPrice
                         liquidation_price_raw = position.get("breakPrice") or position.get("liquidationPrice") or position.get("liquidation_price", "0")
                         
@@ -2119,12 +2149,31 @@ class XTUserStreamService:
                 start_time_ms = int(time_threshold.timestamp() * 1000)
                 end_time_ms = int(datetime.utcnow().timestamp() * 1000)
                 
+                logger.debug(
+                    f"Querying recent trades via REST API for {currency}",
+                    extra={
+                        "currency": currency,
+                        "start_time_ms": start_time_ms,
+                        "end_time_ms": end_time_ms,
+                        "time_window_seconds": (end_time_ms - start_time_ms) / 1000,
+                    }
+                )
+                
                 # 查询最近的成交记录（最多查询50条）
                 recent_trades = await self.rest_client.get_user_trades(
                     symbol=None,  # 查询所有交易对
                     start_time=start_time_ms,
                     end_time=end_time_ms,
                     limit=50
+                )
+                
+                logger.debug(
+                    f"Retrieved {len(recent_trades)} recent trades",
+                    extra={
+                        "currency": currency,
+                        "trade_count": len(recent_trades),
+                        "first_trade_sample": recent_trades[0] if recent_trades else None,
+                    }
                 )
                 
                 # 检查成交是否影响该币种余额
@@ -2137,16 +2186,38 @@ class XTUserStreamService:
                     trade_info = {
                         "quantity": self._safe_decimal(trade.get("quantity", "0")),
                         "price": self._safe_decimal(trade.get("price", "0")),
-                        "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity", "0")),
+                        "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity") or trade.get("quoteQty", "0")),
                     }
                     
-                    if self._trade_affects_currency(symbol, currency, trade_info):
+                    affects = self._trade_affects_currency(symbol, currency, trade_info)
+                    logger.debug(
+                        f"Checking if trade affects {currency}",
+                        extra={
+                            "currency": currency,
+                            "symbol": symbol,
+                            "quantity": str(trade_info["quantity"]),
+                            "price": str(trade_info["price"]),
+                            "quote_quantity": str(trade_info["quote_quantity"]),
+                            "affects": affects,
+                        }
+                    )
+                    
+                    if affects:
                         trade_id = trade.get("tradeId") or trade.get("trade_id", "")
                         order_id = trade.get("orderId") or trade.get("order_id", "")
+                        logger.info(
+                            f"Found matching trade for {currency}",
+                            extra={
+                                "currency": currency,
+                                "symbol": symbol,
+                                "trade_id": trade_id,
+                                "order_id": order_id,
+                            }
+                        )
                         return str(trade_id), str(order_id) if order_id else None, True
                         
             except Exception as e:
-                logger.debug(f"Failed to query recent trades via REST API: {e}")
+                logger.warning(f"Failed to query recent trades via REST API: {e}", exc_info=True)
             
             return None, None, False
             

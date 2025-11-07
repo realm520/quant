@@ -2688,27 +2688,38 @@ class XTUserStreamService:
                     else:
                         transfer_type = "WITHDRAW"  # 提现或转出
                 
-                # 保存划转记录
-                await self._save_transfer(
-                    transfer_time=transfer_time,
-                    currency=currency,
-                    amount=balance_change,
-                    transfer_type=transfer_type,
-                    balance_before=last_total,
-                    balance_after=current_total,
-                    related_order_id=related_order_id,
-                    related_trade_id=related_trade_id,
-                    raw_data=account_data,
-                )
-                
-                # 显示划转信息
-                if self.display_format != "none":
-                    await self._display_transfer(
+                if transfer_type != "TRADE":
+                    # 保存划转记录（仅限真实划转）
+                    await self._save_transfer(
+                        transfer_time=transfer_time,
                         currency=currency,
                         amount=balance_change,
                         transfer_type=transfer_type,
                         balance_before=last_total,
                         balance_after=current_total,
+                        related_order_id=related_order_id,
+                        related_trade_id=related_trade_id,
+                        raw_data=account_data,
+                    )
+
+                    # 显示划转信息
+                    if self.display_format != "none":
+                        await self._display_transfer(
+                            currency=currency,
+                            amount=balance_change,
+                            transfer_type=transfer_type,
+                            balance_before=last_total,
+                            balance_after=current_total,
+                        )
+                else:
+                    logger.debug(
+                        "Balance change attributed to trade; skipping transfer record",
+                        extra={
+                            "currency": currency,
+                            "balance_change": str(balance_change),
+                            "related_order_id": related_order_id,
+                            "related_trade_id": related_trade_id,
+                        }
                     )
                 
                 # 更新缓存的余额（使用小写币种名）

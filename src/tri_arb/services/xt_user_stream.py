@@ -2493,7 +2493,8 @@ class XTUserStreamService:
                     end_time=end_time_ms,
                     limit=50
                 )
-                
+
+                trade_detected = False
                 for trade in recent_trades:
                     symbol = trade.get("symbol", "")
                     if not symbol:
@@ -2506,6 +2507,7 @@ class XTUserStreamService:
                     }
                     
                     if self._trade_affects_currency(symbol, currency, trade_info):
+                        trade_detected = True
                         trade_id = trade.get("tradeId") or trade.get("trade_id", "")
                         order_id = trade.get("orderId") or trade.get("order_id", "")
                         logger.info(
@@ -2518,6 +2520,40 @@ class XTUserStreamService:
                             }
                         )
                         return str(trade_id), str(order_id) if order_id else None, True
+
+                if not trade_detected:
+                    # 交易可能刚发生，给交易所一些时间写入成交记录
+                    await asyncio.sleep(2)
+                    logger.debug(
+                        "No matching trades found within time window, retrying after short delay",
+                        extra={"currency": currency}
+                    )
+                    # 如果基于时间窗口未找到成交记录，退回到最新成交列表进行匹配
+                    fallback_trades = await self.rest_client.get_user_trades(symbol=None, limit=50)
+                    for trade in fallback_trades:
+                        symbol = trade.get("symbol", "")
+                        if not symbol:
+                            continue
+                        
+                        trade_info = {
+                            "quantity": self._safe_decimal(trade.get("quantity", "0")),
+                            "price": self._safe_decimal(trade.get("price", "0")),
+                            "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity") or trade.get("quoteQty", "0")),
+                        }
+                        
+                        if self._trade_affects_currency(symbol, currency, trade_info):
+                            trade_id = trade.get("tradeId") or trade.get("trade_id", "")
+                            order_id = trade.get("orderId") or trade.get("order_id", "")
+                            logger.info(
+                                f"Found matching trade for {currency} (fallback mode)",
+                                extra={
+                                    "currency": currency,
+                                    "symbol": symbol,
+                                    "trade_id": trade_id,
+                                    "order_id": order_id,
+                                }
+                            )
+                            return str(trade_id), str(order_id) if order_id else None, True
             except Exception as e:
                 logger.debug(f"Failed to query recent trades: {e}")
             

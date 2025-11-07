@@ -2398,7 +2398,7 @@ class XTUserStreamService:
                 spot_balances = await self.spot_client.get_balance()
                 spot_balance = spot_balances.get(currency.upper(), {})
                 spot_total = self._safe_decimal(spot_balance.get("total", "0"))
-                logger.debug(
+                logger.info(
                     "Spot balance fetched",
                     extra={
                         "currency": currency,
@@ -2557,7 +2557,7 @@ class XTUserStreamService:
                     self._last_account_balances[currency_key] = current_balance
                     continue
                 
-                logger.debug(
+                logger.info(
                     f"余额变化检测: {currency}",
                     extra={
                         "currency": currency,

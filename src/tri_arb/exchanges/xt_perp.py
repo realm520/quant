@@ -1023,7 +1023,6 @@ class XTPerpExchange(BaseExchange):
         # Extract balance items
         if isinstance(data, list):
             items = data
-            logger.info("Using direct list format (perp)", item_count=len(items))
         elif isinstance(data, dict):
             items = data.get("data", [])
             logger.info("Extracting from dict format (perp)", item_count=len(items))
@@ -1095,7 +1094,6 @@ class XTPerpExchange(BaseExchange):
                     "margin_ratio": margin_ratio,
                 }
 
-        logger.info("Perp balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances
 
     async def get_positions(self, symbol: str | None = None) -> list[Position]:

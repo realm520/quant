@@ -2398,6 +2398,14 @@ class XTUserStreamService:
                 spot_balances = await self.spot_client.get_balance()
                 spot_balance = spot_balances.get(currency.upper(), {})
                 spot_total = self._safe_decimal(spot_balance.get("total", "0"))
+                logger.debug(
+                    "Spot balance fetched",
+                    extra={
+                        "currency": currency,
+                        "spot_total": str(spot_total),
+                        "spot_assets": list(spot_balances.keys()),
+                    }
+                )
             except Exception as e:
                 logger.debug(f"Failed to get spot balance for {currency}: {e}")
                 spot_total = None

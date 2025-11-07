@@ -2398,14 +2398,6 @@ class XTUserStreamService:
                 spot_balances = await self.spot_client.get_balance()
                 spot_balance = spot_balances.get(currency.upper(), {})
                 spot_total = self._safe_decimal(spot_balance.get("total", "0"))
-                logger.info(
-                    "Spot balance fetched",
-                    extra={
-                        "currency": currency,
-                        "spot_total": str(spot_total),
-                        "spot_assets": list(spot_balances.keys()),
-                    }
-                )
             except Exception as e:
                 logger.debug(f"Failed to get spot balance for {currency}: {e}")
                 spot_total = None
@@ -2448,7 +2440,7 @@ class XTUserStreamService:
             if perp_total is not None and last_perp_balance:
                 perp_change = perp_total - last_perp_balance.get("total", Decimal("0"))
             
-            logger.debug(
+                logger.info(
                 f"Balance changes across accounts for {currency}",
                 extra={
                     "currency": currency,
@@ -2474,10 +2466,24 @@ class XTUserStreamService:
                 self._last_spot_balances[spot_cache_key] = {"total": spot_total}
 
             if transfer_detected:
-                logger.info(f"Detected transfer: {currency} {balance_change:+.8f}")
+                logger.info(
+                    "Detected transfer via balance comparison",
+                    extra={
+                        "currency": currency,
+                        "balance_change": str(balance_change),
+                        "spot_change": str(spot_change),
+                        "perp_change": str(perp_change),
+                    }
+                )
                 return None, None, False
 
-            logger.debug(f"No transfer detected for {currency}; treat as trade")
+            logger.debug(
+                "Balance change treated as trade",
+                extra={
+                    "currency": currency,
+                    "balance_change": str(balance_change),
+                }
+            )
             return None, None, True
             
         except Exception as e:

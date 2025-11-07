@@ -1007,7 +1007,7 @@ class XTPerpExchange(BaseExchange):
         data = await self._request("GET", path, params=None, body=None, require_auth=True)
 
         # Debug: Log raw API response
-        logger.info(
+        logger.debug(
             "Raw balance API response (perp)",
             response_type=type(data).__name__,
             is_list=isinstance(data, list),

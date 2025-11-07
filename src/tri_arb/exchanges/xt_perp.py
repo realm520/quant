@@ -935,7 +935,7 @@ class XTPerpExchange(BaseExchange):
     #             payload = {}
 
     #             # 发送 POST 请求来获取 listen key
-    #             async with session.post(f"{self.BASE_URL}/future/user/v1/listen-key", headers=headers, json=payload) as response:
+    #             async with session.get(f"{self.BASE_URL}/future/v1/user/listen-key", headers=headers, json=payload) as response:
     #                 if response.status != 200:
     #                     raise RuntimeError(f"获取 listen key 失败，HTTP 状态码: {response.status}")
 

@@ -29,6 +29,7 @@ from tri_arb.storage.xt_websocket_models import (
     XTOrderUpdate,
     XTPositionUpdate,
     XTTradeUpdate,
+    XTTransfer,
     XTWebSocketConnection,
 )
 from tri_arb.exchanges.xt_perp import XTPerpExchange
@@ -117,10 +118,13 @@ class XTUserStreamService:
         self._heartbeat_interval = 15  # seconds
 
         # 数据缓存（用于检测变化）
-        self._last_account_data = {}
+        self._last_account_data = {}  # 存储上次账户数据，用于比较余额变化
+        self._last_account_balances = {}  # 存储上次各币种余额，用于识别划转
         self._last_position_data = {}
         self._last_order_data = {}
         self._last_trade_data = {}
+        self._recent_orders = {}  # 存储最近的订单，用于判断余额变化是否由交易引起
+        self._recent_trades = {}  # 存储最近的成交，用于判断余额变化是否由交易引起
         
         logger.debug("XT WebSocket service initialized",
                     extra={
@@ -492,6 +496,9 @@ class XTUserStreamService:
         logger.info("Account data changed, displaying update")
         
         try:
+            # 分析资金划转（在保存前，需要比较余额变化）
+            await self._analyze_transfer(account_data)
+            
             # 显示账户更新
             await self._display_account_update(account_data)
             
@@ -548,6 +555,9 @@ class XTUserStreamService:
             return
         
         try:
+            # 记录订单信息（用于划转分析）
+            self._record_order_for_transfer_analysis(order_data)
+            
             # 显示订单更新
             await self._display_order_update(order_data)
             
@@ -576,6 +586,9 @@ class XTUserStreamService:
             return
         
         try:
+            # 记录成交信息（用于划转分析）
+            self._record_trade_for_transfer_analysis(trade_data)
+            
             # 显示成交更新
             await self._display_trade_update(trade_data)
             
@@ -1913,3 +1926,265 @@ class XTUserStreamService:
 
         except Exception as e:
             logger.error(f"Failed to update sync stats: {e}")
+    
+    def _record_order_for_transfer_analysis(self, order_data: Dict[str, Any]) -> None:
+        """记录订单信息用于划转分析."""
+        try:
+            # 提取订单ID和时间
+            order_id = order_data.get("orderId") or order_data.get("order_id")
+            if not order_id:
+                return
+            
+            # 记录订单信息（保留最近100个订单，用于判断余额变化是否由交易引起）
+            self._recent_orders[order_id] = {
+                "order_id": order_id,
+                "symbol": order_data.get("symbol", ""),
+                "side": order_data.get("side", ""),
+                "quantity": self._safe_decimal(order_data.get("quantity", "0")),
+                "price": self._safe_decimal(order_data.get("price", "0")),
+                "status": order_data.get("status", ""),
+                "timestamp": datetime.utcnow(),
+            }
+            
+            # 只保留最近100个订单
+            if len(self._recent_orders) > 100:
+                # 删除最旧的订单
+                oldest_order_id = min(
+                    self._recent_orders.keys(),
+                    key=lambda k: self._recent_orders[k]["timestamp"]
+                )
+                del self._recent_orders[oldest_order_id]
+                
+        except Exception as e:
+            logger.debug(f"Failed to record order for transfer analysis: {e}")
+    
+    def _record_trade_for_transfer_analysis(self, trade_data: Dict[str, Any]) -> None:
+        """记录成交信息用于划转分析."""
+        try:
+            # 提取成交ID和时间
+            trade_id = trade_data.get("tradeId") or trade_data.get("trade_id")
+            if not trade_id:
+                return
+            
+            # 记录成交信息（保留最近100个成交）
+            self._recent_trades[trade_id] = {
+                "trade_id": trade_id,
+                "order_id": trade_data.get("orderId") or trade_data.get("order_id", ""),
+                "symbol": trade_data.get("symbol", ""),
+                "side": trade_data.get("side", ""),
+                "quantity": self._safe_decimal(trade_data.get("quantity", "0")),
+                "price": self._safe_decimal(trade_data.get("price", "0")),
+                "quote_quantity": self._safe_decimal(trade_data.get("quoteQuantity") or trade_data.get("quote_quantity", "0")),
+                "timestamp": datetime.utcnow(),
+            }
+            
+            # 只保留最近100个成交
+            if len(self._recent_trades) > 100:
+                # 删除最旧的成交
+                oldest_trade_id = min(
+                    self._recent_trades.keys(),
+                    key=lambda k: self._recent_trades[k]["timestamp"]
+                )
+                del self._recent_trades[oldest_trade_id]
+                
+        except Exception as e:
+            logger.debug(f"Failed to record trade for transfer analysis: {e}")
+    
+    async def _analyze_transfer(self, account_data: Dict[str, Any]) -> None:
+        """分析账户余额变化，识别资金划转."""
+        try:
+            transfer_time = datetime.utcnow()
+            
+            # 提取当前余额信息
+            current_balances = {}
+            if "coin" in account_data:
+                # 单个余额对象
+                currency = account_data.get("coin", "")
+                if currency:
+                    current_balances[currency] = {
+                        "available": self._safe_decimal(account_data.get("availableBalance", "0")),
+                        "frozen": self._safe_decimal(account_data.get("openOrderMarginFrozen", "0")),
+                        "total": self._safe_decimal(account_data.get("walletBalance", "0")),
+                    }
+            else:
+                # 多个余额对象
+                balances = account_data.get("balances", [])
+                for balance in balances:
+                    currency = balance.get("currency", "")
+                    if currency:
+                        current_balances[currency] = {
+                            "available": self._safe_decimal(balance.get("available", "0")),
+                            "frozen": self._safe_decimal(balance.get("frozen", "0")),
+                            "total": self._safe_decimal(balance.get("total", "0")) or 
+                                    (self._safe_decimal(balance.get("available", "0")) + 
+                                     self._safe_decimal(balance.get("frozen", "0"))),
+                        }
+            
+            # 比较余额变化
+            for currency, current_balance in current_balances.items():
+                last_balance = self._last_account_balances.get(currency)
+                current_total = current_balance["total"]
+                
+                if last_balance is None:
+                    # 首次记录，保存当前余额
+                    self._last_account_balances[currency] = current_balance
+                    continue
+                
+                last_total = last_balance["total"]
+                balance_change = current_total - last_total
+                
+                # 如果余额变化很小（可能是精度问题），忽略
+                if abs(balance_change) < Decimal("0.00000001"):
+                    continue
+                
+                # 检查是否有对应的订单或成交记录
+                related_order_id = None
+                related_trade_id = None
+                transfer_type = "UNKNOWN"
+                
+                # 检查最近的成交记录（5秒内）
+                time_threshold = transfer_time - timedelta(seconds=5)
+                for trade_id, trade_info in self._recent_trades.items():
+                    if trade_info["timestamp"] >= time_threshold:
+                        # 检查成交是否影响该币种余额
+                        # 这里简化处理：如果是USDT相关的交易，可能影响USDT余额
+                        if currency.upper() == "USDT" and trade_info.get("quote_quantity", 0) > 0:
+                            related_trade_id = trade_id
+                            related_order_id = trade_info.get("order_id")
+                            transfer_type = "TRADE"  # 由交易引起的余额变化
+                            break
+                
+                # 如果没有找到对应的交易记录，则可能是资金划转
+                if transfer_type == "UNKNOWN":
+                    # 判断划转类型
+                    if balance_change > 0:
+                        transfer_type = "DEPOSIT"  # 充值或转入
+                    else:
+                        transfer_type = "WITHDRAW"  # 提现或转出
+                
+                # 保存划转记录
+                await self._save_transfer(
+                    transfer_time=transfer_time,
+                    currency=currency,
+                    amount=balance_change,
+                    transfer_type=transfer_type,
+                    balance_before=last_total,
+                    balance_after=current_total,
+                    related_order_id=related_order_id,
+                    related_trade_id=related_trade_id,
+                    raw_data=account_data,
+                )
+                
+                # 显示划转信息
+                if self.display_format != "none":
+                    await self._display_transfer(
+                        currency=currency,
+                        amount=balance_change,
+                        transfer_type=transfer_type,
+                        balance_before=last_total,
+                        balance_after=current_total,
+                    )
+                
+                # 更新缓存的余额
+                self._last_account_balances[currency] = current_balance
+                
+        except Exception as e:
+            logger.error(f"Failed to analyze transfer: {e}", exc_info=True)
+    
+    async def _save_transfer(
+        self,
+        transfer_time: datetime,
+        currency: str,
+        amount: Decimal,
+        transfer_type: str,
+        balance_before: Decimal,
+        balance_after: Decimal,
+        related_order_id: Optional[str] = None,
+        related_trade_id: Optional[str] = None,
+        raw_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """保存资金划转记录到数据库."""
+        try:
+            async with self.db_manager.session() as session:
+                transfer_record = XTTransfer(
+                    transfer_time=transfer_time,
+                    currency=currency,
+                    amount=amount,
+                    transfer_type=transfer_type,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    related_order_id=related_order_id,
+                    related_trade_id=related_trade_id,
+                    raw_data=json.dumps(raw_data, cls=DecimalEncoder) if raw_data else None,
+                )
+                session.add(transfer_record)
+                await session.commit()
+                logger.info(
+                    f"Transfer recorded: {currency} {amount:+.8f} ({transfer_type})",
+                    extra={
+                        "currency": currency,
+                        "amount": str(amount),
+                        "transfer_type": transfer_type,
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Failed to save transfer: {e}")
+    
+    async def _display_transfer(
+        self,
+        currency: str,
+        amount: Decimal,
+        transfer_type: str,
+        balance_before: Decimal,
+        balance_after: Decimal,
+    ) -> None:
+        """显示资金划转信息."""
+        try:
+            if self.display_format == "json":
+                transfer_info = {
+                    "currency": currency,
+                    "amount": str(amount),
+                    "transfer_type": transfer_type,
+                    "balance_before": str(balance_before),
+                    "balance_after": str(balance_after),
+                }
+                print(json.dumps(transfer_info, indent=2, ensure_ascii=False))
+            else:
+                # 表格格式显示
+                from rich.console import Console
+                from rich.table import Table
+                
+                console = Console()
+                table = Table(title="💰 资金划转", show_header=True, header_style="bold magenta")
+                
+                table.add_column("币种", style="cyan")
+                table.add_column("划转金额", justify="right")
+                table.add_column("类型", style="yellow")
+                table.add_column("划转前余额", justify="right", style="dim")
+                table.add_column("划转后余额", justify="right", style="green")
+                
+                # 格式化金额显示
+                amount_str = f"{amount:+.8f}"
+                amount_style = "green" if amount > 0 else "red"
+                
+                # 类型显示
+                type_map = {
+                    "DEPOSIT": "充值/转入",
+                    "WITHDRAW": "提现/转出",
+                    "TRADE": "交易",
+                    "UNKNOWN": "未知",
+                }
+                type_display = type_map.get(transfer_type, transfer_type)
+                
+                table.add_row(
+                    currency,
+                    f"[{amount_style}]{amount_str}[/{amount_style}]",
+                    type_display,
+                    f"{balance_before:.8f}",
+                    f"{balance_after:.8f}",
+                )
+                
+                console.print(table)
+                
+        except Exception as e:
+            logger.error(f"Failed to display transfer: {e}")

@@ -34,12 +34,23 @@ class DatabaseManager:
                 异步：postgresql+asyncpg://user:password@host:port/dbname
                 无密码：postgresql+asyncpg://user@host:port/dbname
                 如果为None，从环境变量DATABASE_URL读取
+                
+        Raises:
+            ValueError: 如果未提供database_url且环境变量DATABASE_URL也未设置
         """
-        self.database_url = database_url or os.getenv(
-            "DATABASE_URL",
-            # 默认尝试无密码连接（本地开发环境）
-            "postgresql+asyncpg://oliver@localhost:5432/trading"
-        )
+        self.database_url = database_url or os.getenv("DATABASE_URL")
+        
+        if not self.database_url:
+            raise ValueError(
+                "数据库连接URL未设置。请通过以下方式之一设置：\n"
+                "1. 设置环境变量 DATABASE_URL:\n"
+                "   export DATABASE_URL='postgresql+asyncpg://user:password@host:port/dbname'\n"
+                "2. 或在代码中传入 database_url 参数\n"
+                "\n"
+                "示例:\n"
+                "   postgresql+asyncpg://postgres:password@localhost:5432/trading\n"
+                "   postgresql+asyncpg://postgres@localhost:5432/trading  # 无密码\n"
+            )
         
         # 异步引擎
         self.async_engine = create_async_engine(

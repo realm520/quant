@@ -158,6 +158,44 @@ class XTTradeUpdate(Base):
     )
 
 
+class XTTransfer(Base):
+    """XT资金划转记录.
+    
+    通过分析账户余额变化识别资金划转（充值、提现、账户间划转等）。
+    """
+    
+    __tablename__ = "xt_transfers"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    transfer_time = Column(DateTime, nullable=False, index=True)  # 划转时间
+    
+    # 划转信息
+    currency = Column(String(20), nullable=False, index=True)  # 币种
+    amount = Column(Numeric(30, 10), nullable=False)  # 划转金额（正数=转入，负数=转出）
+    transfer_type = Column(String(20), nullable=True)  # 划转类型：DEPOSIT(充值), WITHDRAW(提现), TRANSFER(账户间划转), UNKNOWN(未知)
+    
+    # 余额变化
+    balance_before = Column(Numeric(30, 10), nullable=True)  # 划转前余额
+    balance_after = Column(Numeric(30, 10), nullable=False)  # 划转后余额
+    
+    # 关联信息
+    related_order_id = Column(String(50), nullable=True)  # 关联订单ID（如果有）
+    related_trade_id = Column(String(50), nullable=True)  # 关联成交ID（如果有）
+    
+    # 备注
+    notes = Column(Text, nullable=True)  # 备注信息
+    
+    # 原始数据
+    raw_data = Column(Text, nullable=True)  # 完整JSON数据
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('idx_xt_transfer_currency_time', 'currency', 'transfer_time'),
+        Index('idx_xt_transfer_time', 'transfer_time'),
+        Index('idx_xt_transfer_type', 'transfer_type'),
+    )
+
+
 class XTWebSocketConnection(Base):
     """XT WebSocket连接记录.
     

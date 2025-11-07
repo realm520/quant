@@ -1206,8 +1206,10 @@ class XTUserStreamService:
             
             logger.info(
                 "Initialized balance cache (transfer analysis uses database records)",
-                currencies=list(self._last_account_balances.keys()),
-                currency_count=len(self._last_account_balances)
+                extra={
+                    "currencies": list(self._last_account_balances.keys()),
+                    "currency_count": len(self._last_account_balances)
+                }
             )
             
             # 保存到数据库
@@ -2089,6 +2091,121 @@ class XTUserStreamService:
             logger.debug(f"Failed to get latest balance from DB for {currency}: {e}")
             return None
     
+    async def _check_recent_trade_activity(self, currency: str, time_threshold: datetime) -> tuple[Optional[str], Optional[str], bool]:
+        """检查最近的交易活动（使用REST API查询成交记录）.
+        
+        注意：如果只订阅account频道，订单和成交数据不会插入到数据库，
+        因此需要使用REST API查询最近的成交记录。
+        
+        Returns:
+            (related_trade_id, related_order_id, is_trade): 如果检测到交易活动，返回相关信息
+        """
+        try:
+            if not self.rest_client:
+                logger.debug("REST client not available, skipping trade activity check")
+                return None, None, False
+            
+            # 1. 检查内存中的最近成交记录（快速检查）
+            for trade_id, trade_info in self._recent_trades.items():
+                if trade_info["timestamp"] >= time_threshold:
+                    symbol = trade_info.get("symbol", "")
+                    # 解析交易对，检查是否影响该币种
+                    if self._trade_affects_currency(symbol, currency, trade_info):
+                        return trade_id, trade_info.get("order_id"), True
+            
+            # 2. 使用REST API查询最近的成交记录（30秒内）
+            try:
+                # 计算时间戳（毫秒）
+                start_time_ms = int(time_threshold.timestamp() * 1000)
+                end_time_ms = int(datetime.utcnow().timestamp() * 1000)
+                
+                # 查询最近的成交记录（最多查询50条）
+                recent_trades = await self.rest_client.get_user_trades(
+                    symbol=None,  # 查询所有交易对
+                    start_time=start_time_ms,
+                    end_time=end_time_ms,
+                    limit=50
+                )
+                
+                # 检查成交是否影响该币种余额
+                for trade in recent_trades:
+                    symbol = trade.get("symbol", "")
+                    if not symbol:
+                        continue
+                    
+                    # 解析成交数据
+                    trade_info = {
+                        "quantity": self._safe_decimal(trade.get("quantity", "0")),
+                        "price": self._safe_decimal(trade.get("price", "0")),
+                        "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity", "0")),
+                    }
+                    
+                    if self._trade_affects_currency(symbol, currency, trade_info):
+                        trade_id = trade.get("tradeId") or trade.get("trade_id", "")
+                        order_id = trade.get("orderId") or trade.get("order_id", "")
+                        return str(trade_id), str(order_id) if order_id else None, True
+                        
+            except Exception as e:
+                logger.debug(f"Failed to query recent trades via REST API: {e}")
+            
+            return None, None, False
+            
+        except Exception as e:
+            logger.debug(f"Failed to check recent trade activity for {currency}: {e}")
+            return None, None, False
+    
+    def _trade_affects_currency(self, symbol: str, currency: str, trade_info: Dict[str, Any]) -> bool:
+        """判断交易是否影响指定币种的余额."""
+        try:
+            currency_upper = currency.upper()
+            symbol_upper = symbol.upper()
+            
+            # 解析交易对（格式：BTC_USDT, ETH_USDT等）
+            if "_" in symbol_upper:
+                base, quote = symbol_upper.split("_", 1)
+                
+                # 如果是USDT交易对，且币种是USDT，检查成交金额
+                if quote == "USDT" and currency_upper == "USDT":
+                    quote_quantity = trade_info.get("quote_quantity", Decimal("0"))
+                    if quote_quantity and quote_quantity > Decimal("0.0001"):  # 最小阈值
+                        return True
+                
+                # 如果是base currency，检查成交数量
+                if base == currency_upper:
+                    quantity = trade_info.get("quantity", Decimal("0"))
+                    if quantity and quantity > Decimal("0.00000001"):  # 最小阈值
+                        return True
+                
+                # 如果是quote currency，检查成交金额
+                if quote == currency_upper:
+                    quote_quantity = trade_info.get("quote_quantity", Decimal("0"))
+                    if quote_quantity and quote_quantity > Decimal("0.0001"):  # 最小阈值
+                        return True
+            
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to check if trade affects currency: {e}")
+            return False
+    
+    def _position_affects_currency(self, symbol: str, currency: str) -> bool:
+        """判断持仓变化是否影响指定币种的余额（平仓会导致余额变化）."""
+        try:
+            currency_upper = currency.upper()
+            symbol_upper = symbol.upper()
+            
+            # 解析交易对（格式：BTC_USDT, ETH_USDT等）
+            if "_" in symbol_upper:
+                base, quote = symbol_upper.split("_", 1)
+                
+                # 持仓变化（特别是平仓）会影响quote currency（通常是USDT）的余额
+                if quote == currency_upper or base == currency_upper:
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to check if position affects currency: {e}")
+            return False
+    
     async def _analyze_transfer(self, account_data: Dict[str, Any]) -> None:
         """分析账户余额变化，识别资金划转.
         
@@ -2173,26 +2290,16 @@ class XTUserStreamService:
                     }
                 )
                 
-                # 检查是否有对应的订单或成交记录
-                related_order_id = None
-                related_trade_id = None
-                transfer_type = "UNKNOWN"
+                # 检查是否有对应的交易活动（成交、持仓变化、订单完成）
+                # 扩大时间窗口到30秒，以捕获所有可能的交易活动
+                time_threshold = transfer_time - timedelta(seconds=30)
+                related_trade_id, related_order_id, is_trade = await self._check_recent_trade_activity(currency, time_threshold)
                 
-                # 检查最近的成交记录（5秒内）
-                time_threshold = transfer_time - timedelta(seconds=5)
-                for trade_id, trade_info in self._recent_trades.items():
-                    if trade_info["timestamp"] >= time_threshold:
-                        # 检查成交是否影响该币种余额
-                        # 这里简化处理：如果是USDT相关的交易，可能影响USDT余额
-                        if currency.upper() == "USDT" and trade_info.get("quote_quantity", 0) > 0:
-                            related_trade_id = trade_id
-                            related_order_id = trade_info.get("order_id")
-                            transfer_type = "TRADE"  # 由交易引起的余额变化
-                            break
-                
-                # 如果没有找到对应的交易记录，则可能是资金划转
-                if transfer_type == "UNKNOWN":
-                    # 判断划转类型
+                # 判断划转类型
+                if is_trade:
+                    transfer_type = "TRADE"  # 由交易引起的余额变化（包括平仓）
+                else:
+                    # 如果没有找到对应的交易活动，则可能是资金划转
                     if balance_change > 0:
                         transfer_type = "DEPOSIT"  # 充值或转入
                     else:

@@ -33,6 +33,7 @@ from tri_arb.storage.xt_websocket_models import (
     XTWebSocketConnection,
 )
 from tri_arb.exchanges.xt_perp import XTPerpExchange
+from tri_arb.exchanges.xt_spot import XTSpotExchange
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,8 @@ class XTUserStreamService:
         # XT REST API客户端（用于获取listen_key和数据同步）
         # 即使禁用数据同步，也需要REST客户端来获取WebSocket的listen_key
         self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
+        # 现货交易所客户端（用于查询现货余额，分析划转）
+        self.spot_client = XTSpotExchange(self.api_key, self.api_secret)
 
         # XT WebSocket认证
         self.listen_key = None
@@ -125,6 +128,7 @@ class XTUserStreamService:
         self._last_trade_data = {}
         self._recent_orders = {}  # 存储最近的订单，用于判断余额变化是否由交易引起
         self._recent_trades = {}  # 存储最近的成交，用于判断余额变化是否由交易引起
+        self._last_spot_balances = {}  # 存储上次现货账户余额，用于划转分析
         
         logger.debug("XT WebSocket service initialized",
                     extra={
@@ -673,26 +677,52 @@ class XTUserStreamService:
             table.add_column("开仓价", style="blue")
             table.add_column("标记价", style="magenta")
             table.add_column("未实现盈亏", style="red")
+            table.add_column("已实现盈亏", style="green")
             table.add_column("杠杆", style="dim")
             
             # XT数据格式：单个持仓对象
-            # XT WebSocket 使用 positionSide, positionSize, calMarkPrice, floatingPL 等字段
+            # XT WebSocket 使用 positionSide, positionSize, entryPrice, realizedProfit 等字段
+            # 注意：WebSocket数据中没有floatingPL和markPrice，需要通过REST API获取标记价来计算未实现盈亏
             if "symbol" in data:
                 # 单个持仓对象
                 symbol = data.get("symbol", "")
                 # XT API uses positionSide, fallback to side
                 side = data.get("positionSide") or data.get("side", "")
                 # XT API uses positionSize, fallback to quantity or positionAmt
-                quantity = data.get("positionSize") or data.get("quantity") or data.get("positionAmt", "0")
-                entry_price = data.get("entryPrice", "0")
-                # XT API uses calMarkPrice, fallback to markPrice
-                mark_price = data.get("calMarkPrice") or data.get("markPrice", "0")
-                # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                # 注意：floatingPL可能是None或空字符串，需要处理
-                floating_pl_value = data.get("floatingPL")
-                if floating_pl_value is None or floating_pl_value == "":
-                    floating_pl_value = data.get("unrealizedPnl") or data.get("unRealizedProfit") or data.get("unrealized_pnl")
-                unrealized_pnl = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
+                quantity_raw = data.get("positionSize") or data.get("quantity") or data.get("positionAmt", "0")
+                quantity = self._safe_decimal(quantity_raw)
+                entry_price_raw = data.get("entryPrice", "0")
+                entry_price = self._safe_decimal(entry_price_raw)
+                
+                # 已实现盈亏（WebSocket数据中有此字段）
+                realized_pnl_raw = data.get("realizedProfit") or data.get("realizedPnl") or "0"
+                realized_pnl = self._safe_decimal(realized_pnl_raw)
+                
+                # 标记价：WebSocket数据中没有，需要通过REST API获取
+                mark_price = Decimal("0")
+                unrealized_pnl = Decimal("0")
+                
+                # 尝试从REST API获取标记价（如果交易所已连接）
+                if self.rest_client and self.rest_client.is_connected and quantity > 0:
+                    try:
+                        # 查询持仓信息获取标记价
+                        positions = await self.rest_client.get_positions(symbol=symbol)
+                        for pos in positions:
+                            if pos.symbol == symbol and pos.position_side == side:
+                                mark_price = pos.mark_price
+                                # 如果REST API返回了未实现盈亏，使用它；否则计算
+                                if pos.unrealized_pnl and pos.unrealized_pnl != Decimal("0"):
+                                    unrealized_pnl = pos.unrealized_pnl
+                                else:
+                                    # 计算未实现盈亏：(标记价 - 开仓价) * 数量 * 方向系数
+                                    if side.upper() == "SHORT":
+                                        unrealized_pnl = (entry_price - mark_price) * quantity
+                                    else:
+                                        unrealized_pnl = (mark_price - entry_price) * quantity
+                                break
+                    except Exception as e:
+                        logger.debug(f"Failed to get mark price from REST API for {symbol}: {e}")
+                
                 leverage = data.get("leverage", "1")
                 
                 # 调试日志：记录实际收到的数据
@@ -700,11 +730,10 @@ class XTUserStreamService:
                     f"Position update data for {symbol}",
                     extra={
                         "symbol": symbol,
-                        "floatingPL": str(floating_pl_value) if floating_pl_value is not None else None,
-                        "unrealizedPnl": str(data.get("unrealizedPnl")) if data.get("unrealizedPnl") is not None else None,
-                        "unRealizedProfit": str(data.get("unRealizedProfit")) if data.get("unRealizedProfit") is not None else None,
-                        "unrealized_pnl": str(data.get("unrealized_pnl")) if data.get("unrealized_pnl") is not None else None,
-                        "final_unrealized_pnl": str(unrealized_pnl),
+                        "realizedProfit": str(realized_pnl),
+                        "entryPrice": str(entry_price),
+                        "markPrice": str(mark_price),
+                        "calculated_unrealized_pnl": str(unrealized_pnl),
                         "raw_data_keys": list(data.keys()),
                     }
                 )
@@ -716,6 +745,7 @@ class XTUserStreamService:
                     f"{entry_price}",
                     f"{mark_price}",
                     f"{unrealized_pnl}",
+                    f"{realized_pnl}",
                     f"{leverage}x",
                 )
             else:
@@ -726,16 +756,36 @@ class XTUserStreamService:
                     # XT API uses positionSide, fallback to side
                     side = position.get("positionSide") or position.get("side", "")
                     # XT API uses positionSize, fallback to quantity or positionAmt
-                    quantity = position.get("positionSize") or position.get("quantity") or position.get("positionAmt", "0")
-                    entry_price = position.get("entryPrice") or position.get("entry_price", "0")
-                    # XT API uses calMarkPrice, fallback to markPrice
-                    mark_price = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
-                    # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                    # 注意：floatingPL可能是None或空字符串，需要处理
-                    floating_pl_value = position.get("floatingPL")
-                    if floating_pl_value is None or floating_pl_value == "":
-                        floating_pl_value = position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl")
-                    unrealized_pnl = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
+                    quantity_raw = position.get("positionSize") or position.get("quantity") or position.get("positionAmt", "0")
+                    quantity = self._safe_decimal(quantity_raw)
+                    entry_price_raw = position.get("entryPrice") or position.get("entry_price", "0")
+                    entry_price = self._safe_decimal(entry_price_raw)
+                    
+                    # 已实现盈亏
+                    realized_pnl_raw = position.get("realizedProfit") or position.get("realizedPnl") or "0"
+                    realized_pnl = self._safe_decimal(realized_pnl_raw)
+                    
+                    # 标记价：尝试从REST API获取
+                    mark_price = Decimal("0")
+                    unrealized_pnl = Decimal("0")
+                    
+                    if self.rest_client and self.rest_client.is_connected and quantity > 0:
+                        try:
+                            positions_rest = await self.rest_client.get_positions(symbol=symbol)
+                            for pos in positions_rest:
+                                if pos.symbol == symbol and pos.position_side == side:
+                                    mark_price = pos.mark_price
+                                    if pos.unrealized_pnl and pos.unrealized_pnl != Decimal("0"):
+                                        unrealized_pnl = pos.unrealized_pnl
+                                    else:
+                                        if side.upper() == "SHORT":
+                                            unrealized_pnl = (entry_price - mark_price) * quantity
+                                        else:
+                                            unrealized_pnl = (mark_price - entry_price) * quantity
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Failed to get mark price from REST API for {symbol}: {e}")
+                    
                     leverage = position.get("leverage", "1")
                     
                     table.add_row(
@@ -745,6 +795,7 @@ class XTUserStreamService:
                         f"{entry_price}",
                         f"{mark_price}",
                         f"{unrealized_pnl}",
+                        f"{realized_pnl}",
                         f"{leverage}x",
                     )
             
@@ -949,14 +1000,36 @@ class XTUserStreamService:
                         logger.debug(f"Position quantity is 0 for {symbol}, skipping")
                         return
                     
-                    # XT API uses calMarkPrice, fallback to markPrice
-                    mark_price_raw = data.get("calMarkPrice") or data.get("markPrice", "0")
-                    # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                    # 注意：floatingPL可能是None或空字符串，需要处理
-                    floating_pl_value = data.get("floatingPL")
-                    if floating_pl_value is None or floating_pl_value == "":
-                        floating_pl_value = data.get("unrealizedPnl") or data.get("unRealizedProfit") or data.get("unrealized_pnl")
-                    unrealized_pnl_raw = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
+                    entry_price = self._safe_decimal(data.get("entryPrice", "0"))
+                    
+                    # 已实现盈亏（WebSocket数据中有此字段）
+                    realized_pnl_raw = data.get("realizedProfit") or data.get("realizedPnl") or "0"
+                    realized_pnl = self._safe_decimal(realized_pnl_raw)
+                    
+                    # 标记价和未实现盈亏：WebSocket数据中没有，需要通过REST API获取
+                    mark_price = Decimal("0")
+                    unrealized_pnl = Decimal("0")
+                    
+                    # 尝试从REST API获取标记价和未实现盈亏
+                    if self.rest_client and self.rest_client.is_connected and quantity > 0:
+                        try:
+                            positions_rest = await self.rest_client.get_positions(symbol=symbol)
+                            for pos in positions_rest:
+                                if pos.symbol == symbol and pos.position_side == side:
+                                    mark_price = pos.mark_price
+                                    # 如果REST API返回了未实现盈亏，使用它；否则计算
+                                    if pos.unrealized_pnl and pos.unrealized_pnl != Decimal("0"):
+                                        unrealized_pnl = pos.unrealized_pnl
+                                    else:
+                                        # 计算未实现盈亏
+                                        if side.upper() == "SHORT":
+                                            unrealized_pnl = (entry_price - mark_price) * quantity
+                                        else:
+                                            unrealized_pnl = (mark_price - entry_price) * quantity
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Failed to get mark price from REST API for {symbol}: {e}")
+                    
                     # XT API uses breakPrice, fallback to liquidationPrice
                     liquidation_price_raw = data.get("breakPrice") or data.get("liquidationPrice", "0")
                     
@@ -965,16 +1038,18 @@ class XTUserStreamService:
                         symbol=symbol,
                         side=side,
                         quantity=quantity,
-                        entry_price=self._safe_decimal(data.get("entryPrice", "0")),
-                        mark_price=self._safe_decimal(mark_price_raw),
+                        entry_price=entry_price,
+                        mark_price=mark_price,
                         liquidation_price=self._safe_decimal(liquidation_price_raw),
-                        unrealized_pnl=self._safe_decimal(unrealized_pnl_raw),
+                        unrealized_pnl=unrealized_pnl,
                         leverage=int(data.get("leverage", "1")),
                         margin=self._safe_decimal(data.get("isolatedMargin") or data.get("margin", "0")),
                         raw_data=json.dumps(data, cls=DecimalEncoder),
                     )
                     session.add(record)
-                    logger.info(f"Added position update for {symbol}: {side} {quantity}")
+                    logger.info(
+                        f"Added position update for {symbol}: {side} {quantity}, unrealized_pnl={unrealized_pnl}, realized_pnl={realized_pnl}"
+                    )
                 else:
                     # 兼容旧格式：多个持仓对象
                     positions = data.get("positions", [])
@@ -993,14 +1068,33 @@ class XTUserStreamService:
                         if quantity == 0:
                             continue
                         
-                        # XT API uses calMarkPrice, fallback to markPrice
-                        mark_price_raw = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
-                        # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
-                        # 注意：floatingPL可能是None或空字符串，需要处理
-                        floating_pl_value = position.get("floatingPL")
-                        if floating_pl_value is None or floating_pl_value == "":
-                            floating_pl_value = position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl")
-                        unrealized_pnl_raw = floating_pl_value if floating_pl_value is not None and floating_pl_value != "" else "0"
+                        entry_price = self._safe_decimal(position.get("entryPrice") or position.get("entry_price", "0"))
+                        
+                        # 已实现盈亏
+                        realized_pnl_raw = position.get("realizedProfit") or position.get("realizedPnl") or "0"
+                        realized_pnl = self._safe_decimal(realized_pnl_raw)
+                        
+                        # 标记价和未实现盈亏：尝试从REST API获取
+                        mark_price = Decimal("0")
+                        unrealized_pnl = Decimal("0")
+                        
+                        if self.rest_client and self.rest_client.is_connected and quantity > 0:
+                            try:
+                                positions_rest = await self.rest_client.get_positions(symbol=symbol)
+                                for pos in positions_rest:
+                                    if pos.symbol == symbol and pos.position_side == side:
+                                        mark_price = pos.mark_price
+                                        if pos.unrealized_pnl and pos.unrealized_pnl != Decimal("0"):
+                                            unrealized_pnl = pos.unrealized_pnl
+                                        else:
+                                            if side.upper() == "SHORT":
+                                                unrealized_pnl = (entry_price - mark_price) * quantity
+                                            else:
+                                                unrealized_pnl = (mark_price - entry_price) * quantity
+                                        break
+                            except Exception as e:
+                                logger.debug(f"Failed to get mark price from REST API for {symbol}: {e}")
+                        
                         # XT API uses breakPrice, fallback to liquidationPrice
                         liquidation_price_raw = position.get("breakPrice") or position.get("liquidationPrice") or position.get("liquidation_price", "0")
                         
@@ -1009,10 +1103,10 @@ class XTUserStreamService:
                             symbol=symbol,
                             side=side,
                             quantity=quantity,
-                            entry_price=self._safe_decimal(position.get("entryPrice") or position.get("entry_price", "0")),
-                            mark_price=self._safe_decimal(mark_price_raw),
+                            entry_price=entry_price,
+                            mark_price=mark_price,
                             liquidation_price=self._safe_decimal(liquidation_price_raw),
-                            unrealized_pnl=self._safe_decimal(unrealized_pnl_raw),
+                            unrealized_pnl=unrealized_pnl,
                             leverage=int(position.get("leverage", "1")),
                             margin=self._safe_decimal(position.get("isolatedMargin") or position.get("margin", "0")),
                             raw_data=json.dumps(position, cls=DecimalEncoder),
@@ -2277,6 +2371,167 @@ class XTUserStreamService:
             logger.debug(f"Failed to check if position affects currency: {e}")
             return False
     
+    async def _check_balance_changes_across_accounts(self, currency: str, balance_change: Decimal) -> tuple[Optional[str], Optional[str], bool]:
+        """通过查询现货和合约账户余额变化来判断是划转还是交易.
+        
+        策略：
+        1. 如果合约账户余额增加，现货账户余额减少，且金额相等，可能是从现货划转到合约
+        2. 如果现货账户余额增加，合约账户余额减少，且金额相等，可能是从合约划转到现货
+        3. 如果余额变化与成交记录匹配，则是交易导致的
+        
+        Returns:
+            (related_trade_id, related_order_id, is_trade): 如果检测到交易活动，返回相关信息
+        """
+        try:
+            if not self.rest_client or not self.spot_client:
+                logger.debug("REST clients not available, skipping balance change analysis")
+                return None, None, False
+            
+            # 确保交易所已连接
+            if not self.rest_client.is_connected:
+                await self.rest_client.connect()
+            if not self.spot_client.is_connected:
+                await self.spot_client.connect()
+            
+            # 1. 查询现货账户余额
+            try:
+                spot_balances = await self.spot_client.get_balance()
+                spot_balance = spot_balances.get(currency.upper(), {})
+                spot_total = self._safe_decimal(spot_balance.get("total", "0"))
+            except Exception as e:
+                logger.debug(f"Failed to get spot balance for {currency}: {e}")
+                spot_total = None
+            
+            # 2. 查询合约账户余额
+            try:
+                perp_balances = await self.rest_client.get_balance()
+                perp_balance = perp_balances.get(currency.upper(), {})
+                perp_total = self._safe_decimal(perp_balance.get("total", "0"))
+            except Exception as e:
+                logger.debug(f"Failed to get perp balance for {currency}: {e}")
+                perp_total = None
+            
+            # 3. 从内存缓存获取上次的余额记录
+            currency_key = currency.lower()
+            last_perp_balance = self._last_account_balances.get(currency_key)
+            
+            # 如果内存缓存中没有记录，尝试从数据库获取
+            if last_perp_balance is None:
+                last_perp_balance_record = await self._get_latest_balance_from_db(currency)
+                if last_perp_balance_record:
+                    last_perp_balance = last_perp_balance_record
+                elif perp_total is not None:
+                    # 首次记录，使用当前余额作为基准
+                    last_perp_balance = {"total": perp_total}
+            
+            # 现货账户余额需要单独缓存
+            spot_cache_key = f"{currency_key}_spot"
+            last_spot_balance = self._last_spot_balances.get(spot_cache_key)
+            if last_spot_balance is None and spot_total is not None:
+                # 首次记录，使用当前余额作为基准
+                self._last_spot_balances[spot_cache_key] = {"total": spot_total}
+                last_spot_balance = {"total": spot_total}
+            
+            # 4. 计算余额变化
+            spot_change = None
+            perp_change = None
+            if spot_total is not None and last_spot_balance:
+                spot_change = spot_total - last_spot_balance.get("total", Decimal("0"))
+            if perp_total is not None and last_perp_balance:
+                perp_change = perp_total - last_perp_balance.get("total", Decimal("0"))
+            
+            logger.debug(
+                f"Balance changes across accounts for {currency}",
+                extra={
+                    "currency": currency,
+                    "spot_total": str(spot_total) if spot_total is not None else None,
+                    "perp_total": str(perp_total) if perp_total is not None else None,
+                    "spot_change": str(spot_change) if spot_change is not None else None,
+                    "perp_change": str(perp_change) if perp_change is not None else None,
+                    "account_balance_change": str(balance_change),
+                }
+            )
+            
+            # 5. 判断是划转还是交易
+            # 如果合约账户余额变化与账户余额变化方向相反，且金额相近，可能是划转
+            if perp_change is not None and spot_change is not None:
+                # 检查是否是划转：一个账户增加，另一个账户减少，且金额相近
+                if (balance_change > 0 and perp_change < 0 and abs(perp_change + balance_change) < Decimal("0.01")) or \
+                   (balance_change < 0 and perp_change > 0 and abs(perp_change + balance_change) < Decimal("0.01")):
+                    logger.info(
+                        f"Detected potential transfer: {currency} between spot and perp accounts",
+                        extra={
+                            "currency": currency,
+                            "account_change": str(balance_change),
+                            "perp_change": str(perp_change),
+                            "spot_change": str(spot_change),
+                        }
+                    )
+                    # 更新缓存
+                    if spot_total is not None:
+                        self._last_spot_balances[spot_cache_key] = {"total": spot_total}
+                    return None, None, False  # 不是交易，是划转
+            
+            # 6. 检查是否有成交记录匹配（30秒内）
+            time_threshold = datetime.utcnow() - timedelta(seconds=30)
+            
+            # 检查内存中的最近成交记录
+            for trade_id, trade_info in self._recent_trades.items():
+                if trade_info["timestamp"] >= time_threshold:
+                    symbol = trade_info.get("symbol", "")
+                    if self._trade_affects_currency(symbol, currency, trade_info):
+                        return trade_id, trade_info.get("order_id"), True
+            
+            # 查询REST API成交记录
+            try:
+                start_time_ms = int(time_threshold.timestamp() * 1000)
+                end_time_ms = int(datetime.utcnow().timestamp() * 1000)
+                
+                recent_trades = await self.rest_client.get_user_trades(
+                    symbol=None,
+                    start_time=start_time_ms,
+                    end_time=end_time_ms,
+                    limit=50
+                )
+                
+                for trade in recent_trades:
+                    symbol = trade.get("symbol", "")
+                    if not symbol:
+                        continue
+                    
+                    trade_info = {
+                        "quantity": self._safe_decimal(trade.get("quantity", "0")),
+                        "price": self._safe_decimal(trade.get("price", "0")),
+                        "quote_quantity": self._safe_decimal(trade.get("quoteQuantity") or trade.get("quote_quantity") or trade.get("quoteQty", "0")),
+                    }
+                    
+                    if self._trade_affects_currency(symbol, currency, trade_info):
+                        trade_id = trade.get("tradeId") or trade.get("trade_id", "")
+                        order_id = trade.get("orderId") or trade.get("order_id", "")
+                        logger.info(
+                            f"Found matching trade for {currency}",
+                            extra={
+                                "currency": currency,
+                                "symbol": symbol,
+                                "trade_id": trade_id,
+                                "order_id": order_id,
+                            }
+                        )
+                        return str(trade_id), str(order_id) if order_id else None, True
+            except Exception as e:
+                logger.debug(f"Failed to query recent trades: {e}")
+            
+            # 更新缓存
+            if spot_total is not None:
+                self._last_spot_balances[spot_cache_key] = {"total": spot_total}
+            
+            # 如果无法确定，默认认为是划转
+            return None, None, False
+            
+        except Exception as e:
+            logger.warning(f"Failed to check balance changes across accounts: {e}", exc_info=True)
+            return None, None, False
+    
     async def _analyze_transfer(self, account_data: Dict[str, Any]) -> None:
         """分析账户余额变化，识别资金划转.
         
@@ -2361,10 +2616,8 @@ class XTUserStreamService:
                     }
                 )
                 
-                # 检查是否有对应的交易活动（成交、持仓变化、订单完成）
-                # 扩大时间窗口到30秒，以捕获所有可能的交易活动
-                time_threshold = transfer_time - timedelta(seconds=30)
-                related_trade_id, related_order_id, is_trade = await self._check_recent_trade_activity(currency, time_threshold)
+                # 通过查询现货和合约账户余额变化来判断是划转还是交易
+                related_trade_id, related_order_id, is_trade = await self._check_balance_changes_across_accounts(currency, balance_change)
                 
                 # 判断划转类型
                 if is_trade:

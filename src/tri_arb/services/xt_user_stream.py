@@ -2467,31 +2467,17 @@ class XTUserStreamService:
                     transfer_detected = True
                 elif balance_change < 0 and spot_change > 0 and abs(balance_change + spot_change) <= tolerance:
                     transfer_detected = True
+            elif perp_change is not None and abs(perp_change - balance_change) <= tolerance and abs(balance_change) > tolerance:
+                transfer_detected = True
 
             if spot_total is not None:
                 self._last_spot_balances[spot_cache_key] = {"total": spot_total}
 
             if transfer_detected:
-                logger.info(
-                    f"Detected transfer via balance comparison: {currency}",
-                    extra={
-                        "currency": currency,
-                        "account_change": str(balance_change),
-                        "perp_change": str(perp_change),
-                        "spot_change": str(spot_change),
-                    }
-                )
+                logger.info(f"Detected transfer: {currency} {balance_change:+.8f}")
                 return None, None, False
 
-            logger.debug(
-                "Balance changes do not indicate transfer; treating as trade",
-                extra={
-                    "currency": currency,
-                    "account_change": str(balance_change),
-                    "perp_change": str(perp_change),
-                    "spot_change": str(spot_change),
-                }
-            )
+            logger.debug(f"No transfer detected for {currency}; treat as trade")
             return None, None, True
             
         except Exception as e:

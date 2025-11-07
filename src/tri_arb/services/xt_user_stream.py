@@ -676,14 +676,19 @@ class XTUserStreamService:
             table.add_column("杠杆", style="dim")
             
             # XT数据格式：单个持仓对象
+            # XT WebSocket 使用 positionSide, positionSize, calMarkPrice, floatingPL 等字段
             if "symbol" in data:
                 # 单个持仓对象
                 symbol = data.get("symbol", "")
-                side = data.get("side", "")
-                quantity = data.get("quantity", "0")
+                # XT API uses positionSide, fallback to side
+                side = data.get("positionSide") or data.get("side", "")
+                # XT API uses positionSize, fallback to quantity or positionAmt
+                quantity = data.get("positionSize") or data.get("quantity") or data.get("positionAmt", "0")
                 entry_price = data.get("entryPrice", "0")
-                mark_price = data.get("markPrice", "0")
-                unrealized_pnl = data.get("unrealizedPnl", "0")
+                # XT API uses calMarkPrice, fallback to markPrice
+                mark_price = data.get("calMarkPrice") or data.get("markPrice", "0")
+                # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
+                unrealized_pnl = data.get("floatingPL") or data.get("unrealizedPnl") or data.get("unRealizedProfit", "0")
                 leverage = data.get("leverage", "1")
                 
                 table.add_row(
@@ -700,11 +705,15 @@ class XTUserStreamService:
                 positions = data.get("positions", [])
                 for position in positions:
                     symbol = position.get("symbol", "")
-                    side = position.get("side", "")
-                    quantity = position.get("quantity", "0")
-                    entry_price = position.get("entry_price", "0")
-                    mark_price = position.get("mark_price", "0")
-                    unrealized_pnl = position.get("unrealized_pnl", "0")
+                    # XT API uses positionSide, fallback to side
+                    side = position.get("positionSide") or position.get("side", "")
+                    # XT API uses positionSize, fallback to quantity or positionAmt
+                    quantity = position.get("positionSize") or position.get("quantity") or position.get("positionAmt", "0")
+                    entry_price = position.get("entryPrice") or position.get("entry_price", "0")
+                    # XT API uses calMarkPrice, fallback to markPrice
+                    mark_price = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
+                    # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
+                    unrealized_pnl = position.get("floatingPL") or position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl", "0")
                     leverage = position.get("leverage", "1")
                     
                     table.add_row(
@@ -740,18 +749,23 @@ class XTUserStreamService:
             table.add_column("状态", style="dim")
             
             # XT数据格式：单个订单对象
-            if "orderId" in data:
+            # XT WebSocket 使用 orderSide, orderType, state, origQty, executedQty 等字段
+            if "orderId" in data or "order_id" in data:
                 # 单个订单对象
-                order_id = data.get("orderId", "")
+                order_id = data.get("orderId") or data.get("order_id", "")
                 symbol = data.get("symbol", "")
-                side = data.get("side", "")
-                order_type = data.get("type", "")
-                quantity = data.get("quantity", "0")
+                # XT API uses orderSide, fallback to side
+                side = data.get("orderSide") or data.get("side", "")
+                # XT API uses orderType, fallback to type
+                order_type = data.get("orderType") or data.get("type", "")
+                # XT API uses origQty, fallback to quantity
+                quantity = data.get("origQty") or data.get("quantity", "0")
                 price = data.get("price", "0")
-                status = data.get("status", "")
+                # XT API uses state, fallback to status
+                status = data.get("state") or data.get("status", "")
                 
                 table.add_row(
-                    order_id,
+                    str(order_id),
                     symbol,
                     side,
                     order_type,
@@ -763,16 +777,20 @@ class XTUserStreamService:
                 # 兼容旧格式：多个订单对象
                 orders = data.get("orders", [])
                 for order in orders:
-                    order_id = order.get("order_id", "")
+                    order_id = order.get("orderId") or order.get("order_id", "")
                     symbol = order.get("symbol", "")
-                    side = order.get("side", "")
-                    order_type = order.get("order_type", "")
-                    quantity = order.get("quantity", "0")
+                    # XT API uses orderSide, fallback to side
+                    side = order.get("orderSide") or order.get("side", "")
+                    # XT API uses orderType, fallback to order_type or type
+                    order_type = order.get("orderType") or order.get("order_type") or order.get("type", "")
+                    # XT API uses origQty, fallback to quantity
+                    quantity = order.get("origQty") or order.get("quantity", "0")
                     price = order.get("price", "0")
-                    status = order.get("status", "")
+                    # XT API uses state, fallback to status
+                    status = order.get("state") or order.get("status", "")
                     
                     table.add_row(
-                        order_id,
+                        str(order_id),
                         symbol,
                         side,
                         order_type,
@@ -890,6 +908,7 @@ class XTUserStreamService:
                 update_time = datetime.utcnow()
                 
                 # XT数据格式：单个持仓对象
+                # XT WebSocket 使用 positionSide, positionSize, calMarkPrice, floatingPL 等字段
                 if "symbol" in data:
                     # 单个持仓对象
                     symbol = data.get("symbol", "")
@@ -897,13 +916,23 @@ class XTUserStreamService:
                         logger.warning("No symbol found in position data")
                         return
                     
-                    side = data.get("side", "")
-                    quantity = self._safe_decimal(data.get("quantity", "0"))
+                    # XT API uses positionSide, fallback to side
+                    side = data.get("positionSide") or data.get("side", "")
+                    # XT API uses positionSize, fallback to quantity or positionAmt
+                    quantity_raw = data.get("positionSize") or data.get("quantity") or data.get("positionAmt", "0")
+                    quantity = self._safe_decimal(quantity_raw)
                     
                     # 跳过持仓量为0的记录
                     if quantity == 0:
                         logger.debug(f"Position quantity is 0 for {symbol}, skipping")
                         return
+                    
+                    # XT API uses calMarkPrice, fallback to markPrice
+                    mark_price_raw = data.get("calMarkPrice") or data.get("markPrice", "0")
+                    # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
+                    unrealized_pnl_raw = data.get("floatingPL") or data.get("unrealizedPnl") or data.get("unRealizedProfit", "0")
+                    # XT API uses breakPrice, fallback to liquidationPrice
+                    liquidation_price_raw = data.get("breakPrice") or data.get("liquidationPrice", "0")
                     
                     record = XTPositionUpdate(
                         update_time=update_time,
@@ -911,9 +940,11 @@ class XTUserStreamService:
                         side=side,
                         quantity=quantity,
                         entry_price=self._safe_decimal(data.get("entryPrice", "0")),
-                        mark_price=self._safe_decimal(data.get("markPrice", "0")),
-                        unrealized_pnl=self._safe_decimal(data.get("unrealizedPnl", "0")),
-                        leverage=self._safe_decimal(data.get("leverage", "1")),
+                        mark_price=self._safe_decimal(mark_price_raw),
+                        liquidation_price=self._safe_decimal(liquidation_price_raw),
+                        unrealized_pnl=self._safe_decimal(unrealized_pnl_raw),
+                        leverage=int(data.get("leverage", "1")),
+                        margin=self._safe_decimal(data.get("isolatedMargin") or data.get("margin", "0")),
                         raw_data=json.dumps(data, cls=DecimalEncoder),
                     )
                     session.add(record)
@@ -926,28 +957,37 @@ class XTUserStreamService:
                         if not symbol:
                             continue
                         
-                        side = position.get("side", "")
-                        quantity = self._safe_decimal(position.get("quantity", "0"))
+                        # XT API uses positionSide, fallback to side
+                        side = position.get("positionSide") or position.get("side", "")
+                        # XT API uses positionSize, fallback to quantity or positionAmt
+                        quantity_raw = position.get("positionSize") or position.get("quantity") or position.get("positionAmt", "0")
+                        quantity = self._safe_decimal(quantity_raw)
                         
                         # 跳过持仓量为0的记录
                         if quantity == 0:
                             continue
-                    
-                    record = XTPositionUpdate(
-                        update_time=update_time,
-                        symbol=symbol,
-                        side=side,
-                        quantity=quantity,
-                        entry_price=self._safe_decimal(position.get("entry_price", "0")),
-                        mark_price=self._safe_decimal(position.get("mark_price", "0")),
-                        liquidation_price=self._safe_decimal(position.get("liquidation_price", "0")),
-                        unrealized_pnl=self._safe_decimal(position.get("unrealized_pnl", "0")),
-                        leverage=self._safe_int(position.get("leverage", "1")),
-                        margin=self._safe_decimal(position.get("margin", "0")),
-                        roe=self._safe_decimal(position.get("roe", "0")),
-                        raw_data=json.dumps(position, cls=DecimalEncoder),
-                    )
-                    session.add(record)
+                        
+                        # XT API uses calMarkPrice, fallback to markPrice
+                        mark_price_raw = position.get("calMarkPrice") or position.get("markPrice") or position.get("mark_price", "0")
+                        # XT API uses floatingPL, fallback to unrealizedPnl or unRealizedProfit
+                        unrealized_pnl_raw = position.get("floatingPL") or position.get("unrealizedPnl") or position.get("unRealizedProfit") or position.get("unrealized_pnl", "0")
+                        # XT API uses breakPrice, fallback to liquidationPrice
+                        liquidation_price_raw = position.get("breakPrice") or position.get("liquidationPrice") or position.get("liquidation_price", "0")
+                        
+                        record = XTPositionUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            side=side,
+                            quantity=quantity,
+                            entry_price=self._safe_decimal(position.get("entryPrice") or position.get("entry_price", "0")),
+                            mark_price=self._safe_decimal(mark_price_raw),
+                            liquidation_price=self._safe_decimal(liquidation_price_raw),
+                            unrealized_pnl=self._safe_decimal(unrealized_pnl_raw),
+                            leverage=int(position.get("leverage", "1")),
+                            margin=self._safe_decimal(position.get("isolatedMargin") or position.get("margin", "0")),
+                            raw_data=json.dumps(position, cls=DecimalEncoder),
+                        )
+                        session.add(record)
                 
                 await session.commit()
                 logger.debug("Saved position update to database")
@@ -962,36 +1002,44 @@ class XTUserStreamService:
                 update_time = datetime.utcnow()
                 
                 # XT数据格式：单个订单对象
-                if "orderId" in data:
+                # XT WebSocket 使用 orderSide, orderType, state, origQty, executedQty 等字段
+                if "orderId" in data or "order_id" in data:
                     # 单个订单对象
-                    order_id = data.get("orderId", "")
+                    order_id = data.get("orderId") or data.get("order_id", "")
                     if not order_id:
                         logger.warning("No order ID found in order data")
                         return
                     
                     symbol = data.get("symbol", "")
-                    side = data.get("side", "")
-                    order_type = data.get("type", "")
-                    quantity = self._safe_decimal(data.get("quantity", "0"))
+                    # XT API uses orderSide, fallback to side
+                    side = data.get("orderSide") or data.get("side", "")
+                    # XT API uses orderType, fallback to type
+                    order_type = data.get("orderType") or data.get("type", "")
+                    # XT API uses origQty, fallback to quantity
+                    quantity_raw = data.get("origQty") or data.get("quantity", "0")
+                    quantity = self._safe_decimal(quantity_raw)
                     price = self._safe_decimal(data.get("price", "0"))
-                    filled_quantity = self._safe_decimal(data.get("filledQuantity", "0"))
-                    status = data.get("status", "")
+                    # XT API uses executedQty, fallback to filledQuantity or filled_quantity
+                    filled_quantity_raw = data.get("executedQty") or data.get("filledQuantity") or data.get("filled_quantity", "0")
+                    filled_quantity = self._safe_decimal(filled_quantity_raw)
+                    # XT API uses state, fallback to status
+                    status = data.get("state") or data.get("status", "")
                     
                     record = XTOrderUpdate(
                         update_time=update_time,
                         symbol=symbol,
-                        order_id=order_id,
-                        client_order_id=data.get("clientOrderId", ""),
+                        order_id=str(order_id),
+                        client_order_id=data.get("clientOrderId") or data.get("client_order_id", ""),
                         side=side,
                         order_type=order_type,
-                        position_side=data.get("positionSide", ""),
+                        position_side=data.get("positionSide") or data.get("position_side", ""),
                         quantity=quantity,
                         price=price,
                         filled_quantity=filled_quantity,
                         status=status,
-                        time_in_force=data.get("timeInForce", ""),
-                        create_time=self._parse_timestamp(data.get("createTime")),
-                        update_time_order=self._parse_timestamp(data.get("updateTime")),
+                        time_in_force=data.get("timeInForce") or data.get("time_in_force", ""),
+                        create_time=self._parse_timestamp(data.get("createdTime") or data.get("createTime") or data.get("created_time")),
+                        update_time_order=self._parse_timestamp(data.get("updatedTime") or data.get("updateTime") or data.get("updated_time")),
                         raw_data=json.dumps(data, cls=DecimalEncoder),
                     )
                     session.add(record)
@@ -1000,33 +1048,40 @@ class XTUserStreamService:
                     # 兼容旧格式：多个订单对象
                     orders = data.get("orders", [])
                     for order in orders:
-                        order_id = order.get("order_id", "")
+                        order_id = order.get("orderId") or order.get("order_id", "")
                         if not order_id:
                             continue
                         
                         symbol = order.get("symbol", "")
-                        side = order.get("side", "")
-                        order_type = order.get("order_type", "")
-                        quantity = self._safe_decimal(order.get("quantity", "0"))
+                        # XT API uses orderSide, fallback to side
+                        side = order.get("orderSide") or order.get("side", "")
+                        # XT API uses orderType, fallback to order_type or type
+                        order_type = order.get("orderType") or order.get("order_type") or order.get("type", "")
+                        # XT API uses origQty, fallback to quantity
+                        quantity_raw = order.get("origQty") or order.get("quantity", "0")
+                        quantity = self._safe_decimal(quantity_raw)
                         price = self._safe_decimal(order.get("price", "0"))
-                        filled_quantity = self._safe_decimal(order.get("filled_quantity", "0"))
-                        status = order.get("status", "")
+                        # XT API uses executedQty, fallback to filled_quantity or filledQuantity
+                        filled_quantity_raw = order.get("executedQty") or order.get("filled_quantity") or order.get("filledQuantity", "0")
+                        filled_quantity = self._safe_decimal(filled_quantity_raw)
+                        # XT API uses state, fallback to status
+                        status = order.get("state") or order.get("status", "")
                         
                         record = XTOrderUpdate(
                             update_time=update_time,
                             symbol=symbol,
-                            order_id=order_id,
-                            client_order_id=order.get("client_order_id", ""),
+                            order_id=str(order_id),
+                            client_order_id=order.get("clientOrderId") or order.get("client_order_id", ""),
                             side=side,
                             order_type=order_type,
-                            position_side=order.get("position_side", ""),
+                            position_side=order.get("positionSide") or order.get("position_side", ""),
                             quantity=quantity,
                             price=price,
                             filled_quantity=filled_quantity,
                             status=status,
-                            time_in_force=order.get("time_in_force", ""),
-                            create_time=self._parse_timestamp(order.get("create_time")),
-                            update_time_order=self._parse_timestamp(order.get("update_time")),
+                            time_in_force=order.get("timeInForce") or order.get("time_in_force", ""),
+                            create_time=self._parse_timestamp(order.get("createdTime") or order.get("createTime") or order.get("created_time")),
+                            update_time_order=self._parse_timestamp(order.get("updatedTime") or order.get("updateTime") or order.get("updated_time")),
                             raw_data=json.dumps(order, cls=DecimalEncoder),
                         )
                         session.add(record)
@@ -2045,8 +2100,10 @@ class XTUserStreamService:
                     # 首次记录，保存当前余额
                     logger.info(
                         f"首次记录 {currency} 余额，初始化缓存",
-                        currency=currency,
-                        total=str(current_total),
+                        extra={
+                            "currency": currency,
+                            "total": str(current_total),
+                        }
                     )
                     self._last_account_balances[currency_key] = current_balance
                     continue
@@ -2056,17 +2113,21 @@ class XTUserStreamService:
                 
                 logger.debug(
                     f"余额变化检测: {currency}",
-                    currency=currency,
-                    last_total=str(last_total),
-                    current_total=str(current_total),
-                    balance_change=str(balance_change),
+                    extra={
+                        "currency": currency,
+                        "last_total": str(last_total),
+                        "current_total": str(current_total),
+                        "balance_change": str(balance_change),
+                    }
                 )
                 
                 # 如果余额变化很小（可能是精度问题），忽略
                 if abs(balance_change) < Decimal("0.00000001"):
                     logger.debug(
                         f"余额变化太小，忽略: {currency}",
-                        balance_change=str(balance_change),
+                        extra={
+                            "balance_change": str(balance_change),
+                        }
                     )
                     # 即使变化很小，也更新缓存
                     self._last_account_balances[currency_key] = current_balance
@@ -2125,11 +2186,13 @@ class XTUserStreamService:
                 
                 logger.info(
                     f"检测到余额变化: {currency}",
-                    currency=currency,
-                    amount=str(balance_change),
-                    transfer_type=transfer_type,
-                    balance_before=str(last_total),
-                    balance_after=str(current_total),
+                    extra={
+                        "currency": currency,
+                        "amount": str(balance_change),
+                        "transfer_type": transfer_type,
+                        "balance_before": str(last_total),
+                        "balance_after": str(current_total),
+                    }
                 )
                 
         except Exception as e:
@@ -2172,7 +2235,49 @@ class XTUserStreamService:
                     }
                 )
         except Exception as e:
-            logger.error(f"Failed to save transfer: {e}")
+            error_msg = str(e)
+            # 检查是否是表不存在的错误
+            if "does not exist" in error_msg or "UndefinedTableError" in error_msg:
+                logger.error(
+                    "数据库表 xt_transfers 不存在。请运行以下命令创建表：",
+                    extra={"command": "cextools subscribe user-stream -x xt -c account --create-tables"}
+                )
+                logger.error(
+                    "或者手动创建表：",
+                    extra={"error": error_msg}
+                )
+                # 尝试自动创建表
+                try:
+                    logger.info("尝试自动创建缺失的数据库表...")
+                    await self.db_manager.create_tables()
+                    logger.info("数据库表创建成功，重试保存划转记录...")
+                    # 重试保存
+                    async with self.db_manager.session() as session:
+                        transfer_record = XTTransfer(
+                            transfer_time=transfer_time,
+                            currency=currency,
+                            amount=amount,
+                            transfer_type=transfer_type,
+                            balance_before=balance_before,
+                            balance_after=balance_after,
+                            related_order_id=related_order_id,
+                            related_trade_id=related_trade_id,
+                            raw_data=json.dumps(raw_data, cls=DecimalEncoder) if raw_data else None,
+                        )
+                        session.add(transfer_record)
+                        await session.commit()
+                        logger.info(
+                            f"Transfer recorded (after auto-create): {currency} {amount:+.8f} ({transfer_type})",
+                            extra={
+                                "currency": currency,
+                                "amount": str(amount),
+                                "transfer_type": transfer_type,
+                            }
+                        )
+                except Exception as create_error:
+                    logger.error(f"自动创建表失败: {create_error}")
+            else:
+                logger.error(f"Failed to save transfer: {e}")
     
     async def _display_transfer(
         self,

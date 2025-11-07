@@ -1195,16 +1195,17 @@ class XTUserStreamService:
         try:
             balances = await self.rest_client.get_balance()
             
-            # 初始化余额缓存（用于划转分析）
+            # 初始化余额缓存（用于快速查询，但划转分析主要依赖数据库）
             for currency, balance_data in balances.items():
-                self._last_account_balances[currency.lower()] = {
+                currency_key = currency.lower()
+                self._last_account_balances[currency_key] = {
                     "available": balance_data.get("available", Decimal("0")),
                     "frozen": balance_data.get("frozen", Decimal("0")),
                     "total": balance_data.get("total", Decimal("0")),
                 }
             
             logger.info(
-                "Initialized balance cache for transfer analysis",
+                "Initialized balance cache (transfer analysis uses database records)",
                 currencies=list(self._last_account_balances.keys()),
                 currency_count=len(self._last_account_balances)
             )
@@ -2059,8 +2060,41 @@ class XTUserStreamService:
         except Exception as e:
             logger.debug(f"Failed to record trade for transfer analysis: {e}")
     
+    async def _get_latest_balance_from_db(self, currency: str) -> Optional[Dict[str, Decimal]]:
+        """从数据库获取指定币种的最新余额记录."""
+        try:
+            from sqlalchemy import select, func
+            
+            async with self.db_manager.session() as session:
+                # 查询该币种的最新记录（按update_time降序）
+                currency_key = currency.lower()
+                stmt = (
+                    select(XTAccountUpdate)
+                    .where(XTAccountUpdate.currency == currency_key)
+                    .order_by(XTAccountUpdate.update_time.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                latest_record = result.scalar_one_or_none()
+                
+                if latest_record:
+                    return {
+                        "available": Decimal(str(latest_record.available)),
+                        "frozen": Decimal(str(latest_record.frozen)),
+                        "total": Decimal(str(latest_record.total)),
+                        "update_time": latest_record.update_time,
+                    }
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to get latest balance from DB for {currency}: {e}")
+            return None
+    
     async def _analyze_transfer(self, account_data: Dict[str, Any]) -> None:
-        """分析账户余额变化，识别资金划转."""
+        """分析账户余额变化，识别资金划转.
+        
+        从数据库中获取最新的余额记录作为基准，与当前WebSocket推送的余额进行对比。
+        这样可以避免服务重启后丢失缓存，以及数据同步时的余额不准确问题。
+        """
         try:
             transfer_time = datetime.utcnow()
             
@@ -2089,49 +2123,55 @@ class XTUserStreamService:
                                      self._safe_decimal(balance.get("frozen", "0"))),
                         }
             
-            # 比较余额变化
+            # 比较余额变化（从数据库获取最新记录作为基准）
             for currency, current_balance in current_balances.items():
                 # 统一使用小写币种名
                 currency_key = currency.lower()
-                last_balance = self._last_account_balances.get(currency_key)
                 current_total = current_balance["total"]
                 
-                if last_balance is None:
-                    # 首次记录，保存当前余额
-                    logger.info(
-                        f"首次记录 {currency} 余额，初始化缓存",
+                # 从数据库获取最新的余额记录
+                last_balance_record = await self._get_latest_balance_from_db(currency)
+                
+                if last_balance_record is None:
+                    # 数据库中没有记录，跳过划转检测（不插入和输出划转记录）
+                    logger.debug(
+                        f"数据库无 {currency} 余额记录，跳过划转检测",
                         extra={
                             "currency": currency,
                             "total": str(current_total),
                         }
                     )
+                    # 更新内存缓存（用于后续快速查询）
                     self._last_account_balances[currency_key] = current_balance
                     continue
                 
-                last_total = last_balance["total"]
+                last_total = last_balance_record["total"]
+                last_update_time = last_balance_record.get("update_time")
                 balance_change = current_total - last_total
+                
+                # 如果当前余额与数据库最新记录相同，跳过（可能是重复推送）
+                if abs(balance_change) < Decimal("0.00000001"):
+                    logger.debug(
+                        f"余额无变化: {currency}",
+                        extra={
+                            "currency": currency,
+                            "total": str(current_total),
+                        }
+                    )
+                    # 更新内存缓存
+                    self._last_account_balances[currency_key] = current_balance
+                    continue
                 
                 logger.debug(
                     f"余额变化检测: {currency}",
                     extra={
                         "currency": currency,
                         "last_total": str(last_total),
+                        "last_update_time": last_update_time.isoformat() if last_update_time else None,
                         "current_total": str(current_total),
                         "balance_change": str(balance_change),
                     }
                 )
-                
-                # 如果余额变化很小（可能是精度问题），忽略
-                if abs(balance_change) < Decimal("0.00000001"):
-                    logger.debug(
-                        f"余额变化太小，忽略: {currency}",
-                        extra={
-                            "balance_change": str(balance_change),
-                        }
-                    )
-                    # 即使变化很小，也更新缓存
-                    self._last_account_balances[currency_key] = current_balance
-                    continue
                 
                 # 检查是否有对应的订单或成交记录
                 related_order_id = None
@@ -2246,11 +2286,15 @@ class XTUserStreamService:
                     "或者手动创建表：",
                     extra={"error": error_msg}
                 )
-                # 尝试自动创建表
+                # 尝试自动创建 XT WebSocket 表（只创建 XT 相关的表）
                 try:
-                    logger.info("尝试自动创建缺失的数据库表...")
-                    await self.db_manager.create_tables()
-                    logger.info("数据库表创建成功，重试保存划转记录...")
+                    logger.info("尝试自动创建缺失的 XT WebSocket 数据库表...")
+                    # 只创建 XT WebSocket 相关的表，避免与其他表的索引冲突
+                    from tri_arb.storage.xt_websocket_models import Base as XTWebSocketBase
+                    async with self.db_manager.async_engine.begin() as conn:
+                        # 使用 checkfirst=True 避免重复创建已存在的表/索引
+                        await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
+                    logger.info("XT WebSocket 数据库表创建成功，重试保存划转记录...")
                     # 重试保存
                     async with self.db_manager.session() as session:
                         transfer_record = XTTransfer(
@@ -2275,7 +2319,41 @@ class XTUserStreamService:
                             }
                         )
                 except Exception as create_error:
-                    logger.error(f"自动创建表失败: {create_error}")
+                    error_msg = str(create_error)
+                    # 如果是表/索引已存在的错误，尝试直接保存（表可能已经存在）
+                    if "already exists" in error_msg or "DuplicateTableError" in error_msg:
+                        logger.debug(
+                            "表或索引已存在，尝试直接保存划转记录...",
+                            extra={"error": error_msg[:200]}
+                        )
+                        try:
+                            # 直接尝试保存，可能表已经存在了
+                            async with self.db_manager.session() as session:
+                                transfer_record = XTTransfer(
+                                    transfer_time=transfer_time,
+                                    currency=currency,
+                                    amount=amount,
+                                    transfer_type=transfer_type,
+                                    balance_before=balance_before,
+                                    balance_after=balance_after,
+                                    related_order_id=related_order_id,
+                                    related_trade_id=related_trade_id,
+                                    raw_data=json.dumps(raw_data, cls=DecimalEncoder) if raw_data else None,
+                                )
+                                session.add(transfer_record)
+                                await session.commit()
+                                logger.info(
+                                    f"Transfer recorded: {currency} {amount:+.8f} ({transfer_type})",
+                                    extra={
+                                        "currency": currency,
+                                        "amount": str(amount),
+                                        "transfer_type": transfer_type,
+                                    }
+                                )
+                        except Exception as save_error:
+                            logger.error(f"保存划转记录失败: {save_error}")
+                    else:
+                        logger.error(f"自动创建表失败: {create_error}")
             else:
                 logger.error(f"Failed to save transfer: {e}")
     

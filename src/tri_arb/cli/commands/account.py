@@ -174,11 +174,19 @@ def _run_xt_watch_positions(
         )
         console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
 
+    async def _ensure_xt_rest_tables():
+        from tri_arb.storage.xt_rest_models import Base as XTRestBase
+
+        async with db_manager.async_engine.begin() as conn:
+            await conn.run_sync(
+                lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
+            )
+
     async def run_scheduler():
         iteration = 0
         try:
-            await db_manager.create_tables()
-            console.print("[green]✓[/green] 数据库表已就绪\n")
+            await _ensure_xt_rest_tables()
+            console.print("[green]✓[/green] XT REST 数据表已就绪\n")
 
             await perp_exchange.connect()
             console.print("[green]✓[/green] 交易所连接成功\n")

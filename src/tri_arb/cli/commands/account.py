@@ -1246,10 +1246,10 @@ def watch_account(
 @app.command("watch-positions")
 def watch_positions(
     exchange_type: ExchangeType = typer.Option(
-        ...,
+        ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型（必须为 perp）"
+        help="交易类型（仅支持 perp，默认 perp）"
     ),
     exchange: ExchangeName = typer.Option(
         ExchangeName.XT,

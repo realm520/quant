@@ -112,7 +112,10 @@ class XTUserStreamService:
         # 即使禁用数据同步，也需要REST客户端来获取WebSocket的listen_key
         self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
         # 现货交易所客户端（用于查询现货余额，分析划转）
-        self.spot_client = XTSpotExchange(self.api_key, self.api_secret)
+        self.spot_client = XTSpotExchange(
+            api_key=self.api_key,
+            api_secret=self.api_secret,
+        )
 
         # XT WebSocket认证
         self.listen_key = None

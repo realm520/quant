@@ -2812,6 +2812,7 @@ class XTUserStreamService:
                         "transfer_type": transfer_type,
                     }
                 )
+                logger.info("Successfully saved transfer to database")
         except Exception as e:
             error_msg = str(e)
             # 检查是否是表不存在的错误
@@ -2856,6 +2857,7 @@ class XTUserStreamService:
                                 "transfer_type": transfer_type,
                             }
                         )
+                        logger.info("Successfully saved transfer to database")
                 except Exception as create_error:
                     error_msg = str(create_error)
                     # 如果是表/索引已存在的错误，尝试直接保存（表可能已经存在）
@@ -2888,6 +2890,7 @@ class XTUserStreamService:
                                         "transfer_type": transfer_type,
                                     }
                                 )
+                                logger.info("Successfully saved transfer to database")
                         except Exception as save_error:
                             logger.error(f"保存划转记录失败: {save_error}")
                     else:

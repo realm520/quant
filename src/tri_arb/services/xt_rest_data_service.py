@@ -12,7 +12,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from tri_arb.config.logging import get_logger
 from tri_arb.storage.database import DatabaseManager
-from tri_arb.storage.xt_rest_models import XTSpotBalance, XTPerpBalance, XTPerpPosition
+from tri_arb.storage.xt_rest_models import (
+    XTSpotBalance,
+    XTPerpBalance,
+    XTPerpPosition,
+    XTRestPositionUpdate,
+)
 
 logger = get_logger(__name__)
 
@@ -23,7 +28,8 @@ class XTRestDataService:
     专门用于保存XT交易所的账户数据到独立的表中：
     - xt_spot_balances: XT现货账户余额
     - xt_perp_balances: XT合约账户余额
-    - xt_perp_positions: XT合约账户仓位
+    - xt_perp_positions: XT合约账户仓位（REST定时拉取）
+    - xt_rest_position_updates: XT合约仓位定时快照（watch-positions 命令）
     """
     
     def __init__(self, db_manager: DatabaseManager):
@@ -180,5 +186,52 @@ class XTRestDataService:
                 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT perp positions: {e}")
+            raise
+
+    async def save_position_updates(
+        self,
+        positions_data: List[Dict[str, Any]],
+        query_type: str = "scheduled",
+    ):
+        """保存XT永续仓位定时更新记录."""
+        try:
+            async with self.db_manager.session() as session:
+                now = datetime.utcnow()
+                for pos_data in positions_data:
+                    symbol = pos_data.get("symbol", "")
+                    position_side = pos_data.get("positionSide") or pos_data.get("position_side", "LONG")
+                    position_amount = pos_data.get("positionSize") or pos_data.get("positionAmt") or pos_data.get("position_amount", "0")
+                    entry_price = pos_data.get("entryPrice")
+                    mark_price = pos_data.get("calMarkPrice") or pos_data.get("markPrice")
+                    liquidation_price = pos_data.get("breakPrice") or pos_data.get("liquidationPrice")
+                    unrealized_pnl = pos_data.get("floatingPL") or pos_data.get("unRealizedProfit") or pos_data.get("unrealizedPnl")
+                    realized_pnl = pos_data.get("realizedProfit") or pos_data.get("realizedPnl")
+                    margin = pos_data.get("isolatedMargin") or pos_data.get("margin")
+                    leverage = pos_data.get("leverage")
+                    roe = pos_data.get("roe")
+
+                    record = XTRestPositionUpdate(
+                        query_time=now,
+                        query_type=query_type,
+                        symbol=str(symbol),
+                        position_side=str(position_side),
+                        position_amount=Decimal(str(position_amount)) if position_amount is not None else Decimal("0"),
+                        entry_price=Decimal(str(entry_price)) if entry_price else None,
+                        mark_price=Decimal(str(mark_price)) if mark_price else None,
+                        liquidation_price=Decimal(str(liquidation_price)) if liquidation_price else None,
+                        unrealized_pnl=Decimal(str(unrealized_pnl)) if unrealized_pnl else None,
+                        realized_pnl=Decimal(str(realized_pnl)) if realized_pnl else None,
+                        margin=Decimal(str(margin)) if margin else None,
+                        leverage=str(leverage) if leverage else None,
+                        roe=Decimal(str(roe)) if roe else None,
+                        raw_data=json.dumps(pos_data, ensure_ascii=False, default=str),
+                    )
+                    session.add(record)
+
+                await session.commit()
+                logger.info(f"Saved {len(positions_data)} XT rest position update records")
+
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to save XT rest position updates: {e}")
             raise
 

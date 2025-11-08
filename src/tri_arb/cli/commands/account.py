@@ -1,3 +1,182 @@
+def _run_xt_watch_positions(
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    symbol: Optional[str],
+    debug: bool,
+) -> None:
+    """运行XT永续仓位定时监控并写入数据库."""
+    from rich.table import Table
+    from tri_arb.exchanges.xt_perp import XTPerpExchange
+    from tri_arb.services.xt_rest_data_service import XTRestDataService
+
+    console.print("[cyan]启动XT仓位定时监控服务[/cyan]")
+    console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
+    if symbol:
+        console.print(f"[cyan]仅监控交易对: {symbol}[/cyan]")
+    console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+    db_manager = DatabaseManager()
+    perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
+    xt_rest_service = XTRestDataService(db_manager)
+
+    normalized_target = None
+    if symbol:
+        normalized_target = symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+
+    async def fetch_positions(iteration_num: int):
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        console.print(f"\n{'='*60}")
+        console.print(f"[bold]第 {iteration_num} 次查询 - {current_time}[/bold]")
+        console.print(f"{'='*60}\n")
+
+        try:
+            positions = await perp_exchange.get_positions(symbol=None)
+        except Exception as exc:
+            console.print(f"[red]获取仓位失败:[/red] {exc}")
+            logger.error("watch-positions fetch error", error=str(exc))
+            if debug:
+                console.print_exception()
+            return
+
+        if not positions:
+            console.print("[yellow]当前无持仓[/yellow]")
+            return
+
+        position_table = Table(
+            title="XT 合约账户仓位",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        position_table.add_column("Symbol", style="cyan")
+        position_table.add_column("Side", style="white")
+        position_table.add_column("Quantity", justify="right")
+        position_table.add_column("Entry Price", justify="right")
+        position_table.add_column("Mark Price", justify="right")
+        position_table.add_column("Liquidation Price", justify="right")
+        position_table.add_column("Unrealized PnL", justify="right")
+        position_table.add_column("Realized PnL", justify="right")
+        position_table.add_column("ROE", justify="right")
+        position_table.add_column("Leverage", justify="right")
+
+        positions_payload: list[dict[str, Any]] = []
+        rows_added = 0
+
+        for pos in positions:
+            try:
+                if hasattr(pos, "symbol"):
+                    pos_symbol = pos.symbol
+                    side = getattr(pos, "side", getattr(pos, "position_side", ""))
+                    quantity = getattr(pos, "quantity", Decimal("0"))
+                    entry_price = getattr(pos, "entry_price", Decimal("0"))
+                    mark_price = getattr(pos, "mark_price", Decimal("0"))
+                    unrealized_pnl = getattr(pos, "unrealized_pnl", Decimal("0"))
+                    realized_pnl = getattr(pos, "realized_pnl", Decimal("0"))
+                    margin = getattr(pos, "margin", Decimal("0"))
+                    leverage = getattr(pos, "leverage", "")
+                    liquidation_price = getattr(pos, "liquidation_price", Decimal("0"))
+                else:
+                    pos_symbol = pos.get("symbol", "")
+                    side = pos.get("positionSide") or pos.get("side", "")
+                    quantity = Decimal(str(pos.get("positionSize") or pos.get("positionAmt") or "0"))
+                    entry_price = Decimal(str(pos.get("entryPrice") or "0"))
+                    mark_price = Decimal(str(pos.get("calMarkPrice") or pos.get("markPrice") or "0"))
+                    unrealized_pnl = Decimal(str(pos.get("floatingPL") or pos.get("unRealizedProfit") or pos.get("unrealizedPnl") or "0"))
+                    realized_pnl = Decimal(str(pos.get("realizedProfit") or pos.get("realizedPnl") or "0"))
+                    margin = Decimal(str(pos.get("isolatedMargin") or pos.get("margin") or "0"))
+                    leverage = pos.get("leverage", "")
+                    liquidation_price = Decimal(str(pos.get("breakPrice") or pos.get("liquidationPrice") or "0"))
+
+                normalized_symbol = pos_symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+                if normalized_target and normalized_symbol != normalized_target:
+                    continue
+
+                roe = Decimal("0")
+                if margin and margin != Decimal("0"):
+                    roe = (unrealized_pnl / margin) * Decimal("100")
+
+                unrealized_style = "green" if unrealized_pnl >= 0 else "red"
+                realized_style = "green" if realized_pnl >= 0 else "red"
+                roe_style = "green" if roe >= 0 else "red"
+
+                position_table.add_row(
+                    pos_symbol,
+                    side,
+                    f"{quantity:.8f}",
+                    f"{entry_price:.8f}",
+                    f"{mark_price:.8f}",
+                    f"{liquidation_price:.8f}",
+                    f"[{unrealized_style}]{unrealized_pnl:.8f}[/{unrealized_style}]",
+                    f"[{realized_style}]{realized_pnl:.8f}[/{realized_style}]",
+                    f"[{roe_style}]{roe:.2f}%[/{roe_style}]",
+                    f"{leverage}x" if leverage else "-",
+                )
+
+                positions_payload.append(
+                    {
+                        "symbol": pos_symbol,
+                        "positionSide": side,
+                        "positionSize": str(quantity),
+                        "entryPrice": str(entry_price),
+                        "calMarkPrice": str(mark_price),
+                        "floatingPL": str(unrealized_pnl),
+                        "realizedProfit": str(realized_pnl),
+                        "isolatedMargin": str(margin),
+                        "leverage": leverage,
+                        "roe": str(roe),
+                        "breakPrice": str(liquidation_price),
+                    }
+                )
+                rows_added += 1
+            except Exception as inner_exc:
+                logger.warning("Failed to parse position record", error=str(inner_exc))
+                if debug:
+                    console.print_exception()
+
+        if rows_added == 0:
+            if symbol:
+                console.print(f"[yellow]未发现 {symbol} 的持仓[/yellow]")
+            else:
+                console.print("[yellow]当前无持仓[/yellow]")
+            return
+
+        console.print(position_table)
+        console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]")
+
+        await xt_rest_service.save_position_updates(
+            positions_data=positions_payload,
+            query_type="scheduled",
+        )
+        console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
+
+    async def run_scheduler():
+        iteration = 0
+        try:
+            await db_manager.create_tables()
+            console.print("[green]✓[/green] 数据库表已就绪\n")
+
+            await perp_exchange.connect()
+            console.print("[green]✓[/green] 交易所连接成功\n")
+
+            iteration = 1
+            await fetch_positions(iteration)
+
+            while True:
+                await asyncio.sleep(interval * 60)
+                iteration += 1
+                await fetch_positions(iteration)
+
+        except KeyboardInterrupt:
+            console.print("\n[yellow]监控已停止[/yellow]")
+        finally:
+            try:
+                await perp_exchange.disconnect()
+            except Exception:
+                pass
+            await db_manager.close()
+
+    asyncio.run(run_scheduler())
+
 """Account management commands."""
 
 import asyncio
@@ -1141,6 +1320,26 @@ def watch_positions(
         # 验证 symbol 格式（如果提供）
         if symbol:
             symbol = validate_symbol(symbol)
+
+        if exchange == ExchangeName.XT:
+            final_api_key = api_key or os.getenv("XT_API_KEY", "")
+            final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
+
+            if not final_api_key or not final_api_secret:
+                console.print("[red]错误:[/red] 缺少XT API密钥配置")
+                console.print("\n请设置环境变量或使用命令行参数:")
+                console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
+                console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+                raise typer.Exit(code=1)
+
+            _run_xt_watch_positions(
+                interval=interval,
+                api_key=final_api_key,
+                api_secret=final_api_secret,
+                symbol=symbol,
+                debug=debug,
+            )
+            return
 
         # 创建 exchange 实例
         exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)

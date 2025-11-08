@@ -113,3 +113,34 @@ class XTPerpPosition(Base):
         Index('idx_xt_perp_position_query_type_time', 'query_type', 'query_time'),
     )
 
+
+class XTRestPositionUpdate(Base):
+    """XT永续仓位定时更新记录."""
+
+    __tablename__ = "xt_rest_position_updates"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    query_time = Column(DateTime, nullable=False, index=True)
+    query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+
+    symbol = Column(String(20), nullable=False, index=True)
+    position_side = Column(String(10), nullable=False)
+    position_amount = Column(Numeric(30, 10), nullable=False)
+    entry_price = Column(Numeric(30, 10), nullable=True)
+    mark_price = Column(Numeric(30, 10), nullable=True)
+    liquidation_price = Column(Numeric(30, 10), nullable=True)
+    unrealized_pnl = Column(Numeric(30, 10), nullable=True)
+    realized_pnl = Column(Numeric(30, 10), nullable=True)
+    margin = Column(Numeric(30, 10), nullable=True)
+    leverage = Column(String(10), nullable=True)
+    roe = Column(Numeric(10, 4), nullable=True)
+
+    raw_data = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('idx_xt_rest_position_symbol_time', 'symbol', 'query_time'),
+        Index('idx_xt_rest_position_side_time', 'position_side', 'query_time'),
+        Index('idx_xt_rest_position_query_type_time', 'query_type', 'query_time'),
+    )
+

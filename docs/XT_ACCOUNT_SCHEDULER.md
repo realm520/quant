@@ -64,6 +64,25 @@ XT账户数据存储在独立的专用表中，表名均以 `xt` 开头：
 - `raw_data`: 原始JSON数据（包含完整的API响应）
 - `created_at`: 创建时间
 
+### xt_rest_position_updates（XT合约仓位定时更新表）
+存储 `watch-positions` 命令定期写入的永续仓位快照：
+- `id`: 主键ID
+- `query_time`: 查询时间
+- `query_type`: 查询类型（scheduled, manual）
+- `symbol`: 交易对
+- `position_side`: 持仓方向
+- `position_amount`: 持仓数量
+- `entry_price`: 开仓均价
+- `mark_price`: 标记价格
+- `liquidation_price`: 强平价格
+- `unrealized_pnl`: 未实现盈亏
+- `realized_pnl`: 已实现盈亏
+- `margin`: 保证金
+- `leverage`: 杠杆倍数
+- `roe`: 收益率
+- `raw_data`: 原始JSON数据
+- `created_at`: 创建时间
+
 **注意**：
 - 所有表都包含 `raw_data` 列，用于保存完整的原始API响应数据
 - 表名均以 `xt` 开头，便于区分和管理
@@ -120,6 +139,16 @@ cextools account watch-account -x xt --debug
 - 每10分钟自动查询并显示
 - 数据自动保存到PostgreSQL数据库
 - 按 `Ctrl+C` 停止监控
+
+### watch-positions：仅监控永续仓位
+
+```bash
+cextools account watch-positions -x xt --interval 10
+```
+
+- 默认仅支持 XT 交易所；
+- 间隔可配置（分钟），默认为 10；
+- 仓位快照会写入 `xt_rest_position_updates` 表，可与 `watch-account` 输出的 `xt_perp_positions` 区分管理。
 
 **显示效果**：
 ```

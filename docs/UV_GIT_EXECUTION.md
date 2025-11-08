@@ -80,6 +80,11 @@ uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
 # 指定交易所/间隔/输出格式（示例：OKX 永续，每 5 分钟，JSON 输出）
 uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
   cextools account watch-balance -x okx -e perp --interval 5 --output json
+
+# 定时查询XT永续仓位（watch-positions）
+# 仓位快照会写入 xt_rest_position_updates 表
+uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
+  cextools account watch-positions -x xt --interval 10
 ```
 
 #### 订单（order）
@@ -144,6 +149,7 @@ uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
 
 > 说明：
 > - 订阅确认后（Subscription confirmed），进行划转/下单即可收到推送；
+> - 资金划转识别目前仅适用于 XT 永续 ↔ 现货账户的 USDT 余额变化，其他币种暂不支持；
 > - 连接断开后会自动重连，并执行固定 1 小时的断线回补（订单/成交），账户/持仓则同步最新状态；
 > - 如果仅需某一频道（如仅订单），可只传 `-c order`。
 

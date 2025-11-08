@@ -10,11 +10,13 @@
 - ✅ 实时成交记录推送
 - ✅ PostgreSQL数据持久化
 - ✅ 自动重连机制
+- ✅ XT资金划转分析（仅比较永续合约 ↔ 现货账户，当前只支持 USDT）
 
 ### 🔄 定时监控 (NEW!)
 - ✅ 定时查询余额 (`watch-balance`)
 - ✅ 定时查询订单 (`watch-orders`)
 - ✅ XT账户定时监控 (`watch-account`) - 现货余额、合约余额、合约仓位
+- ✅ XT仓位定时监控 (`watch-positions`) - 周期性保存永续仓位到独立表
 - ✅ 可配置时间间隔
 
 ### 📊 多交易所支持
@@ -53,6 +55,9 @@ cextools account watch-account
 # 定时查询余额（支持所有交易所）
 cextools account watch-balance -x xt -e spot --interval 5
 cextools account watch-balance -x xt -e perp --interval 5
+
+# 定时查询XT永续仓位（写入 xt_rest_position_updates）
+cextools account watch-positions -x xt --interval 5
 
 # 下单
 cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG

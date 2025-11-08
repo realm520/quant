@@ -1,3 +1,28 @@
+"""Account management commands."""
+
+import asyncio
+import datetime
+import json
+import logging
+import os
+from decimal import Decimal
+from typing import Any, Optional
+
+import typer
+from rich.console import Console
+
+from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
+from tri_arb.cli.formatters.table import format_balance_table, format_positions_table, format_open_orders_table
+from tri_arb.cli.formatters.json import print_json
+from tri_arb.cli.formatters.csv import print_csv
+from tri_arb.cli.utils.validators import validate_symbol
+from tri_arb.storage.database import DatabaseManager
+from tri_arb.storage.models import BinanceAccountBalance
+from tri_arb.storage.okx_models import OKXAccountBalance
+from tri_arb.storage.gate_models import GateAccountBalance
+from tri_arb.storage.xt_websocket_models import XTAccountUpdate
+
+
 def _run_xt_watch_positions(
     interval: int,
     api_key: str,
@@ -176,32 +201,6 @@ def _run_xt_watch_positions(
             await db_manager.close()
 
     asyncio.run(run_scheduler())
-
-"""Account management commands."""
-
-import asyncio
-import datetime
-import logging
-from decimal import Decimal
-from typing import Optional
-
-import typer
-from rich.console import Console
-
-from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
-from tri_arb.cli.formatters.table import format_balance_table, format_positions_table, format_open_orders_table
-from tri_arb.cli.formatters.json import print_json
-from tri_arb.cli.formatters.csv import print_csv
-from tri_arb.cli.utils.validators import validate_symbol
-from tri_arb.storage.database import DatabaseManager
-from tri_arb.storage.models import BinanceAccountBalance
-from tri_arb.storage.okx_models import OKXAccountBalance
-from tri_arb.storage.gate_models import GateAccountBalance
-from tri_arb.storage.xt_websocket_models import XTAccountUpdate
-from decimal import Decimal
-from typing import Any
-import json
-import os
 
 app = typer.Typer(help="账户管理命令")
 console = Console()

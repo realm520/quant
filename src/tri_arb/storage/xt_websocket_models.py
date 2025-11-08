@@ -40,6 +40,31 @@ class XTAccountUpdate(Base):
     )
 
 
+class XTSpotUpdate(Base):
+    """XT 现货账户余额快照.
+    
+    在处理合约账户余额变化时，记录对应时间点的现货账户余额。
+    """
+    
+    __tablename__ = "xt_spot_updates"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    update_time = Column(DateTime, nullable=False, index=True)  # 记录时间
+    
+    currency = Column(String(20), nullable=False, index=True)  # 币种
+    available = Column(Numeric(30, 10), nullable=False)  # 可用余额
+    frozen = Column(Numeric(30, 10), nullable=False)  # 冻结余额
+    total = Column(Numeric(30, 10), nullable=False)  # 总余额
+    
+    raw_data = Column(Text, nullable=True)  # 完整JSON数据
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('idx_xt_spot_currency_time', 'currency', 'update_time'),
+        Index('idx_xt_spot_time', 'update_time'),
+    )
+
+
 class XTPositionUpdate(Base):
     """XT WebSocket持仓更新记录.
     

@@ -28,6 +28,7 @@ from tri_arb.storage.xt_websocket_models import (
     XTAccountUpdate,
     XTOrderUpdate,
     XTPositionUpdate,
+    XTSpotUpdate,
     XTTradeUpdate,
     XTTransfer,
     XTWebSocketConnection,
@@ -132,6 +133,7 @@ class XTUserStreamService:
         self._recent_orders = {}  # 存储最近的订单，用于判断余额变化是否由交易引起
         self._recent_trades = {}  # 存储最近的成交，用于判断余额变化是否由交易引起
         self._last_spot_balances = {}  # 存储上次现货账户余额，用于划转分析
+        self._supported_transfer_currencies = {"USDT"}
         
         logger.debug("XT WebSocket service initialized",
                     extra={
@@ -2218,6 +2220,104 @@ class XTUserStreamService:
             logger.debug(f"Failed to get latest balance from DB for {currency}: {e}")
             return None
     
+    async def _get_latest_spot_balance_from_db(self, currency: str) -> Optional[Dict[str, Decimal]]:
+        """从数据库获取指定币种的最新现货余额快照."""
+        try:
+            from sqlalchemy import select
+            
+            async with self.db_manager.session() as session:
+                stmt = (
+                    select(XTSpotUpdate)
+                    .where(XTSpotUpdate.currency == currency.lower())
+                    .order_by(XTSpotUpdate.update_time.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                latest_record = result.scalar_one_or_none()
+                
+                if latest_record:
+                    return {
+                        "available": Decimal(str(latest_record.available)),
+                        "frozen": Decimal(str(latest_record.frozen)),
+                        "total": Decimal(str(latest_record.total)),
+                        "update_time": latest_record.update_time,
+                    }
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to get latest spot balance from DB for {currency}: {e}")
+            return None
+    
+    async def _save_spot_balance_snapshot(self, spot_balances: Dict[str, Dict[str, Any]]) -> None:
+        """保存现货账户余额快照到数据库."""
+        if not spot_balances:
+            return
+        
+        snapshot_time = datetime.utcnow()
+        normalized_balances: Dict[str, Dict[str, str]] = {}
+        
+        for currency, data in spot_balances.items():
+            try:
+                if currency.upper() not in self._supported_transfer_currencies:
+                    continue
+                normalized_balances[currency] = {
+                    "available": str(self._safe_decimal(data.get("available", "0"))),
+                    "frozen": str(self._safe_decimal(data.get("frozen", "0"))),
+                    "total": str(self._safe_decimal(data.get("total", "0"))),
+                }
+            except Exception as e:
+                logger.debug(
+                    "Failed to normalize spot balance data",
+                    extra={"currency": currency, "error": str(e)}
+                )
+                continue
+        
+        if not normalized_balances:
+            return
+        
+        raw_payload = json.dumps(normalized_balances, cls=DecimalEncoder)
+        records = []
+        for currency, values in normalized_balances.items():
+            records.append(
+                {
+                    "update_time": snapshot_time,
+                    "currency": currency.lower(),
+                    "available": self._safe_decimal(values["available"]),
+                    "frozen": self._safe_decimal(values["frozen"]),
+                    "total": self._safe_decimal(values["total"]),
+                    "raw_data": raw_payload,
+                }
+            )
+        
+        if not records:
+            return
+        
+        try:
+            async with self.db_manager.session() as session:
+                for payload in records:
+                    session.add(XTSpotUpdate(**payload))
+                await session.commit()
+        except Exception as e:
+            error_msg = str(e)
+            if "does not exist" in error_msg or "UndefinedTableError" in error_msg:
+                logger.error(
+                    "数据库表 xt_spot_updates 不存在。请运行以下命令创建表：",
+                    extra={"command": "cextools subscribe user-stream -x xt -c account --create-tables"}
+                )
+                try:
+                    logger.info("尝试自动创建缺失的 XT WebSocket 数据库表...")
+                    from tri_arb.storage.xt_websocket_models import Base as XTWebSocketBase
+                    async with self.db_manager.async_engine.begin() as conn:
+                        await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
+                    logger.info("XT WebSocket 数据库表创建成功，重试保存现货余额快照...")
+                    async with self.db_manager.session() as session:
+                        for payload in records:
+                            session.add(XTSpotUpdate(**payload))
+                        await session.commit()
+                except Exception as create_error:
+                    logger.error(f"自动创建现货余额快照表失败: {create_error}")
+            else:
+                logger.error(f"Failed to save spot balance snapshot: {e}")
+    
     async def _check_recent_trade_activity(self, currency: str, time_threshold: datetime) -> tuple[Optional[str], Optional[str], bool]:
         """检查最近的交易活动（使用REST API查询成交记录）.
         
@@ -2386,6 +2486,13 @@ class XTUserStreamService:
             (related_trade_id, related_order_id, is_trade): 如果检测到交易活动，返回相关信息
         """
         try:
+            if currency.upper() not in self._supported_transfer_currencies:
+                logger.debug(
+                    "Skipping transfer analysis for unsupported currency",
+                    extra={"currency": currency}
+                )
+                return None, None, True
+
             if not self.rest_client or not self.spot_client:
                 logger.debug("REST clients not available, skipping balance change analysis")
                 return None, None, False
@@ -2396,11 +2503,14 @@ class XTUserStreamService:
             if not self.spot_client.is_connected:
                 await self.spot_client.connect()
             
-            # 1. 查询现货账户余额
+            # 1. 查询现货账户余额（并获取数据库中的上一条记录）
+            previous_spot_record = await self._get_latest_spot_balance_from_db(currency)
+            spot_balances: Dict[str, Dict[str, Any]] = {}
             try:
                 spot_balances = await self.spot_client.get_balance()
                 spot_balance = spot_balances.get(currency.upper(), {})
                 spot_total = self._safe_decimal(spot_balance.get("total", "0"))
+                await self._save_spot_balance_snapshot(spot_balances)
             except Exception as e:
                 logger.debug(f"Failed to get spot balance for {currency}: {e}")
                 spot_total = None
@@ -2438,12 +2548,15 @@ class XTUserStreamService:
             # 4. 计算余额变化
             spot_change = None
             perp_change = None
-            if spot_total is not None and last_spot_balance:
-                spot_change = spot_total - last_spot_balance.get("total", Decimal("0"))
+            if spot_total is not None:
+                if previous_spot_record:
+                    spot_change = spot_total - previous_spot_record.get("total", Decimal("0"))
+                elif last_spot_balance:
+                    spot_change = spot_total - last_spot_balance.get("total", Decimal("0"))
             if perp_total is not None and last_perp_balance:
                 perp_change = perp_total - last_perp_balance.get("total", Decimal("0"))
             
-                logger.info(
+            logger.info(
                 f"Balance changes across accounts for {currency}",
                 extra={
                     "currency": currency,
@@ -2457,7 +2570,15 @@ class XTUserStreamService:
             
             transfer_detected = False
             tolerance = Decimal("0.01")
-            if spot_change is not None:
+
+            if spot_change is not None and perp_change is not None:
+                if balance_change > 0 and spot_change < 0 and abs(balance_change + spot_change) <= tolerance:
+                    transfer_detected = True
+                elif balance_change < 0 and spot_change > 0 and abs(balance_change + spot_change) <= tolerance:
+                    transfer_detected = True
+                elif abs(perp_change - balance_change) <= tolerance and abs(spot_change) <= tolerance:
+                    transfer_detected = True
+            elif spot_change is not None:
                 if balance_change > 0 and spot_change < 0 and abs(balance_change + spot_change) <= tolerance:
                     transfer_detected = True
                 elif balance_change < 0 and spot_change > 0 and abs(balance_change + spot_change) <= tolerance:
@@ -2467,6 +2588,8 @@ class XTUserStreamService:
 
             if spot_total is not None:
                 self._last_spot_balances[spot_cache_key] = {"total": spot_total}
+            if perp_total is not None:
+                self._last_account_balances[currency_key] = {"total": perp_total}
 
             if transfer_detected:
                 logger.info(
@@ -2508,6 +2631,12 @@ class XTUserStreamService:
                 # 单个余额对象
                 currency = account_data.get("coin", "")
                 if currency:
+                    if currency.upper() not in self._supported_transfer_currencies:
+                        logger.debug(
+                            "Skipping balance change analysis for unsupported currency",
+                            extra={"currency": currency}
+                        )
+                        return
                     current_balances[currency] = {
                         "available": self._safe_decimal(account_data.get("availableBalance", "0")),
                         "frozen": self._safe_decimal(account_data.get("openOrderMarginFrozen", "0")),
@@ -2519,6 +2648,12 @@ class XTUserStreamService:
                 for balance in balances:
                     currency = balance.get("currency", "")
                     if currency:
+                        if currency.upper() not in self._supported_transfer_currencies:
+                            logger.debug(
+                                "Skipping balance change analysis for unsupported currency",
+                                extra={"currency": currency}
+                            )
+                            continue
                         current_balances[currency] = {
                             "available": self._safe_decimal(balance.get("available", "0")),
                             "frozen": self._safe_decimal(balance.get("frozen", "0")),

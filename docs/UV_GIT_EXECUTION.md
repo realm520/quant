@@ -13,7 +13,49 @@ exec $SHELL -l
 uv --version
 uvx --version
 ```
-- 已准备好必要的环境变量（API Key、数据库连接等）。
+- 操作系统已安装 PostgreSQL，并具备创建数据库权限（示例命令假设数据库名为 trading）。
+- 已准备好必要的环境变量（API Key、数据库连接、Lark Webhook 等）。
+
+### 初始环境变量与数据库准备
+
+```bash
+# 1. 安装并启动 PostgreSQL（根据系统不同可能需要 apt/yum/brew 等命令）
+# 以 Debian/Ubuntu 为例：
+sudo apt update
+sudo apt install postgresql postgresql-contrib -y
+
+# 启动服务
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+
+# 创建数据库（若不存在）
+sudo -u postgres createdb trading 2>/dev/null || true
+
+# 如需创建新用户并授权（示例为用户 oliver）
+sudo -u postgres psql -c "CREATE USER oliver WITH PASSWORD 'your_password';" || true
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE trading TO oliver;"
+
+# 2. 导出环境变量（请根据实际信息替换）
+export XT_API_KEY="your_xt_api_key"
+export XT_API_SECRET="your_xt_api_secret"
+
+export OKX_API_KEY="your_okx_api_key"
+export OKX_API_SECRET="your_okx_api_secret"
+export OKX_PASSPHRASE="your_okx_passphrase"
+
+export BINANCE_API_KEY="your_binance_api_key"
+export BINANCE_API_SECRET="your_binance_api_secret"
+
+export DATABASE_URL="postgresql+asyncpg://oliver:your_password@localhost:5432/trading"
+
+# 如需启用 Lark 告警
+export LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/xxxx"
+# 若机器人开启签名校验才需要 SECRET
+export LARK_WEBHOOK_SECRET="your_sign_secret"
+
+# 可选：加载 .env 中的配置
+# source load_env.sh
+```
 
 ## 快速开始：直接运行 CLI
 你可以指定分支、Tag 或 Commit，按需选择其一：
@@ -85,8 +127,15 @@ uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
 # 仓位快照会写入 xt_rest_position_updates 表
 uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
   cextools account watch-positions -x xt --interval 10 \
+  --enable-lark \
   --lark-webhook "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx" \
-  --lark-secret "your_sign_secret"
+  --lark-secret "your_sign_secret"  # 可选
+
+# 或使用环境变量提供Webhook配置
+export LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/xxxx"
+export LARK_WEBHOOK_SECRET="your_sign_secret"
+uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
+  cextools account watch-positions -x xt --interval 10 --enable-lark
 ```
 
 #### 订单（order）
@@ -171,7 +220,7 @@ export OKX_PASSPHRASE="your_okx_passphrase"
 export BINANCE_API_KEY="your_binance_api_key"
 export BINANCE_API_SECRET="your_binance_api_secret"
 
-# 数据库（按实际用户/主机修改）
+# 数据库（按实际用户/主机修改）如用户名是oliver
 export DATABASE_URL="postgresql+asyncpg://oliver@localhost:5432/trading"
 
 # 若仓库根目录已有 .env，可：

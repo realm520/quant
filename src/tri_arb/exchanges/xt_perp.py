@@ -60,6 +60,7 @@ class XTPerpExchange(BaseExchange):
         self._api_secret = api_secret
         self._timeout = timeout
         self._recv_window_ms = 8000
+        self._server_time_endpoint = "https://sapi.xt.com/v4/public/time"
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
         self.perp = Perp("https://fapi.xt.com", api_key, api_secret)
@@ -112,8 +113,57 @@ class XTPerpExchange(BaseExchange):
         self.is_connected = False
         logger.info("Disconnected from XT perpetual futures exchange")
 
+    async def _get_server_timestamp(self) -> str:
+        """Fetch XT server time directly."""
+        try:
+            if self._server_time_endpoint.startswith("http"):
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    response = await client.get(
+                        self._server_time_endpoint,
+                        headers={"accept": "*/*", "Content-Type": "application/json"},
+                    )
+            else:
+                if self._client is None:
+                    raise RuntimeError("Exchange client not initialized")
+                response = await self._client.get(self._server_time_endpoint)
+            response.raise_for_status()
+            data = response.json()
+
+            server_time = None
+            if isinstance(data, dict):
+                container = data
+                if "result" in data and isinstance(data["result"], dict):
+                    container = data["result"]
+                for key in ("time", "serverTime", "timestamp", "ts"):
+                    value = container.get(key)
+                    if isinstance(value, (int, float)):
+                        server_time = int(value)
+                        break
+                    if isinstance(value, str) and value.isdigit():
+                        server_time = int(value)
+                        break
+            elif isinstance(data, (int, float)):
+                server_time = int(data)
+
+            if server_time is None:
+                raise ValueError(f"Server time response missing timestamp: {data}")
+
+            return str(server_time)
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch XT server time, falling back to local time",
+                error=str(exc),
+                endpoint=self._server_time_endpoint,
+            )
+            return str(int(time.time() * 1000))
+
     def _generate_signature(
-        self, method: str, path: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> dict[str, str]:
         """Generate HMAC-SHA256 signature for XT API authentication.
 
@@ -126,7 +176,7 @@ class XTPerpExchange(BaseExchange):
         Returns:
             Headers dict with signature and authentication fields
         """
-        timestamp = str(int(time.time() * 1000))
+        timestamp_value = timestamp or str(int(time.time() * 1000))
 
         # Build signature string based on content type
         if body is not None:
@@ -154,7 +204,7 @@ class XTPerpExchange(BaseExchange):
         return {
             "validate-signversion": "2",
             "xt-validate-appkey": self._api_key,
-            "xt-validate-timestamp": timestamp,
+            "xt-validate-timestamp": timestamp_value,
             "xt-validate-signature": sign,
             "xt-validate-algorithms": "HmacSHA256",
             "xt-validate-recvwindow": str(self._recv_window_ms),
@@ -196,7 +246,12 @@ class XTPerpExchange(BaseExchange):
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
         # Generate signature headers if auth required
-        headers = self._generate_signature(method, path, params, body) if require_auth else {}
+        timestamp = await self._get_server_timestamp() if require_auth else None
+        headers = (
+            self._generate_signature(method, path, params, body, timestamp=timestamp)
+            if require_auth
+            else {}
+        )
 
         # Make request
         try:

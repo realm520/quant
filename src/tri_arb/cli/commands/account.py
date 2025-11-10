@@ -386,6 +386,11 @@ def balance(
         None,
         "--lark-secret",
         help="Lark机器人签名密钥（若启用安全校验需提供）"
+    ),
+    enable_lark: bool = typer.Option(
+        False,
+        "--enable-lark",
+        help="是否启用 Lark 告警推送（默认 False）"
     )
 ):
     """查询账户余额.
@@ -1496,8 +1501,18 @@ def watch_positions(
         if symbol:
             symbol = validate_symbol(symbol)
 
-        webhook_url = lark_webhook
-        webhook_secret = lark_secret
+        webhook_url = None
+        webhook_secret = None
+        if enable_lark:
+            webhook_url = lark_webhook or os.getenv("LARK_WEBHOOK_URL")
+            if lark_secret is not None:
+                webhook_secret = lark_secret or None
+            else:
+                webhook_secret = os.getenv("LARK_WEBHOOK_SECRET")
+
+            if not webhook_url:
+                console.print("[yellow]未提供 Lark Webhook，跳过告警推送[/yellow]")
+                enable_lark = False
 
         if exchange == ExchangeName.XT:
             final_api_key = api_key or os.getenv("XT_API_KEY", "")
@@ -1516,8 +1531,8 @@ def watch_positions(
                 api_secret=final_api_secret,
                 symbol=symbol,
                 debug=debug,
-                lark_webhook=webhook_url,
-                lark_secret=webhook_secret,
+                lark_webhook=webhook_url if enable_lark else None,
+                lark_secret=webhook_secret if enable_lark else None,
             )
             return
 

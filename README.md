@@ -56,8 +56,10 @@ cextools account watch-account
 cextools account watch-balance -x xt -e spot --interval 5
 cextools account watch-balance -x xt -e perp --interval 5
 
-# 定时查询XT永续仓位（写入 xt_rest_position_updates）
-cextools account watch-positions -x xt --interval 5
+# 定时查询XT永续仓位（写入 xt_rest_position_updates，同时支持Lark告警）
+cextools account watch-positions -x xt --interval 5 \
+  --lark-webhook "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx" \
+  --lark-secret "your_sign_secret"
 
 # 下单
 cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG

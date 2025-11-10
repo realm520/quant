@@ -143,12 +143,15 @@ cextools account watch-account -x xt --debug
 ### watch-positions：仅监控永续仓位
 
 ```bash
-cextools account watch-positions -x xt --interval 10
+cextools account watch-positions -x xt --interval 10 \
+  --lark-webhook "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx" \
+  --lark-secret "your_sign_secret"
 ```
 
 - 默认仅支持 XT 交易所；
 - 间隔可配置（分钟），默认为 10；
 - 仓位快照会写入 `xt_rest_position_updates` 表，可与 `watch-account` 输出的 `xt_perp_positions` 区分管理。
+- 指定 `--lark-webhook/--lark-secret` 后，会将核心指标（标记价、爆仓价、ROE 等）推送到 Lark 群机器人。
 
 **显示效果**：
 ```

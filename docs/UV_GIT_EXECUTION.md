@@ -84,7 +84,9 @@ uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
 # 定时查询XT永续仓位（watch-positions）
 # 仓位快照会写入 xt_rest_position_updates 表
 uvx --from git+https://github.com/realm520/quant.git@feat/oliver \
-  cextools account watch-positions -x xt --interval 10
+  cextools account watch-positions -x xt --interval 10 \
+  --lark-webhook "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx" \
+  --lark-secret "your_sign_secret"
 ```
 
 #### 订单（order）

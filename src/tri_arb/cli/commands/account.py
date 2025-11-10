@@ -34,8 +34,8 @@ def _run_xt_watch_positions(
     api_secret: str,
     symbol: Optional[str],
     debug: bool,
-    alert_webhook_url: Optional[str] = None,
-    alert_secret_key: Optional[str] = None,
+    lark_webhook: Optional[str] = None,
+    lark_secret: Optional[str] = None,
 ) -> None:
     """运行XT永续仓位定时监控并写入数据库."""
     from rich.table import Table
@@ -181,10 +181,10 @@ def _run_xt_watch_positions(
         )
         console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
 
-        if alert_webhook_url:
+        if lark_webhook:
             await _send_lark_alert(
-                webhook_url=alert_webhook_url,
-                secret=alert_secret_key,
+                webhook_url=lark_webhook,
+                secret=lark_secret,
                 positions=positions_payload,
                 timestamp=current_time,
                 interval=interval,
@@ -342,12 +342,12 @@ def balance(
         "--debug",
         help="启用调试模式"
     ),
-    alert_webhook_url_param: Optional[str] = typer.Option(
+    lark_webhook: Optional[str] = typer.Option(
         None,
         "--lark-webhook",
         help="Lark群机器人Webhook URL，用于推送仓位告警"
     ),
-    alert_secret_key_param: Optional[str] = typer.Option(
+    lark_secret: Optional[str] = typer.Option(
         None,
         "--lark-secret",
         help="Lark机器人签名密钥（若启用安全校验需提供）"
@@ -809,6 +809,16 @@ def watch_balance(
         False,
         "--debug",
         help="启用调试模式"
+    ),
+    lark_webhook: Optional[str] = typer.Option(
+        None,
+        "--lark-webhook",
+        help="Lark群机器人Webhook URL，用于推送仓位告警"
+    ),
+    lark_secret: Optional[str] = typer.Option(
+        None,
+        "--lark-secret",
+        help="Lark机器人签名密钥（若启用安全校验需提供）"
     )
 ):
     """定时查询账户余额.
@@ -1410,6 +1420,16 @@ def watch_positions(
         False,
         "--debug",
         help="启用调试模式"
+    ),
+    lark_webhook: Optional[str] = typer.Option(
+        None,
+        "--lark-webhook",
+        help="Lark群机器人Webhook URL，用于推送仓位告警"
+    ),
+    lark_secret: Optional[str] = typer.Option(
+        None,
+        "--lark-secret",
+        help="Lark机器人签名密钥（若启用安全校验需提供）"
     )
 ):
     """定时查询持仓（仅永续合约）.
@@ -1441,8 +1461,8 @@ def watch_positions(
         if symbol:
             symbol = validate_symbol(symbol)
 
-        webhook_url = alert_webhook_url_param  # type: ignore[name-defined]
-        webhook_secret = alert_secret_key_param  # type: ignore[name-defined]
+        webhook_url = lark_webhook
+        webhook_secret = lark_secret
 
         if exchange == ExchangeName.XT:
             final_api_key = api_key or os.getenv("XT_API_KEY", "")
@@ -1461,8 +1481,8 @@ def watch_positions(
                 api_secret=final_api_secret,
                 symbol=symbol,
                 debug=debug,
-                alert_webhook_url=webhook_url,
-                alert_secret_key=webhook_secret,
+                lark_webhook=webhook_url,
+                lark_secret=webhook_secret,
             )
             return
 

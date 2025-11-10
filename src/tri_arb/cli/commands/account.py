@@ -300,6 +300,10 @@ async def _send_lark_alert(
                         "lark_message": data.get("msg"),
                     },
                 )
+                console.print(f"[red]Lark 返回非零 code:[/red] {data.get('code')}")
+                console.print(f"[red]Lark 返回消息:[/red] {data.get('msg')}")
+                return
+            console.print("[green]✓[/green] Lark 告警发送成功\n")
     except Exception as exc:
         logger.error(f"发送 Lark 告警失败: {exc}")
         if debug:

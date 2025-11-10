@@ -35,8 +35,8 @@ class XTSpotBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_spot_balance_asset_time', 'asset', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_spot_balance_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_xt_spot_balance_asset_time', 'asset', 'query_time'),
+        Index('idx_xt_spot_balance_query_type_time', 'query_type', 'query_time'),
     )
 
 
@@ -70,8 +70,8 @@ class XTPerpBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_perp_balance_asset_time', 'asset', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_perp_balance_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_xt_perp_balance_asset_time', 'asset', 'query_time'),
+        Index('idx_xt_perp_balance_query_type_time', 'query_type', 'query_time'),
     )
 
 
@@ -108,9 +108,9 @@ class XTPerpPosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_perp_position_symbol_time', 'symbol', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_perp_position_side_time', 'position_side', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_perp_position_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_xt_perp_position_symbol_time', 'symbol', 'query_time'),
+        Index('idx_xt_perp_position_side_time', 'position_side', 'query_time'),
+        Index('idx_xt_perp_position_query_type_time', 'query_type', 'query_time'),
     )
 
 
@@ -139,7 +139,7 @@ class XTRestPositionUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        Index('idx_xt_rest_position_symbol_time', 'symbol', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_rest_position_side_time', 'position_side', 'query_time', postgresql_if_not_exists=True),
-        Index('idx_xt_rest_position_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_xt_rest_position_symbol_time', 'symbol', 'query_time'),
+        Index('idx_xt_rest_position_side_time', 'position_side', 'query_time'),
+        Index('idx_xt_rest_position_query_type_time', 'query_type', 'query_time'),
     )

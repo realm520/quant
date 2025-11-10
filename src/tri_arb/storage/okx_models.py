@@ -42,7 +42,7 @@ class OKXAccountBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_okx_balance_currency_time', 'currency', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_okx_balance_currency_time', 'currency', 'update_time'),
     )
 
 
@@ -88,8 +88,8 @@ class OKXPosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_okx_position_inst_time', 'inst_id', 'update_time', postgresql_if_not_exists=True),
-        Index('idx_okx_position_side', 'pos_side', postgresql_if_not_exists=True),
+        Index('idx_okx_position_inst_time', 'inst_id', 'update_time'),
+        Index('idx_okx_position_side', 'pos_side'),
     )
 
 
@@ -149,8 +149,8 @@ class OKXOrder(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_okx_order_inst_state', 'inst_id', 'state', postgresql_if_not_exists=True),
-        Index('idx_okx_order_time', 'u_time', postgresql_if_not_exists=True),
+        Index('idx_okx_order_inst_state', 'inst_id', 'state'),
+        Index('idx_okx_order_time', 'u_time'),
         UniqueConstraint('ord_id', 'u_time', name='uq_okx_order_id_time'),  # 防止重复订单更新
     )
 
@@ -189,6 +189,6 @@ class OKXTrade(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_okx_trade_inst_time', 'inst_id', 'fill_time', postgresql_if_not_exists=True),
+        Index('idx_okx_trade_inst_time', 'inst_id', 'fill_time'),
         UniqueConstraint('trade_id', name='uq_okx_trade_id'),  # 防止重复成交记录
     )

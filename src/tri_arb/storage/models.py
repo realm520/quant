@@ -45,8 +45,8 @@ class AccountUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_exchange_event_time', 'exchange', 'event_time', postgresql_if_not_exists=True),
-        Index('idx_symbol_event_time', 'symbol', 'event_time', postgresql_if_not_exists=True),
+        Index('idx_exchange_event_time', 'exchange', 'event_time'),
+        Index('idx_symbol_event_time', 'symbol', 'event_time'),
     )
 
 
@@ -96,9 +96,9 @@ class OrderUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_order_id_event_time', 'order_id', 'event_time', postgresql_if_not_exists=True),
-        Index('idx_symbol_status', 'symbol', 'order_status', postgresql_if_not_exists=True),
-        Index('idx_exchange_symbol_time', 'exchange', 'symbol', 'event_time', postgresql_if_not_exists=True),
+        Index('idx_order_id_event_time', 'order_id', 'event_time'),
+        Index('idx_symbol_status', 'symbol', 'order_status'),
+        Index('idx_exchange_symbol_time', 'exchange', 'symbol', 'event_time'),
         # 唯一约束：防止重复记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'order_id', 'event_time', name='uq_order_update_event'),
     )
@@ -144,8 +144,8 @@ class TradeUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_symbol_trade_time', 'symbol', 'transaction_time', postgresql_if_not_exists=True),
-        Index('idx_order_trade', 'order_id', 'trade_id', postgresql_if_not_exists=True),
+        Index('idx_symbol_trade_time', 'symbol', 'transaction_time'),
+        Index('idx_order_trade', 'order_id', 'trade_id'),
         # 唯一约束：防止重复成交记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'trade_id', name='uq_trade_id'),
     )
@@ -199,7 +199,7 @@ class ConnectionStatus(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        Index('idx_exchange_connected', 'exchange', 'is_connected', postgresql_if_not_exists=True),
+        Index('idx_exchange_connected', 'exchange', 'is_connected'),
     )
 
 
@@ -224,5 +224,5 @@ class BinanceAccountBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        Index('idx_binance_balance_asset_time', 'asset', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_binance_balance_asset_time', 'asset', 'update_time'),
     )

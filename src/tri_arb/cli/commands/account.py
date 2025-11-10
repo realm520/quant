@@ -1,13 +1,18 @@
 """Account management commands."""
 
 import asyncio
+import base64
 import datetime
+import hashlib
+import hmac
 import json
 import logging
 import os
+import time
 from decimal import Decimal
 from typing import Any, Optional
 
+import httpx
 import typer
 from rich.console import Console
 
@@ -29,6 +34,8 @@ def _run_xt_watch_positions(
     api_secret: str,
     symbol: Optional[str],
     debug: bool,
+    alert_webhook_url: Optional[str] = None,
+    alert_secret_key: Optional[str] = None,
 ) -> None:
     """运行XT永续仓位定时监控并写入数据库."""
     from rich.table import Table
@@ -174,6 +181,16 @@ def _run_xt_watch_positions(
         )
         console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
 
+        if alert_webhook_url:
+            await _send_lark_alert(
+                webhook_url=alert_webhook_url,
+                secret=alert_secret_key,
+                positions=positions_payload,
+                timestamp=current_time,
+                interval=interval,
+                debug=debug,
+            )
+
     async def _ensure_xt_rest_tables():
         from tri_arb.storage.xt_rest_models import Base as XTRestBase
 
@@ -209,6 +226,82 @@ def _run_xt_watch_positions(
             await db_manager.close()
 
     asyncio.run(run_scheduler())
+
+
+async def _send_lark_alert(
+    webhook_url: str,
+    secret: Optional[str],
+    positions: list[dict[str, Any]],
+    timestamp: str,
+    interval: int,
+    debug: bool = False,
+) -> None:
+    """向 Lark 群发送仓位告警。"""
+    if not positions:
+        return
+
+    try:
+        selected = positions[:5]
+        lines: list[str] = []
+
+        for pos in selected:
+            try:
+                symbol = pos.get("symbol", "")
+                side = pos.get("positionSide", "")
+                mark_price = Decimal(pos.get("calMarkPrice") or pos.get("markPrice") or "0")
+                liquidation_price = Decimal(pos.get("breakPrice") or pos.get("liquidationPrice") or "0")
+                unrealized = Decimal(pos.get("floatingPL") or pos.get("unRealizedProfit") or "0")
+                margin = Decimal(pos.get("isolatedMargin") or pos.get("margin") or "0")
+                roe = Decimal(pos.get("roe") or "0")
+
+                if liquidation_price and liquidation_price != Decimal("0"):
+                    distance_pct = ((mark_price - liquidation_price) / liquidation_price) * Decimal("100")
+                else:
+                    distance_pct = Decimal("0")
+
+                lines.append(
+                    f"{symbol} [{side}] 标记价 {mark_price:.4f} | 爆仓价 {liquidation_price:.4f} | "
+                    f"距爆仓 {distance_pct:.2f}% | ROE {roe:.2f}% | 未实现PnL {unrealized:.4f} | 保证金 {margin:.4f}"
+                )
+            except Exception as parse_exc:
+                logger.debug(
+                    "格式化 Lark 告警行失败",
+                    extra={"error": str(parse_exc), "position": pos},
+                )
+
+        if not lines:
+            return
+
+        body = {
+            "msg_type": "text",
+            "content": {
+                "text": f"[XT 仓位监控]\n时间: {timestamp}\n间隔: {interval} 分钟\n" + "\n".join(lines)
+            },
+        }
+
+        params = None
+        if secret:
+            lark_timestamp = str(int(time.time()))
+            string_to_sign = f"{lark_timestamp}\n{secret}"
+            sign = base64.b64encode(
+                hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+            ).decode("utf-8")
+            params = {"timestamp": lark_timestamp, "sign": sign}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(webhook_url, params=params, json=body)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("code", 0) != 0:
+                logger.warning(
+                    "Lark 返回非零 code",
+                    extra={"code": data.get("code"), "msg": data.get("msg")},
+                )
+    except Exception as exc:
+        logger.error(f"发送 Lark 告警失败: {exc}")
+        if debug:
+            console.print_exception()
+
 
 app = typer.Typer(help="账户管理命令")
 console = Console()
@@ -248,6 +341,16 @@ def balance(
         False,
         "--debug",
         help="启用调试模式"
+    ),
+    alert_webhook_url_param: Optional[str] = typer.Option(
+        None,
+        "--lark-webhook",
+        help="Lark群机器人Webhook URL，用于推送仓位告警"
+    ),
+    alert_secret_key_param: Optional[str] = typer.Option(
+        None,
+        "--lark-secret",
+        help="Lark机器人签名密钥（若启用安全校验需提供）"
     )
 ):
     """查询账户余额.
@@ -348,6 +451,16 @@ def positions(
         False,
         "--debug",
         help="启用调试模式"
+    ),
+    alert_webhook: Optional[str] = typer.Option(
+        None,
+        "--lark-webhook",
+        help="Lark群机器人Webhook URL，用于推送仓位告警"
+    ),
+    alert_secret: Optional[str] = typer.Option(
+        None,
+        "--lark-secret",
+        help="Lark机器人签名密钥（若启用安全校验需提供）"
     )
 ):
     """查询持仓列表（仅永续合约）.
@@ -1328,6 +1441,9 @@ def watch_positions(
         if symbol:
             symbol = validate_symbol(symbol)
 
+        webhook_url = alert_webhook_url_param  # type: ignore[name-defined]
+        webhook_secret = alert_secret_key_param  # type: ignore[name-defined]
+
         if exchange == ExchangeName.XT:
             final_api_key = api_key or os.getenv("XT_API_KEY", "")
             final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
@@ -1345,6 +1461,8 @@ def watch_positions(
                 api_secret=final_api_secret,
                 symbol=symbol,
                 debug=debug,
+                alert_webhook_url=webhook_url,
+                alert_secret_key=webhook_secret,
             )
             return
 

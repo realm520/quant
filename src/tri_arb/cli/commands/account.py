@@ -850,16 +850,6 @@ def watch_balance(
         "--debug",
         help="启用调试模式"
     ),
-    lark_webhook: Optional[str] = typer.Option(
-        None,
-        "--lark-webhook",
-        help="Lark群机器人Webhook URL，用于推送仓位告警"
-    ),
-    lark_secret: Optional[str] = typer.Option(
-        None,
-        "--lark-secret",
-        help="Lark机器人签名密钥（若启用安全校验需提供）"
-    )
 ):
     """定时查询账户余额.
     
@@ -1470,6 +1460,11 @@ def watch_positions(
         None,
         "--lark-secret",
         help="Lark机器人签名密钥（若启用安全校验需提供）"
+    ),
+    enable_lark: bool = typer.Option(
+        False,
+        "--enable-lark/--disable-lark",
+        help="启用/禁用 Lark 告警推送（默认禁用）"
     )
 ):
     """定时查询持仓（仅永续合约）.

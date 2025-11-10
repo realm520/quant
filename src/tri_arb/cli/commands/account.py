@@ -295,7 +295,10 @@ async def _send_lark_alert(
             if data.get("code", 0) != 0:
                 logger.warning(
                     "Lark 返回非零 code",
-                    extra={"code": data.get("code"), "msg": data.get("msg")},
+                    extra={
+                        "lark_code": data.get("code"),
+                        "lark_message": data.get("msg"),
+                    },
                 )
     except Exception as exc:
         logger.error(f"发送 Lark 告警失败: {exc}")

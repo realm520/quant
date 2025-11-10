@@ -59,6 +59,7 @@ class XTPerpExchange(BaseExchange):
         self._api_key = api_key
         self._api_secret = api_secret
         self._timeout = timeout
+        self._recv_window_ms = 8000
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
         self.perp = Perp("https://fapi.xt.com", api_key, api_secret)
@@ -156,6 +157,7 @@ class XTPerpExchange(BaseExchange):
             "xt-validate-timestamp": timestamp,
             "xt-validate-signature": sign,
             "xt-validate-algorithms": "HmacSHA256",
+            "xt-validate-recvwindow": str(self._recv_window_ms),
             "Content-Type": "application/json" if body is not None else "application/x-www-form-urlencoded",
         }
 

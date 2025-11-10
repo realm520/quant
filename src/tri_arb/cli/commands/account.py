@@ -406,7 +406,7 @@ async def _evaluate_metrics(
             critical_threshold = result["critical_threshold"]
 
             logger.info(
-                "指标评估完成",
+                "余额波动率指标评估完成",
                 extra={
                     "metric": metric.name,
                     "type": metric.type,
@@ -417,8 +417,8 @@ async def _evaluate_metrics(
                 },
             )
 
-            if severity == "NORMAL":
-                continue
+            # if severity == "NORMAL":
+            #     continue
 
             message_lines = [
                 "[XT 指标监控]",

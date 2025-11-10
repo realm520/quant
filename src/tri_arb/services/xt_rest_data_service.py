@@ -156,6 +156,11 @@ class XTRestDataService:
                     # XT API uses isolatedMargin, but we also support margin for compatibility
                     margin = pos_data.get("isolatedMargin") or pos_data.get("margin")
                     roe = pos_data.get("roe")
+                    maint_margin = (
+                        pos_data.get("maintMargin")
+                        or pos_data.get("maintenanceMargin")
+                        or pos_data.get("maintMarginAmount")
+                    )
                     
                     # 保存原始数据（完整的API响应）
                     raw_data = json.dumps(pos_data, ensure_ascii=False, default=str)
@@ -177,6 +182,7 @@ class XTRestDataService:
                         liquidation_price=Decimal(str(liquidation_price)) if liquidation_price else None,
                         margin=Decimal(str(margin)) if margin else None,
                         roe=Decimal(str(roe)) if roe else None,
+                        maintenance_margin=Decimal(str(maint_margin)) if maint_margin else None,
                         raw_data=raw_data
                     )
                     session.add(position_record)
@@ -207,6 +213,11 @@ class XTRestDataService:
                     unrealized_pnl = pos_data.get("floatingPL") or pos_data.get("unRealizedProfit") or pos_data.get("unrealizedPnl")
                     realized_pnl = pos_data.get("realizedProfit") or pos_data.get("realizedPnl")
                     margin = pos_data.get("isolatedMargin") or pos_data.get("margin")
+                    maint_margin = (
+                        pos_data.get("maintMargin")
+                        or pos_data.get("maintenanceMargin")
+                        or pos_data.get("maintMarginAmount")
+                    )
                     leverage = pos_data.get("leverage")
                     roe = pos_data.get("roe")
 
@@ -224,6 +235,7 @@ class XTRestDataService:
                         margin=Decimal(str(margin)) if margin else None,
                         leverage=str(leverage) if leverage else None,
                         roe=Decimal(str(roe)) if roe else None,
+                        maintenance_margin=Decimal(str(maint_margin)) if maint_margin else None,
                         raw_data=json.dumps(pos_data, ensure_ascii=False, default=str),
                     )
                     session.add(record)

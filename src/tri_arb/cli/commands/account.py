@@ -26,9 +26,9 @@ from tri_arb.storage.models import BinanceAccountBalance
 from tri_arb.storage.okx_models import OKXAccountBalance
 from tri_arb.storage.gate_models import GateAccountBalance
 from tri_arb.storage.xt_websocket_models import XTAccountUpdate
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from tri_arb.storage.xt_rest_models import XTPerpBalance
+from tri_arb.storage.xt_rest_models import XTPerpBalance, XTPerpPosition
 from tri_arb.config.metrics_loader import (
     MetricsConfig,
     MetricDefinition,
@@ -459,6 +459,77 @@ async def _evaluate_metrics(
                     "指标达到阈值但 Lark 告警未启用",
                     extra={"metric": metric.name, "severity": severity},
                 )
+        elif metric.type in ("risk_ratio", "perp_risk_ratio"):
+            result = await _evaluate_risk_ratio(metric, db_manager)
+            if not result:
+                continue
+
+            severity = result["severity"]
+            risk_ratio = result["risk_ratio"]
+            available_margin = result["available_margin"]
+            maintenance_total = result["maintenance_total"]
+            floating_loss = result["floating_loss"]
+            warning_threshold = result["warning_threshold"]
+            critical_threshold = result["critical_threshold"]
+            position_count = result["position_count"]
+
+            logger.info(
+                "风险率指标评估完成",
+                extra={
+                    "metric": metric.name,
+                    "risk_ratio": str(risk_ratio),
+                    "severity": severity,
+                    "available_margin": str(available_margin),
+                    "maintenance_total": str(maintenance_total),
+                    "floating_loss": str(floating_loss),
+                    "positions": position_count,
+                },
+            )
+
+            if severity == "NORMAL":
+                continue
+
+            message_lines = [
+                "[XT 指标监控]",
+                f"指标: {metric.name}",
+                f"类型: 仓位风险率",
+                f"最新仓位数: {position_count}",
+                f"可用保证金: {available_margin:.4f}",
+                f"维持保证金合计: {maintenance_total:.4f}",
+                f"浮亏调整: {floating_loss:.4f}",
+                f"风险率: {risk_ratio:.4f}",
+                f"预警阈值: {warning_threshold:.4f}",
+                f"致命阈值: {critical_threshold:.4f}",
+                f"当前级别: {severity}",
+            ]
+            message = "\n".join(message_lines)
+
+            if enable_lark:
+                webhook = metric.lark_webhook or default_webhook
+                secret = metric.lark_secret or default_secret
+                if webhook:
+                    success = await _send_lark_text(
+                        webhook_url=webhook,
+                        secret=secret,
+                        text=message,
+                        debug=debug,
+                        success_message="[green]✓[/green] Lark 风险率告警已发送\n",
+                    )
+                    if not success:
+                        logger.warning(
+                            "风险率告警发送失败",
+                            extra={"metric": metric.name, "severity": severity},
+                        )
+                else:
+                    logger.warning(
+                        "风险率达到阈值但未配置 Lark Webhook",
+                        extra={"metric": metric.name, "severity": severity},
+                    )
+            else:
+                logger.warning(
+                    "风险率达到阈值但 Lark 告警未启用",
+                    extra={"metric": metric.name, "severity": severity},
+                )
 
 
 async def _evaluate_balance_volatility(
@@ -524,6 +595,136 @@ async def _evaluate_balance_volatility(
         "sample_count": sample_count,
         "warning_threshold": warning_threshold,
         "critical_threshold": critical_threshold,
+    }
+
+
+async def _evaluate_risk_ratio(
+    metric: MetricDefinition,
+    db_manager: DatabaseManager,
+) -> Optional[dict[str, Any]]:
+    """计算 XT 合约仓位风险率."""
+    asset = str(metric.parameters.get("asset", "USDT")).upper()
+
+    async with db_manager.session() as session:
+        balance_stmt = (
+            select(XTPerpBalance.free, XTPerpBalance.query_time)
+            .where(XTPerpBalance.asset == asset)
+            .order_by(XTPerpBalance.query_time.desc())
+            .limit(1)
+        )
+        balance_result = await session.execute(balance_stmt)
+        balance_row = balance_result.first()
+
+        if not balance_row or balance_row[0] is None:
+            logger.debug(
+                "未找到合约余额记录，跳过风险率评估",
+                extra={"metric": metric.name, "asset": asset},
+            )
+            return None
+
+        available_margin = Decimal(str(balance_row[0]))
+        if available_margin <= 0:
+            logger.warning(
+                "可用保证金为0，无法计算风险率",
+                extra={"metric": metric.name, "asset": asset},
+            )
+            return None
+
+        latest_time_result = await session.execute(
+            select(func.max(XTPerpPosition.query_time))
+        )
+        latest_query_time = latest_time_result.scalar()
+
+        if latest_query_time is None:
+            logger.debug(
+                "未找到仓位记录，跳过风险率评估",
+                extra={"metric": metric.name},
+            )
+            return None
+
+        position_stmt = (
+            select(
+                XTPerpPosition.maintenance_margin,
+                XTPerpPosition.unrealized_pnl,
+                XTPerpPosition.raw_data,
+            )
+            .where(XTPerpPosition.query_time == latest_query_time)
+        )
+        position_result = await session.execute(position_stmt)
+        position_rows = position_result.all()
+
+    if not position_rows:
+        logger.debug(
+            "仓位列表为空，风险率为0",
+            extra={"metric": metric.name},
+        )
+        return None
+
+    maintenance_total = Decimal("0")
+    floating_loss = Decimal("0")
+    position_count = 0
+
+    for maint_val, unrealized_val, raw_data in position_rows:
+        maintenance_margin = Decimal(str(maint_val)) if maint_val is not None else None
+        unrealized = Decimal(str(unrealized_val)) if unrealized_val is not None else None
+
+        if maintenance_margin is None or unrealized is None:
+            maint_fallback = None
+            unrealized_fallback = None
+            if raw_data:
+                try:
+                    raw = json.loads(raw_data)
+                    maint_fallback = (
+                        raw.get("maintMargin")
+                        or raw.get("maintenanceMargin")
+                        or raw.get("maintMarginAmount")
+                    )
+                    unrealized_fallback = (
+                        raw.get("floatingPL")
+                        or raw.get("unRealizedProfit")
+                        or raw.get("unrealizedPnl")
+                    )
+                except json.JSONDecodeError:
+                    logger.debug(
+                        "解析仓位 raw_data 失败",
+                        extra={"metric": metric.name},
+                    )
+
+            if maintenance_margin is None and maint_fallback is not None:
+                maintenance_margin = Decimal(str(maint_fallback))
+            if unrealized is None and unrealized_fallback is not None:
+                unrealized = Decimal(str(unrealized_fallback))
+
+        if maintenance_margin is None:
+            maintenance_margin = Decimal("0")
+        if unrealized is None:
+            unrealized = Decimal("0")
+
+        maintenance_total += maintenance_margin
+        floating_loss += max(Decimal("0"), -unrealized)
+        position_count += 1
+
+    numerator = maintenance_total + floating_loss
+    risk_ratio = numerator / available_margin if available_margin > 0 else Decimal("0")
+
+    warning_threshold = Decimal(str(metric.warning_threshold))
+    critical_threshold = Decimal(str(metric.critical_threshold))
+
+    severity = "NORMAL"
+    if critical_threshold > 0 and risk_ratio >= critical_threshold:
+        severity = "CRITICAL"
+    elif warning_threshold > 0 and risk_ratio >= warning_threshold:
+        severity = "WARNING"
+
+    return {
+        "severity": severity,
+        "risk_ratio": risk_ratio,
+        "available_margin": available_margin,
+        "maintenance_total": maintenance_total,
+        "floating_loss": floating_loss,
+        "warning_threshold": warning_threshold,
+        "critical_threshold": critical_threshold,
+        "position_count": position_count,
     }
 
 
@@ -1231,6 +1432,12 @@ def watch_account(
         "--enable-lark",
         help="启用 Lark 告警推送（需配置 webhook）"
     ),
+    interval_minutes: int = typer.Option(
+        10,
+        "--interval",
+        "-i",
+        help="查询间隔（分钟），默认 10 分钟"
+    ),
     lark_webhook: Optional[str] = typer.Option(
         None,
         "--lark-webhook",
@@ -1254,7 +1461,7 @@ def watch_account(
 ):
     """定时获取账户数据（现货余额、合约余额、合约仓位）.
     
-    每10分钟自动获取一次交易所的：
+    每个周期自动获取一次交易所的：
     - 现货账户余额
     - 合约账户余额  
     - 合约账户仓位
@@ -1314,8 +1521,12 @@ def watch_account(
                 logger.info("指标配置为空，跳过指标评估")
                 metrics_definition = None
 
+        if interval_minutes <= 0:
+            console.print("[red]错误:[/red] 查询间隔必须大于 0 分钟")
+            raise typer.Exit(code=1)
+
         console.print("[cyan]启动XT账户定时任务服务[/cyan]")
-        console.print("[cyan]查询间隔: 10分钟（固定）[/cyan]")
+        console.print(f"[cyan]查询间隔: {interval_minutes} 分钟[/cyan]")
         console.print("[cyan]监控内容:[/cyan]")
         console.print("  • 现货账户余额")
         console.print("  • 合约账户余额")
@@ -1358,10 +1569,10 @@ def watch_account(
                 iteration = 1
                 await fetch_and_display(iteration)
                 
-                # 定时查询循环（每10分钟）
+                # 定时查询循环
                 try:
                     while True:
-                        await asyncio.sleep(10 * 60)  # 等待10分钟
+                        await asyncio.sleep(interval_minutes * 60)
                         iteration += 1
                         await fetch_and_display(iteration)
                 except KeyboardInterrupt:
@@ -1581,6 +1792,7 @@ def watch_account(
                                     "isolatedMargin": str(pos.margin) if hasattr(pos, 'margin') else "0",  # XT API uses isolatedMargin
                                     "roe": str(roe),
                                     "breakPrice": str(liquidation_price),  # XT API uses breakPrice
+                                    "maintMargin": str(getattr(pos, "maintenance_margin", Decimal("0"))),
                                     # 保留兼容字段名
                                     "positionAmt": str(quantity),
                                     "markPrice": str(mark_price),
@@ -1622,9 +1834,9 @@ def watch_account(
                     )
                 
                 # 显示下次查询时间
-                next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=10)
+                next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
                 console.print(f"\n[dim]下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
-                console.print(f"[dim]等待 10 分钟...[/dim]\n")
+                console.print(f"[dim]等待 {interval_minutes} 分钟...[/dim]\n")
                 
             except Exception as e:
                 console.print(f"[red]查询过程出错:[/red] {e}")

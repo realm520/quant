@@ -1203,6 +1203,11 @@ class XTPerpExchange(BaseExchange):
                 realized_profit_raw = item.get("realizedProfit")
                 leverage_raw = item.get("leverage")
                 isolated_margin_raw = item.get("isolatedMargin")
+                maint_margin_raw = (
+                    item.get("maintMargin")
+                    or item.get("maintenanceMargin")
+                    or item.get("maintMarginAmount")
+                )
 
                 # Skip closed positions (quantity = 0)
                 # API may return historical positions with zero quantity
@@ -1271,6 +1276,13 @@ class XTPerpExchange(BaseExchange):
                 )
                 # Store realized_pnl as an attribute for later use
                 position.realized_pnl = realized_pnl
+                if maint_margin_raw is not None:
+                    try:
+                        position.maintenance_margin = Decimal(str(maint_margin_raw))
+                    except Exception:
+                        position.maintenance_margin = Decimal("0")
+                else:
+                    position.maintenance_margin = Decimal("0")
                 positions.append(position)
         else:
             logger.warning(

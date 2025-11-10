@@ -54,6 +54,7 @@ class XTPerpBalance(Base):
     
     # 余额信息
     asset = Column(String(20), nullable=False, index=True)  # 资产类型（如USDT, BTC）
+    
     free = Column(Numeric(30, 10), nullable=False)  # 可用余额
     locked = Column(Numeric(30, 10), nullable=False)  # 冻结余额
     total = Column(Numeric(30, 10), nullable=False)  # 总余额
@@ -102,6 +103,7 @@ class XTPerpPosition(Base):
     liquidation_price = Column(Numeric(30, 10), nullable=True)  # 强平价格
     margin = Column(Numeric(30, 10), nullable=True)  # 保证金
     roe = Column(Numeric(10, 4), nullable=True)  # 收益率百分比
+    maintenance_margin = Column(Numeric(30, 10), nullable=True)  # 维持保证金
     
     # 原始数据
     raw_data = Column(Text, nullable=True)  # 完整JSON原始数据
@@ -134,6 +136,7 @@ class XTRestPositionUpdate(Base):
     margin = Column(Numeric(30, 10), nullable=True)
     leverage = Column(String(10), nullable=True)
     roe = Column(Numeric(10, 4), nullable=True)
+    maintenance_margin = Column(Numeric(30, 10), nullable=True)
 
     raw_data = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

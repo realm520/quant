@@ -272,24 +272,24 @@ async def _send_lark_alert(
         if not lines:
             return
 
-        body = {
+        body: dict[str, Any] = {
             "msg_type": "text",
             "content": {
                 "text": f"[XT 仓位监控]\n时间: {timestamp}\n间隔: {interval} 分钟\n" + "\n".join(lines)
             },
         }
 
-        params = None
         if secret:
             lark_timestamp = str(int(time.time()))
             string_to_sign = f"{lark_timestamp}\n{secret}"
             sign = base64.b64encode(
                 hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
             ).decode("utf-8")
-            params = {"timestamp": lark_timestamp, "sign": sign}
+            body["timestamp"] = lark_timestamp
+            body["sign"] = sign
 
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(webhook_url, params=params, json=body)
+            response = await client.post(webhook_url, json=body)
             response.raise_for_status()
             data = response.json()
             if data.get("code", 0) != 0:

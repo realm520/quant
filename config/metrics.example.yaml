@@ -1,0 +1,11 @@
+exchanges:
+  xt:
+    metrics:
+      perp_balance_volatility:
+        type: balance_volatility
+        window_minutes: 1440         # 统计窗口（分钟）
+        warning_threshold: 0.05      # 5% 波动率触发预警
+        critical_threshold: 0.10     # 10% 波动率触发严重告警
+        lark_webhook: ${LARK_WEBHOOK_URL}
+        lark_secret: ${LARK_WEBHOOK_SECRET:-}
+

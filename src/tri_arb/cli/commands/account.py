@@ -26,6 +26,14 @@ from tri_arb.storage.models import BinanceAccountBalance
 from tri_arb.storage.okx_models import OKXAccountBalance
 from tri_arb.storage.gate_models import GateAccountBalance
 from tri_arb.storage.xt_websocket_models import XTAccountUpdate
+from sqlalchemy import select
+
+from tri_arb.storage.xt_rest_models import XTPerpBalance
+from tri_arb.config.metrics_loader import (
+    MetricsConfig,
+    MetricDefinition,
+    load_metrics_config,
+)
 
 
 def _run_xt_watch_positions(
@@ -228,6 +236,84 @@ def _run_xt_watch_positions(
     asyncio.run(run_scheduler())
 
 
+def _sign_payload(base: dict[str, Any], secret: str, use_milliseconds: bool) -> dict[str, Any]:
+    """为 Lark 请求生成签名。"""
+    multiplier = 1000 if use_milliseconds else 1
+    lark_timestamp = str(int(time.time() * multiplier))
+    string_to_sign = f"{lark_timestamp}\n{secret}"
+    sign = base64.b64encode(
+        hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+    ).decode("utf-8")
+    signed = {**base}
+    signed["timestamp"] = lark_timestamp
+    signed["sign"] = sign
+    return signed
+
+
+async def _send_lark_text(
+    webhook_url: str,
+    secret: Optional[str],
+    text: str,
+    debug: bool = False,
+    success_message: Optional[str] = None,
+) -> bool:
+    """向 Lark 发送文本消息。"""
+    if not webhook_url:
+        return False
+
+    base_body: dict[str, Any] = {
+        "msg_type": "text",
+        "content": {"text": text},
+    }
+
+    payload_attempts: list[dict[str, Any]] = []
+    if secret:
+        payload_attempts.append(_sign_payload(base_body, secret, use_milliseconds=False))
+        payload_attempts.append(_sign_payload(base_body, secret, use_milliseconds=True))
+    else:
+        payload_attempts.append(base_body)
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            for attempt_idx, payload in enumerate(payload_attempts):
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get("code", 0) == 0:
+                    if success_message:
+                        console.print(success_message)
+                    return True
+
+                should_retry = (
+                    secret is not None
+                    and data.get("code") == 19021
+                    and attempt_idx == 0
+                )
+                logger.warning(
+                    "Lark 返回非零 code",
+                    extra={
+                        "lark_code": data.get("code"),
+                        "lark_message": data.get("msg"),
+                        "attempt": attempt_idx + 1,
+                        "retry": should_retry,
+                    },
+                )
+                console.print(f"[red]Lark 返回非零 code:[/red] {data.get('code')}")
+                console.print(f"[red]Lark 返回消息:[/red] {data.get('msg')}")
+
+                if should_retry:
+                    console.print("[yellow]Lark 签名校验失败，尝试使用毫秒时间戳重试...[/yellow]")
+                    continue
+
+                return False
+    except Exception as exc:
+        logger.error(f"发送 Lark 告警失败: {exc}")
+        if debug:
+            console.print_exception()
+    return False
+
+
 async def _send_lark_alert(
     webhook_url: str,
     secret: Optional[str],
@@ -272,70 +358,173 @@ async def _send_lark_alert(
         if not lines:
             return
 
-        body: dict[str, Any] = {
-            "msg_type": "text",
-            "content": {
-                "text": f"[XT 仓位监控]\n时间: {timestamp}\n间隔: {interval} 分钟\n" + "\n".join(lines)
-            },
-        }
-
-        def _sign_payload(base: dict[str, Any], use_milliseconds: bool) -> dict[str, Any]:
-            if not secret:
-                return base
-            multiplier = 1000 if use_milliseconds else 1
-            lark_timestamp = str(int(time.time() * multiplier))
-            string_to_sign = f"{lark_timestamp}\n{secret}"
-            sign = base64.b64encode(
-                hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
-            ).decode("utf-8")
-            signed = {**base}
-            signed["timestamp"] = lark_timestamp
-            signed["sign"] = sign
-            return signed
-
-        async with httpx.AsyncClient(timeout=10) as client:
-            payload_attempts: list[dict[str, Any]] = []
-            if secret:
-                payload_attempts.append(_sign_payload(body, use_milliseconds=False))
-                payload_attempts.append(_sign_payload(body, use_milliseconds=True))
-            else:
-                payload_attempts.append(body)
-
-            for attempt_idx, payload in enumerate(payload_attempts):
-                response = await client.post(webhook_url, json=payload)
-                response.raise_for_status()
-                data = response.json()
-
-                if data.get("code", 0) == 0:
-                    console.print("[green]✓[/green] Lark 告警发送成功\n")
-                    break
-
-                should_retry = (
-                    secret is not None
-                    and data.get("code") == 19021
-                    and attempt_idx == 0
-                )
-                logger.warning(
-                    "Lark 返回非零 code",
-                    extra={
-                        "lark_code": data.get("code"),
-                        "lark_message": data.get("msg"),
-                        "attempt": attempt_idx + 1,
-                        "retry": should_retry,
-                    },
-                )
-                console.print(f"[red]Lark 返回非零 code:[/red] {data.get('code')}")
-                console.print(f"[red]Lark 返回消息:[/red] {data.get('msg')}")
-
-                if should_retry:
-                    console.print("[yellow]Lark 签名校验失败，尝试使用毫秒时间戳重试...[/yellow]")
-                    continue
-
-                break
+        message = "[XT 仓位监控]\n时间: {ts}\n间隔: {interval} 分钟\n{details}".format(
+            ts=timestamp,
+            interval=interval,
+            details="\n".join(lines),
+        )
+        await _send_lark_text(
+            webhook_url=webhook_url,
+            secret=secret,
+            text=message,
+            debug=debug,
+            success_message="[green]✓[/green] Lark 告警发送成功\n",
+        )
     except Exception as exc:
         logger.error(f"发送 Lark 告警失败: {exc}")
         if debug:
             console.print_exception()
+
+
+async def _evaluate_metrics(
+    metrics_config: Optional[MetricsConfig],
+    db_manager: DatabaseManager,
+    enable_lark: bool,
+    default_webhook: Optional[str],
+    default_secret: Optional[str],
+    debug: bool,
+) -> None:
+    """Evaluate configured metrics and optionally send alerts."""
+    if not metrics_config or not metrics_config.exchanges:
+        return
+
+    exchange_config = metrics_config.get_exchange("xt")
+    if not exchange_config or not exchange_config.metrics:
+        return
+
+    for metric in exchange_config.metrics:
+        if metric.type == "balance_volatility":
+            result = await _evaluate_balance_volatility(metric, db_manager)
+            if not result:
+                continue
+
+            severity = result["severity"]
+            volatility = result["volatility"]
+            window_minutes = result["window_minutes"]
+            sample_count = result["sample_count"]
+            warning_threshold = result["warning_threshold"]
+            critical_threshold = result["critical_threshold"]
+
+            logger.info(
+                "指标评估完成",
+                extra={
+                    "metric": metric.name,
+                    "type": metric.type,
+                    "severity": severity,
+                    "volatility": str(volatility),
+                    "samples": sample_count,
+                    "window_minutes": window_minutes,
+                },
+            )
+
+            if severity == "NORMAL":
+                continue
+
+            message_lines = [
+                "[XT 指标监控]",
+                f"指标: {metric.name}",
+                f"类型: 合约余额波动率",
+                f"窗口: {window_minutes} 分钟 (样本 {sample_count} 条)",
+                f"波动率: {float(volatility * Decimal('100')):.2f}%",
+                f"预警阈值: {float(warning_threshold * Decimal('100')):.2f}%",
+                f"致命阈值: {float(critical_threshold * Decimal('100')):.2f}%",
+                f"当前级别: {severity}",
+            ]
+
+            message = "\n".join(message_lines)
+
+            if enable_lark:
+                webhook = metric.lark_webhook or default_webhook
+                secret = metric.lark_secret or default_secret
+                if webhook:
+                    success = await _send_lark_text(
+                        webhook_url=webhook,
+                        secret=secret,
+                        text=message,
+                        debug=debug,
+                        success_message="[green]✓[/green] Lark 指标告警已发送\n",
+                    )
+                    if not success:
+                        logger.warning(
+                            "指标告警发送失败",
+                            extra={"metric": metric.name, "severity": severity},
+                        )
+                else:
+                    logger.warning(
+                        "指标达到阈值但未配置 Lark Webhook",
+                        extra={"metric": metric.name, "severity": severity},
+                    )
+            else:
+                logger.warning(
+                    "指标达到阈值但 Lark 告警未启用",
+                    extra={"metric": metric.name, "severity": severity},
+                )
+
+
+async def _evaluate_balance_volatility(
+    metric: MetricDefinition,
+    db_manager: DatabaseManager,
+) -> Optional[dict[str, Any]]:
+    """Calculate intraday balance volatility for XT perpetual account."""
+    window_minutes = max(metric.window_minutes, 0)
+    if window_minutes <= 0:
+        logger.debug(
+            "指标窗口配置无效，跳过评估",
+            extra={"metric": metric.name, "window_minutes": metric.window_minutes},
+        )
+        return None
+
+    end_time = datetime.datetime.utcnow()
+    start_time = end_time - datetime.timedelta(minutes=window_minutes)
+
+    async with db_manager.session() as session:
+        stmt = (
+            select(XTPerpBalance.total, XTPerpBalance.query_time)
+            .where(XTPerpBalance.query_time >= start_time)
+            .order_by(XTPerpBalance.query_time.asc())
+        )
+        result = await session.execute(stmt)
+        rows = result.all()
+
+    totals: list[Decimal] = []
+    for total, _query_time in rows:
+        if total is not None:
+            totals.append(Decimal(total))
+
+    sample_count = len(totals)
+    if sample_count < 2:
+        logger.debug(
+            "样本数量不足，跳过指标评估",
+            extra={"metric": metric.name, "sample_count": sample_count},
+        )
+        return None
+
+    max_total = max(totals)
+    min_total = min(totals)
+    avg_total = sum(totals) / sample_count if sample_count else Decimal("0")
+
+    if avg_total == 0:
+        volatility = Decimal("0")
+    else:
+        volatility = (max_total - min_total) / avg_total
+
+    warning_threshold = Decimal(str(metric.warning_threshold))
+    critical_threshold = Decimal(str(metric.critical_threshold))
+
+    severity = "NORMAL"
+    if critical_threshold > 0 and volatility >= critical_threshold:
+        severity = "CRITICAL"
+    elif warning_threshold > 0 and volatility >= warning_threshold:
+        severity = "WARNING"
+
+    return {
+        "severity": severity,
+        "volatility": volatility,
+        "window_minutes": window_minutes,
+        "sample_count": sample_count,
+        "warning_threshold": warning_threshold,
+        "critical_threshold": critical_threshold,
+    }
 
 
 app = typer.Typer(help="账户管理命令")
@@ -1036,7 +1225,32 @@ def watch_account(
         False,
         "--debug",
         help="启用调试模式"
-    )
+    ),
+    enable_lark: bool = typer.Option(
+        False,
+        "--enable-lark",
+        help="启用 Lark 告警推送（需配置 webhook）"
+    ),
+    lark_webhook: Optional[str] = typer.Option(
+        None,
+        "--lark-webhook",
+        help="Lark 群机器人 Webhook，未提供时可使用环境变量 LARK_WEBHOOK_URL"
+    ),
+    lark_secret: Optional[str] = typer.Option(
+        None,
+        "--lark-secret",
+        help="Lark 机器人签名密钥（可选；未提供则不做签名）"
+    ),
+    metrics_config: Optional[str] = typer.Option(
+        None,
+        "--metrics-config",
+        help="指标配置文件路径（YAML）。未提供时可使用环境变量 METRICS_CONFIG_PATH"
+    ),
+    enable_metrics: bool = typer.Option(
+        True,
+        "--enable-metrics/--disable-metrics",
+        help="是否启用指标评估（默认启用）"
+    ),
 ):
     """定时获取账户数据（现货余额、合约余额、合约仓位）.
     
@@ -1079,6 +1293,27 @@ def watch_account(
             console.print("\n注意: XT交易所的现货和合约使用同一套API密钥")
             raise typer.Exit(code=1)
         
+        webhook_url: Optional[str] = None
+        webhook_secret: Optional[str] = None
+        if enable_lark:
+            webhook_url = lark_webhook or os.getenv("LARK_WEBHOOK_URL")
+            if lark_secret is not None:
+                webhook_secret = lark_secret or None
+            else:
+                webhook_secret = os.getenv("LARK_WEBHOOK_SECRET")
+
+            if not webhook_url:
+                console.print("[yellow]未提供 Lark Webhook，禁用告警推送[/yellow]")
+                enable_lark = False
+
+        metrics_definition: Optional[MetricsConfig] = None
+        if enable_metrics:
+            metrics_path = metrics_config or os.getenv("METRICS_CONFIG_PATH")
+            metrics_definition = load_metrics_config(metrics_path)
+            if not metrics_definition.exchanges:
+                logger.info("指标配置为空，跳过指标评估")
+                metrics_definition = None
+
         console.print("[cyan]启动XT账户定时任务服务[/cyan]")
         console.print("[cyan]查询间隔: 10分钟（固定）[/cyan]")
         console.print("[cyan]监控内容:[/cyan]")
@@ -1375,6 +1610,16 @@ def watch_account(
                     console.print(f"[red]获取仓位失败:[/red] {e}\n")
                     if debug:
                         console.print_exception()
+                
+                if metrics_definition:
+                    await _evaluate_metrics(
+                        metrics_config=metrics_definition,
+                        db_manager=db_manager,
+                        enable_lark=enable_lark,
+                        default_webhook=webhook_url,
+                        default_secret=webhook_secret,
+                        debug=debug,
+                    )
                 
                 # 显示下次查询时间
                 next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=10)

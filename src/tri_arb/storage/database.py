@@ -75,18 +75,12 @@ class DatabaseManager:
     async def create_tables(self):
         """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API）。"""
         async with self.async_engine.begin() as conn:
-            # 创建Binance表
-            await conn.run_sync(BinanceBase.metadata.create_all)
-            # 创建OKX表
-            await conn.run_sync(OKXBase.metadata.create_all)
-            # 创建Gate.io表
-            await conn.run_sync(GateBase.metadata.create_all)
-            # 创建XT WebSocket表
-            await conn.run_sync(XTWebSocketBase.metadata.create_all)
-            # 创建REST API表
-            await conn.run_sync(RestBase.metadata.create_all)
-            # 创建XT REST API表（独立的现货、合约表）
-            await conn.run_sync(XTRestBase.metadata.create_all)
+            await conn.run_sync(lambda sync_conn: BinanceBase.metadata.create_all(sync_conn, checkfirst=True))
+            await conn.run_sync(lambda sync_conn: OKXBase.metadata.create_all(sync_conn, checkfirst=True))
+            await conn.run_sync(lambda sync_conn: GateBase.metadata.create_all(sync_conn, checkfirst=True))
+            await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
+            await conn.run_sync(lambda sync_conn: RestBase.metadata.create_all(sync_conn, checkfirst=True))
+            await conn.run_sync(lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True))
         logger.info("Database tables created (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API)")
     
     async def drop_tables(self):

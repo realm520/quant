@@ -279,31 +279,59 @@ async def _send_lark_alert(
             },
         }
 
-        if secret:
-            lark_timestamp = str(int(time.time()))
+        def _sign_payload(base: dict[str, Any], use_milliseconds: bool) -> dict[str, Any]:
+            if not secret:
+                return base
+            multiplier = 1000 if use_milliseconds else 1
+            lark_timestamp = str(int(time.time() * multiplier))
             string_to_sign = f"{lark_timestamp}\n{secret}"
             sign = base64.b64encode(
                 hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
             ).decode("utf-8")
-            body["timestamp"] = lark_timestamp
-            body["sign"] = sign
+            signed = {**base}
+            signed["timestamp"] = lark_timestamp
+            signed["sign"] = sign
+            return signed
 
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(webhook_url, json=body)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("code", 0) != 0:
+            payload_attempts: list[dict[str, Any]] = []
+            if secret:
+                payload_attempts.append(_sign_payload(body, use_milliseconds=False))
+                payload_attempts.append(_sign_payload(body, use_milliseconds=True))
+            else:
+                payload_attempts.append(body)
+
+            for attempt_idx, payload in enumerate(payload_attempts):
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get("code", 0) == 0:
+                    console.print("[green]✓[/green] Lark 告警发送成功\n")
+                    break
+
+                should_retry = (
+                    secret is not None
+                    and data.get("code") == 19021
+                    and attempt_idx == 0
+                )
                 logger.warning(
                     "Lark 返回非零 code",
                     extra={
                         "lark_code": data.get("code"),
                         "lark_message": data.get("msg"),
+                        "attempt": attempt_idx + 1,
+                        "retry": should_retry,
                     },
                 )
                 console.print(f"[red]Lark 返回非零 code:[/red] {data.get('code')}")
                 console.print(f"[red]Lark 返回消息:[/red] {data.get('msg')}")
-                return
-            console.print("[green]✓[/green] Lark 告警发送成功\n")
+
+                if should_retry:
+                    console.print("[yellow]Lark 签名校验失败，尝试使用毫秒时间戳重试...[/yellow]")
+                    continue
+
+                break
     except Exception as exc:
         logger.error(f"发送 Lark 告警失败: {exc}")
         if debug:
@@ -1809,4 +1837,3 @@ def watch_orders(
 
 if __name__ == "__main__":
     app()
-

@@ -39,9 +39,9 @@ class RestBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_rest_balance_exchange_type_time', 'exchange', 'exchange_type', 'query_time'),
-        Index('idx_rest_balance_asset_time', 'asset', 'query_time'),
-        Index('idx_rest_balance_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_balance_exchange_type_time', 'exchange', 'exchange_type', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_balance_asset_time', 'asset', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_balance_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
     )
 
 
@@ -76,9 +76,9 @@ class RestPosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_rest_position_symbol_time', 'symbol', 'query_time'),
-        Index('idx_rest_position_side_time', 'position_side', 'query_time'),
-        Index('idx_rest_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_position_symbol_time', 'symbol', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_position_side_time', 'position_side', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_position_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
     )
 
 
@@ -121,9 +121,9 @@ class RestOrder(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_rest_order_id_time', 'order_id', 'query_time'),
-        Index('idx_rest_order_symbol_status_time', 'symbol', 'order_status', 'query_time'),
-        Index('idx_rest_order_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_order_id_time', 'order_id', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_order_symbol_status_time', 'symbol', 'order_status', 'query_time', postgresql_if_not_exists=True),
+        Index('idx_rest_order_query_type_time', 'query_type', 'query_time', postgresql_if_not_exists=True),
     )
 
 
@@ -159,6 +159,6 @@ class ScheduledQuery(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_scheduled_exchange_query_type_active', 'exchange', 'query_type', 'is_active'),
-        Index('idx_scheduled_exchange_type_active', 'exchange', 'exchange_type', 'is_active'),
+        Index('idx_scheduled_exchange_query_type_active', 'exchange', 'query_type', 'is_active', postgresql_if_not_exists=True),
+        Index('idx_scheduled_exchange_type_active', 'exchange', 'exchange_type', 'is_active', postgresql_if_not_exists=True),
     )

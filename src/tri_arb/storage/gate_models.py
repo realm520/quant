@@ -32,7 +32,7 @@ class GateAccountBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_gate_balance_currency_time', 'currency', 'update_time'),
+        Index('idx_gate_balance_currency_time', 'currency', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -67,7 +67,7 @@ class GatePosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_gate_position_contract_time', 'contract', 'update_time'),
+        Index('idx_gate_position_contract_time', 'contract', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -108,8 +108,8 @@ class GateOrder(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_gate_order_contract_status', 'contract', 'status'),
-        Index('idx_gate_order_time', 'update_time'),
+        Index('idx_gate_order_contract_status', 'contract', 'status', postgresql_if_not_exists=True),
+        Index('idx_gate_order_time', 'update_time', postgresql_if_not_exists=True),
         # 唯一约束：防止重复订单记录（对账服务依赖此约束）
         # Gate 使用 order_id + update_time 作为唯一键
         UniqueConstraint('order_id', 'update_time', name='uq_gate_order_id_time'),
@@ -143,6 +143,5 @@ class GateTrade(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_gate_trade_contract_time', 'contract', 'create_time'),
+        Index('idx_gate_trade_contract_time', 'contract', 'create_time', postgresql_if_not_exists=True),
     )
-

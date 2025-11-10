@@ -35,8 +35,8 @@ class XTAccountUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_account_currency_time', 'currency', 'update_time'),
-        Index('idx_xt_account_time', 'update_time'),
+        Index('idx_xt_account_currency_time', 'currency', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_account_time', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -60,8 +60,8 @@ class XTSpotUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_spot_currency_time', 'currency', 'update_time'),
-        Index('idx_xt_spot_time', 'update_time'),
+        Index('idx_xt_spot_currency_time', 'currency', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_spot_time', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -93,9 +93,9 @@ class XTPositionUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_position_symbol_time', 'symbol', 'update_time'),
-        Index('idx_xt_position_side_time', 'side', 'update_time'),
-        Index('idx_xt_position_time', 'update_time'),
+        Index('idx_xt_position_symbol_time', 'symbol', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_position_side_time', 'side', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_position_time', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -132,9 +132,9 @@ class XTOrderUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_order_id_time', 'order_id', 'update_time'),
-        Index('idx_xt_order_symbol_status_time', 'symbol', 'status', 'update_time'),
-        Index('idx_xt_order_time', 'update_time'),
+        Index('idx_xt_order_id_time', 'order_id', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_order_symbol_status_time', 'symbol', 'status', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_order_time', 'update_time', postgresql_if_not_exists=True),
         # 唯一约束：防止重复订单记录（对账服务依赖此约束）
         UniqueConstraint('order_id', 'update_time', name='uq_xt_order_id_time'),
     )
@@ -177,9 +177,9 @@ class XTTradeUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_trade_symbol_time', 'symbol', 'update_time'),
-        Index('idx_xt_trade_order_trade', 'order_id', 'trade_id'),
-        Index('idx_xt_trade_time', 'update_time'),
+        Index('idx_xt_trade_symbol_time', 'symbol', 'update_time', postgresql_if_not_exists=True),
+        Index('idx_xt_trade_order_trade', 'order_id', 'trade_id', postgresql_if_not_exists=True),
+        Index('idx_xt_trade_time', 'update_time', postgresql_if_not_exists=True),
     )
 
 
@@ -215,9 +215,9 @@ class XTTransfer(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_transfer_currency_time', 'currency', 'transfer_time'),
-        Index('idx_xt_transfer_time', 'transfer_time'),
-        Index('idx_xt_transfer_type', 'transfer_type'),
+        Index('idx_xt_transfer_currency_time', 'currency', 'transfer_time', postgresql_if_not_exists=True),
+        Index('idx_xt_transfer_time', 'transfer_time', postgresql_if_not_exists=True),
+        Index('idx_xt_transfer_type', 'transfer_type', postgresql_if_not_exists=True),
     )
 
 
@@ -256,6 +256,6 @@ class XTWebSocketConnection(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_ws_active', 'is_active'),
-        Index('idx_xt_ws_start_time', 'start_time'),
+        Index('idx_xt_ws_active', 'is_active', postgresql_if_not_exists=True),
+        Index('idx_xt_ws_start_time', 'start_time', postgresql_if_not_exists=True),
     )

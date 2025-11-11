@@ -486,9 +486,6 @@ async def _evaluate_metrics(
                 },
             )
 
-            if severity == "NORMAL":
-                continue
-
             message_lines = [
                 "[XT 指标监控]",
                 f"指标: {metric.name}",
@@ -513,7 +510,7 @@ async def _evaluate_metrics(
                         secret=secret,
                         text=message,
                         debug=debug,
-                        success_message="[green]✓[/green] Lark 风险率告警已发送\n",
+                        success_message="[green]✓[/green] Lark 风险率通知已发送\n",
                     )
                     if not success:
                         logger.warning(
@@ -527,7 +524,7 @@ async def _evaluate_metrics(
                     )
             else:
                 logger.warning(
-                    "风险率达到阈值但 Lark 告警未启用",
+                    "风险率已评估但 Lark 告警未启用",
                     extra={"metric": metric.name, "severity": severity},
                 )
 

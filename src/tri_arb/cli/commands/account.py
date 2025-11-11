@@ -644,6 +644,10 @@ async def _evaluate_risk_ratio(
                 XTPerpPosition.maintenance_margin,
                 XTPerpPosition.unrealized_pnl,
                 XTPerpPosition.raw_data,
+                XTPerpPosition.position_amount,
+                XTPerpPosition.mark_price,
+                XTPerpPosition.notional,
+                XTPerpPosition.margin,
             )
             .where(XTPerpPosition.query_time == latest_query_time)
         )
@@ -661,9 +665,21 @@ async def _evaluate_risk_ratio(
     floating_loss = Decimal("0")
     position_count = 0
 
-    for maint_val, unrealized_val, raw_data in position_rows:
+    for (
+        maint_val,
+        unrealized_val,
+        raw_data,
+        position_amount_val,
+        mark_price_val,
+        notional_val,
+        margin_val,
+    ) in position_rows:
         maintenance_margin = Decimal(str(maint_val)) if maint_val is not None else None
         unrealized = Decimal(str(unrealized_val)) if unrealized_val is not None else None
+        position_amount = Decimal(str(position_amount_val)) if position_amount_val is not None else None
+        mark_price = Decimal(str(mark_price_val)) if mark_price_val is not None else None
+        notional = Decimal(str(notional_val)) if notional_val is not None else None
+        margin = Decimal(str(margin_val)) if margin_val is not None else None
 
         if maintenance_margin is None or unrealized is None:
             maint_fallback = None
@@ -692,10 +708,58 @@ async def _evaluate_risk_ratio(
             if unrealized is None and unrealized_fallback is not None:
                 unrealized = Decimal(str(unrealized_fallback))
 
+            if maintenance_margin is None:
+                rate_raw = None
+                notional_raw = None
+                mark_raw = None
+                size_raw = None
+                if raw_data:
+                    try:
+                        raw = json.loads(raw_data)
+                        rate_raw = raw.get("maintenanceMarginRate") or raw.get("maintMarginRate")
+                        notional_raw = raw.get("notional") or raw.get("positionValue")
+                        mark_raw = raw.get("calMarkPrice") or raw.get("markPrice")
+                        size_raw = raw.get("positionSize") or raw.get("positionAmt")
+                    except json.JSONDecodeError:
+                        pass
+
+                if rate_raw is not None:
+                    try:
+                        rate = Decimal(str(rate_raw))
+                    except Exception:
+                        rate = None
+                else:
+                    rate = None
+
+                if notional is None and notional_raw is not None:
+                    try:
+                        notional = Decimal(str(notional_raw))
+                    except Exception:
+                        notional = None
+
+                if (notional is None or notional == 0) and position_amount is not None and mark_price is not None:
+                    notional = abs(position_amount * mark_price)
+
+                if (
+                    (notional is None or notional == 0)
+                    and size_raw is not None
+                    and mark_raw is not None
+                ):
+                    try:
+                        notional = abs(Decimal(str(size_raw)) * Decimal(str(mark_raw)))
+                    except Exception:
+                        notional = None
+
+                if rate is not None and notional is not None and notional > 0:
+                    maintenance_margin = max(Decimal("0"), rate * notional)
+
         if maintenance_margin is None:
             maintenance_margin = Decimal("0")
         if unrealized is None:
             unrealized = Decimal("0")
+
+        if maintenance_margin <= 0 and margin is not None and margin > 0:
+            maintenance_margin = Decimal("0")
 
         maintenance_total += maintenance_margin
         floating_loss += max(Decimal("0"), -unrealized)

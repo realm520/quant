@@ -467,7 +467,7 @@ async def _evaluate_metrics(
             severity = result["severity"]
             risk_ratio = result["risk_ratio"]
             available_margin = result["available_margin"]
-            maintenance_total = result["maintenance_total"]
+            occupied_margin = result["occupied_margin"]
             floating_loss = result["floating_loss"]
             warning_threshold = result["warning_threshold"]
             critical_threshold = result["critical_threshold"]
@@ -480,7 +480,7 @@ async def _evaluate_metrics(
                     "risk_ratio": str(risk_ratio),
                     "severity": severity,
                     "available_margin": str(available_margin),
-                    "maintenance_total": str(maintenance_total),
+                    "occupied_margin": str(occupied_margin),
                     "floating_loss": str(floating_loss),
                     "positions": position_count,
                 },
@@ -492,7 +492,7 @@ async def _evaluate_metrics(
                 f"类型: 仓位风险率",
                 f"最新仓位数: {position_count}",
                 f"可用保证金: {available_margin:.4f}",
-                f"维持保证金合计: {maintenance_total:.4f}",
+                f"占用保证金: {occupied_margin:.4f}",
                 f"浮亏调整: {floating_loss:.4f}",
                 f"风险率: {risk_ratio:.4f}",
                 f"预警阈值: {warning_threshold:.4f}",
@@ -604,7 +604,7 @@ async def _evaluate_risk_ratio(
 
     async with db_manager.session() as session:
         balance_stmt = (
-            select(XTPerpBalance.free, XTPerpBalance.query_time)
+            select(XTPerpBalance.free, XTPerpBalance.margin, XTPerpBalance.query_time)
             .where(XTPerpBalance.asset == asset)
             .order_by(XTPerpBalance.query_time.desc())
             .limit(1)
@@ -620,6 +620,7 @@ async def _evaluate_risk_ratio(
             return None
 
         available_margin = Decimal(str(balance_row[0]))
+        margin_total = Decimal(str(balance_row[1])) if balance_row[1] is not None else Decimal("0")
         if available_margin <= 0:
             logger.warning(
                 "可用保证金为0，无法计算风险率",
@@ -641,12 +642,8 @@ async def _evaluate_risk_ratio(
 
         position_stmt = (
             select(
-                XTPerpPosition.maintenance_margin,
                 XTPerpPosition.unrealized_pnl,
                 XTPerpPosition.raw_data,
-                XTPerpPosition.position_amount,
-                XTPerpPosition.mark_price,
-                XTPerpPosition.notional,
                 XTPerpPosition.margin,
             )
             .where(XTPerpPosition.query_time == latest_query_time)
@@ -661,111 +658,56 @@ async def _evaluate_risk_ratio(
         )
         return None
 
-    maintenance_total = Decimal("0")
     floating_loss = Decimal("0")
     position_count = 0
+    position_margin_sum = Decimal("0")
 
     for (
-        maint_val,
         unrealized_val,
         raw_data,
-        position_amount_val,
-        mark_price_val,
-        notional_val,
         margin_val,
     ) in position_rows:
-        maintenance_margin = Decimal(str(maint_val)) if maint_val is not None else None
         unrealized = Decimal(str(unrealized_val)) if unrealized_val is not None else None
-        position_amount = Decimal(str(position_amount_val)) if position_amount_val is not None else None
-        mark_price = Decimal(str(mark_price_val)) if mark_price_val is not None else None
-        notional = Decimal(str(notional_val)) if notional_val is not None else None
         margin = Decimal(str(margin_val)) if margin_val is not None else None
 
-        if maintenance_margin is None or unrealized is None:
-            maint_fallback = None
-            unrealized_fallback = None
-            if raw_data:
-                try:
-                    raw = json.loads(raw_data)
-                    maint_fallback = (
-                        raw.get("maintMargin")
-                        or raw.get("maintenanceMargin")
-                        or raw.get("maintMarginAmount")
-                    )
-                    unrealized_fallback = (
-                        raw.get("floatingPL")
-                        or raw.get("unRealizedProfit")
-                        or raw.get("unrealizedPnl")
-                    )
-                except json.JSONDecodeError:
-                    logger.debug(
-                        "解析仓位 raw_data 失败",
-                        extra={"metric": metric.name},
-                    )
+        if unrealized is None and raw_data:
+            try:
+                raw = json.loads(raw_data)
+                unrealized_fallback = (
+                    raw.get("floatingPL")
+                    or raw.get("unRealizedProfit")
+                    or raw.get("unrealizedPnl")
+                )
+                if unrealized_fallback is not None:
+                    unrealized = Decimal(str(unrealized_fallback))
+            except json.JSONDecodeError:
+                logger.debug(
+                    "解析仓位 raw_data 失败",
+                    extra={"metric": metric.name},
+                )
 
-            if maintenance_margin is None and maint_fallback is not None:
-                maintenance_margin = Decimal(str(maint_fallback))
-            if unrealized is None and unrealized_fallback is not None:
-                unrealized = Decimal(str(unrealized_fallback))
+        if margin is None and raw_data:
+            try:
+                raw = json.loads(raw_data)
+                margin_fallback = raw.get("isolatedMargin") or raw.get("margin")
+                if margin_fallback is not None:
+                    margin = Decimal(str(margin_fallback))
+            except json.JSONDecodeError:
+                pass
 
-            if maintenance_margin is None:
-                rate_raw = None
-                notional_raw = None
-                mark_raw = None
-                size_raw = None
-                if raw_data:
-                    try:
-                        raw = json.loads(raw_data)
-                        rate_raw = raw.get("maintenanceMarginRate") or raw.get("maintMarginRate")
-                        notional_raw = raw.get("notional") or raw.get("positionValue")
-                        mark_raw = raw.get("calMarkPrice") or raw.get("markPrice")
-                        size_raw = raw.get("positionSize") or raw.get("positionAmt")
-                    except json.JSONDecodeError:
-                        pass
-
-                if rate_raw is not None:
-                    try:
-                        rate = Decimal(str(rate_raw))
-                    except Exception:
-                        rate = None
-                else:
-                    rate = None
-
-                if notional is None and notional_raw is not None:
-                    try:
-                        notional = Decimal(str(notional_raw))
-                    except Exception:
-                        notional = None
-
-                if (notional is None or notional == 0) and position_amount is not None and mark_price is not None:
-                    notional = abs(position_amount * mark_price)
-
-                if (
-                    (notional is None or notional == 0)
-                    and size_raw is not None
-                    and mark_raw is not None
-                ):
-                    try:
-                        notional = abs(Decimal(str(size_raw)) * Decimal(str(mark_raw)))
-                    except Exception:
-                        notional = None
-
-                if rate is not None and notional is not None and notional > 0:
-                    maintenance_margin = max(Decimal("0"), rate * notional)
-
-        if maintenance_margin is None:
-            maintenance_margin = Decimal("0")
         if unrealized is None:
             unrealized = Decimal("0")
+        if margin is None:
+            margin = Decimal("0")
 
-        if maintenance_margin <= 0 and margin is not None and margin > 0:
-            maintenance_margin = Decimal("0")
-
-        maintenance_total += maintenance_margin
         floating_loss += max(Decimal("0"), -unrealized)
+        position_margin_sum += max(Decimal("0"), margin)
         position_count += 1
 
-    numerator = maintenance_total + floating_loss
+    if margin_total <= 0:
+        margin_total = position_margin_sum
+
+    numerator = margin_total + floating_loss
     risk_ratio = numerator / available_margin if available_margin > 0 else Decimal("0")
 
     warning_threshold = Decimal(str(metric.warning_threshold))
@@ -781,7 +723,7 @@ async def _evaluate_risk_ratio(
         "severity": severity,
         "risk_ratio": risk_ratio,
         "available_margin": available_margin,
-        "maintenance_total": maintenance_total,
+        "occupied_margin": margin_total,
         "floating_loss": floating_loss,
         "warning_threshold": warning_threshold,
         "critical_threshold": critical_threshold,

@@ -138,6 +138,7 @@ class XTRestDataService:
         """
         try:
             async with self.db_manager.session() as session:
+                now = datetime.utcnow()
                 for pos_data in positions_data:
                     symbol = pos_data.get("symbol", "")
                     position_side = pos_data.get("positionSide", "LONG")
@@ -166,7 +167,7 @@ class XTRestDataService:
                     raw_data = json.dumps(pos_data, ensure_ascii=False, default=str)
                     
                     position_record = XTPerpPosition(
-                        query_time=datetime.utcnow(),
+                        query_time=now,
                         query_type=query_type,
                         symbol=str(symbol),
                         position_side=str(position_side),

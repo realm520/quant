@@ -82,9 +82,9 @@ docker run --rm \
 ```bash
 docker run --rm --network host \
   -e DATABASE_URL="postgresql+asyncpg://postgres@localhost:5432/trading" \
-  -e XT_API_KEY="48e87084-4cb8-4134-958d-1ff294ee3796" \
-  -e XT_API_SECRET="e98ebc0389dd9ca6d404a10cb472a306e3ce3229" \
-  -e LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/e4788562-3474-4386-b04e-6cf183f7e149" \
+  -e XT_API_KEY="" \
+  -e XT_API_SECRET="" \
+  -e LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/***" \
   -v /home/ubuntu/metric.yaml:/app/config/metric.yaml \
   docker.io/wzy2317/cextools:latest \
   account watch-account -x xt --metrics-config /app/config/metric.yaml --enable-lark --interval 5
@@ -96,9 +96,9 @@ docker run --rm --network host \
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="postgresql+asyncpg://postgres@45.125.23.194:5432/trading" \
-    -e XT_API_KEY="48e87084-4cb8-4134-958d-1ff294ee3796" \
-    -e XT_API_SECRET="e98ebc0389dd9ca6d404a10cb472a306e3ce3229" \
+    -e DATABASE_URL="postgresql+asyncpg://postgres@{ip}:5432/trading" \
+    -e XT_API_KEY="" \
+    -e XT_API_SECRET="" \
     docker.io/wzy2317/cextools:latest \
     account watch-account -x xt --interval 10
   ```
@@ -107,10 +107,10 @@ docker run --rm --network host \
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="postgresql+asyncpg://postgres@45.125.23.194:5432/trading" \
-    -e XT_API_KEY="48e87084-4cb8-4134-958d-1ff294ee3796" \
-    -e XT_API_SECRET="e98ebc0389dd9ca6d404a10cb472a306e3ce3229" \
-    -e LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/e4788562-3474-4386-b04e-6cf183f7e149" \
+    -e DATABASE_URL="postgresql+asyncpg://postgres@{ip}:5432/trading" \
+    -e XT_API_KEY="" \
+    -e XT_API_SECRET="" \
+    -e LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/****" \
     docker.io/wzy2317/cextools:latest \
     account watch-positions -x xt --interval 3 --enable-lark
   ```
@@ -119,9 +119,9 @@ docker run --rm --network host \
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="postgresql+asyncpg://postgres@45.125.23.194:5432/trading" \
-    -e XT_API_KEY="48e87084-4cb8-4134-958d-1ff294ee3796" \
-    -e XT_API_SECRET="e98ebc0389dd9ca6d404a10cb472a306e3ce3229" \
+    -e DATABASE_URL="postgresql+asyncpg://postgres@{ip}:5432/trading" \
+    -e XT_API_KEY="" \
+    -e XT_API_SECRET="" \
     docker.io/wzy2317/cextools:latest \
     account balance -x xt -e perp
   ```
@@ -130,7 +130,7 @@ docker run --rm --network host \
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="postgresql+asyncpg://postgres@45.125.23.194:5432/trading" \
+    -e DATABASE_URL="postgresql+asyncpg://postgres@{ip}:5432/trading" \
     docker.io/wzy2317/cextools:latest \
     python scripts/migrate_recreate_xt_rest_tables.py
   ```

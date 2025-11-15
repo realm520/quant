@@ -1761,9 +1761,12 @@ def watch_balance(
 
                                         if record is not None:
                                             session.add(record)
+                                            logger.info(f"余额已保存到数据库: {currency.upper()}")
+                                            console.print(f"[green]✓[/green] 余额已保存: {currency.upper()}")
                                 # 提交由 session ctx 管理
                             except Exception as save_exc:
                                 logger.warning(f"保存余额到数据库失败: {save_exc}")
+                                console.print(f"[red]✗[/red] 保存余额失败: {save_exc}")
                         
                         # 显示下次查询时间
                         next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
@@ -1885,8 +1888,12 @@ async def _run_xt_watch_balance_async(
                                         raw_data=raw_json,
                                     )
                                     session.add(record)
+                                    # 提交由 session 上下文管理器自动处理
+                                    logger.info(f"账号 {account_label} 余额已保存到数据库: {currency.upper()}")
+                                    console.print(f"[green]✓[/green] [账号 {account_label}] 余额已保存: {currency.upper()}")
                         except Exception as save_exc:
                             logger.warning(f"账号 {account_label} 保存余额到数据库失败: {save_exc}")
+                            console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")
 
                         next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
                         console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")

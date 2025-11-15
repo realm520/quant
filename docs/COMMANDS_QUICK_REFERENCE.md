@@ -32,10 +32,16 @@ cextools subscribe user-stream -x xt --account-id account_001 --disable-data-syn
 # 基本用法（10分钟间隔）
 cextools account watch-account -x xt --account-id account_001
 
+# 从配置文件读取账号信息
+cextools account watch-account -x xt --config config/accounts.json --account-id account_001
+
 # 自定义间隔
 cextools account watch-account -x xt --account-id account_001 --interval 5
 
-# 启用 Lark 告警
+# 启用 Lark 告警（从配置文件读取）
+cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --enable-lark
+
+# 启用 Lark 告警（手动指定）
 cextools account watch-account -x xt --account-id account_001 --enable-lark --lark-webhook "https://..."
 
 # 指定指标配置
@@ -51,6 +57,9 @@ cextools account watch-account -x xt --account-id account_001 --metrics-config c
 ```bash
 # 合约账户（默认5分钟）
 cextools account watch-balance -x xt -e perp --account-id account_001
+
+# 从配置文件读取账号信息
+cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
 
 # 现货账户
 cextools account watch-balance -x xt -e spot --account-id account_001
@@ -69,13 +78,19 @@ cextools account watch-balance -x xt -e perp --account-id account_001 --interval
 # 基本用法（1分钟间隔）
 cextools account watch-positions -x xt -e perp --account-id account_001
 
+# 从配置文件读取账号信息
+cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
+
 # 自定义间隔
 cextools account watch-positions -x xt -e perp --account-id account_001 --interval 5
 
 # 指定交易对
 cextools account watch-positions -x xt -e perp --account-id account_001 -s BTC/USDT
 
-# 启用 Lark 告警
+# 启用 Lark 告警（从配置文件读取）
+cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --enable-lark
+
+# 启用 Lark 告警（手动指定）
 cextools account watch-positions -x xt -e perp --account-id account_001 --enable-lark --lark-webhook "https://..."
 ```
 

@@ -3,10 +3,10 @@
     "account_001": {
       "name": "主账号",
       "exchange": "xt",
-      "api_key": "your_xt_api_key_1",
-      "api_secret": "your_xt_api_secret_1",
+      "api_key": "48e87084-4cb8-4134-958d-1ff294ee3796",
+      "api_secret": "e98ebc0389dd9ca6d404a10cb472a306e3ce3229",
       "enabled": true,
-      "channels": ["account", "position", "order"],
+      "channels": ["account", "position"],
       "metrics_config": {
         "perp_balance_volatility": {
           "enabled": true,
@@ -21,7 +21,7 @@
           "critical_threshold": 0.80
         }
       },
-      "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/...",
+      "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/e4788562-3474-4386-b04e-6cf183f7e149",
       "lark_secret": "optional_secret"
     },
     "account_002": {
@@ -29,7 +29,7 @@
       "exchange": "xt",
       "api_key": "your_xt_api_key_2",
       "api_secret": "your_xt_api_secret_2",
-      "enabled": true,
+      "enabled": false,
       "channels": ["account", "position"],
       "metrics_config": {
         "perp_risk_ratio": {
@@ -45,7 +45,7 @@
   "global_settings": {
     "default_interval_minutes": 10,
     "enable_lark_by_default": false,
-    "database_url": "${DATABASE_URL}"
+    "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
   }
 }
 

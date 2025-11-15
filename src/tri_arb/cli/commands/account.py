@@ -1258,12 +1258,22 @@ def watch_balance(
         "-a",
         help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001"
     ),
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥等）"
+    ),
 ):
     """定时查询账户余额.
     
     每隔指定分钟查询一次余额，持续监控账户变化。
     如果提供账号ID（仅支持XT），数据会保存到账号特定的表中。
     表会在首次运行时自动创建，不会重复创建。
+    
+    支持从配置文件读取账号信息：
+    - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥
+    - 配置文件格式参考: config/accounts.example.json
     
     按 Ctrl+C 停止监控。
     
@@ -1273,6 +1283,9 @@ def watch_balance(
         
         # 使用账号特定的表（XT）
         cextools account watch-balance -x xt -e perp --account-id account_001
+        
+        # 从配置文件读取账号信息
+        cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
         
         # 每5分钟查询一次Binance余额
         cextools account watch-balance -x binance -e perp --interval 5
@@ -1284,6 +1297,26 @@ def watch_balance(
         # 验证间隔时间
         if interval < 1:
             raise ValueError("查询间隔必须至少为1分钟")
+        
+        # 如果提供了配置文件，尝试从配置文件读取账号信息
+        if config_path and account_id and exchange == ExchangeName.XT:
+            try:
+                from tri_arb.config.account_manager import AccountManager
+                account_manager = AccountManager(config_path)
+                account_config = account_manager.get_account(account_id)
+                
+                if account_config:
+                    # 从配置文件读取 API 密钥（如果命令行未提供）
+                    if not api_key:
+                        api_key = account_config.api_key
+                    if not api_secret:
+                        api_secret = account_config.api_secret
+                    
+                    console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
+                else:
+                    console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号 {account_id}，使用命令行参数或环境变量")
+            except Exception as e:
+                console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
         
         # 创建 exchange 实例
         exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
@@ -1509,6 +1542,12 @@ def watch_account(
         "-a",
         help="账号ID（可选），如果提供则使用账号特定的表。例如: account_001"
     ),
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥、Lark配置、指标配置等）"
+    ),
 ):
     """定时获取账户数据（现货余额、合约余额、合约仓位）.
     
@@ -1521,6 +1560,10 @@ def watch_account(
     如果提供账号ID，数据会保存到账号特定的表中（例如: xt_spot_balances_account_001）。
     表会在首次运行时自动创建，不会重复创建。
     
+    支持从配置文件读取账号信息：
+    - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥、Lark 配置和指标配置
+    - 配置文件格式参考: config/accounts.example.json
+    
     按 Ctrl+C 停止监控。
     
     示例:
@@ -1529,6 +1572,9 @@ def watch_account(
         
         # 使用账号特定的表
         cextools account watch-account -x xt --account-id account_001
+        
+        # 从配置文件读取账号信息
+        cextools account watch-account -x xt --config config/accounts.json --account-id account_001
         
         # 通过命令行参数提供API密钥
         cextools account watch-account -x xt --api-key YOUR_KEY --api-secret YOUR_SECRET
@@ -1545,6 +1591,32 @@ def watch_account(
             console.print("\n请使用: [cyan]cextools account watch-account -x xt[/cyan]")
             raise typer.Exit(code=1)
         
+        # 如果提供了配置文件，尝试从配置文件读取账号信息
+        if config_path and account_id:
+            try:
+                from tri_arb.config.account_manager import AccountManager
+                account_manager = AccountManager(config_path)
+                account_config = account_manager.get_account(account_id)
+                
+                if account_config:
+                    # 从配置文件读取 API 密钥（如果命令行未提供）
+                    if not api_key:
+                        api_key = account_config.api_key
+                    if not api_secret:
+                        api_secret = account_config.api_secret
+                    
+                    # 从配置文件读取 Lark 配置（如果命令行未提供且启用 Lark）
+                    if enable_lark and not lark_webhook:
+                        lark_webhook = account_config.lark_webhook
+                    if enable_lark and not lark_secret:
+                        lark_secret = account_config.lark_secret
+                    
+                    console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
+                else:
+                    console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号 {account_id}，使用命令行参数或环境变量")
+            except Exception as e:
+                console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
+        
         # 获取API密钥（优先使用命令行参数，否则使用环境变量）
         final_api_key = api_key or os.getenv("XT_API_KEY", "")
         final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
@@ -1554,6 +1626,7 @@ def watch_account(
             console.print("\n请设置环境变量或使用命令行参数:")
             console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
             console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+            console.print("  配置文件: --config config/accounts.json --account-id account_001")
             console.print("\n注意: XT交易所的现货和合约使用同一套API密钥")
             raise typer.Exit(code=1)
         
@@ -1992,12 +2065,22 @@ def watch_positions(
         "-a",
         help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001"
     ),
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥、Lark配置等）"
+    ),
 ):
     """定时查询持仓（仅永续合约）.
     
     每隔指定分钟查询一次持仓，持续监控持仓变化。
     如果提供账号ID（仅支持XT），数据会保存到账号特定的表中。
     表会在首次运行时自动创建，不会重复创建。
+    
+    支持从配置文件读取账号信息：
+    - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥和 Lark 配置
+    - 配置文件格式参考: config/accounts.example.json
     
     按 Ctrl+C 停止监控。
     
@@ -2007,6 +2090,9 @@ def watch_positions(
         
         # 使用账号特定的表（XT）
         cextools account watch-positions -x xt -e perp --account-id account_001
+        
+        # 从配置文件读取账号信息
+        cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
         
         # 每2分钟查询Binance的BTC持仓
         cextools account watch-positions -x binance -e perp -s BTC/USDT --interval 2
@@ -2042,6 +2128,32 @@ def watch_positions(
                 enable_lark = False
 
         if exchange == ExchangeName.XT:
+            # 如果提供了配置文件，尝试从配置文件读取账号信息
+            if config_path and account_id:
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
+                    account_config = account_manager.get_account(account_id)
+                    
+                    if account_config:
+                        # 从配置文件读取 API 密钥（如果命令行未提供）
+                        if not api_key:
+                            api_key = account_config.api_key
+                        if not api_secret:
+                            api_secret = account_config.api_secret
+                        
+                        # 从配置文件读取 Lark 配置（如果命令行未提供且启用 Lark）
+                        if enable_lark and not webhook_url:
+                            webhook_url = account_config.lark_webhook
+                        if enable_lark and not webhook_secret:
+                            webhook_secret = account_config.lark_secret
+                        
+                        console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
+                    else:
+                        console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号 {account_id}，使用命令行参数或环境变量")
+                except Exception as e:
+                    console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
+            
             final_api_key = api_key or os.getenv("XT_API_KEY", "")
             final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
 
@@ -2050,6 +2162,7 @@ def watch_positions(
                 console.print("\n请设置环境变量或使用命令行参数:")
                 console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
                 console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+                console.print("  配置文件: --config config/accounts.json --account-id account_001")
                 raise typer.Exit(code=1)
 
             _run_xt_watch_positions(

@@ -99,6 +99,19 @@ cextools account watch-account -x xt --account-id account_001 --metrics-config c
 cextools account watch-account -x xt --account-id account_001 --disable-metrics
 ```
 
+**使用配置文件方式**:
+
+```bash
+# 从配置文件读取账号信息（API密钥、Lark配置等）
+cextools account watch-account -x xt --config config/accounts.json --account-id account_001
+
+# 从配置文件读取并启用 Lark 告警
+cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --enable-lark
+
+# 自定义间隔
+cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --interval 5
+```
+
 **验证表**:
 - `xt_spot_balances_account_001`
 - `xt_perp_balances_account_001`
@@ -145,6 +158,16 @@ cextools account watch-balance -x xt -e perp --account-id account_001 --interval
 cextools account watch-balance -x xt -e perp --account-id account_001 --output json
 ```
 
+**使用配置文件方式**:
+
+```bash
+# 从配置文件读取账号信息（API密钥等）
+cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
+
+# 自定义间隔
+cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001 --interval 5
+```
+
 **验证表**:
 - `xt_account_updates_account_001`（复用 WebSocket 表）
 
@@ -182,6 +205,43 @@ cextools account watch-positions -x xt -e perp --account-id account_001 --enable
 # JSON 输出格式
 cextools account watch-positions -x xt -e perp --account-id account_001 --output json
 ```
+
+**使用配置文件方式**:
+
+`watch-positions` 命令支持从配置文件读取账号信息：
+
+```bash
+# 从配置文件读取账号信息（API密钥、Lark配置等）
+cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
+
+# 从配置文件读取并启用 Lark 告警
+cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --enable-lark
+
+# 自定义间隔
+cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --interval 5
+```
+
+**配置文件示例** (`config/accounts.json`):
+```json
+{
+  "accounts": {
+    "account_001": {
+      "name": "主账号",
+      "exchange": "xt",
+      "api_key": "your_api_key",
+      "api_secret": "your_api_secret",
+      "enabled": true,
+      "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/...",
+      "lark_secret": "optional_secret"
+    }
+  }
+}
+```
+
+**说明**:
+- 如果提供了 `--config` 和 `--account-id`，将从配置文件读取该账号的 API 密钥和 Lark 配置
+- 命令行参数会覆盖配置文件中的值
+- 如果配置文件中没有找到账号，会使用命令行参数或环境变量
 
 **验证表**:
 - `xt_rest_position_updates_account_001`

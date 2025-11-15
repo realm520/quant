@@ -54,6 +54,7 @@ async def _run_xt_watch_positions_async(
 
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的仓位监控")
+    console.print(f"[cyan]启动账号 {account_label} 的仓位监控[/cyan]")
 
     db_manager = DatabaseManager()
     perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
@@ -3082,9 +3083,21 @@ def watch_positions(
                             await asyncio.sleep(0.5)
                         
                         try:
-                            await asyncio.gather(*tasks, return_exceptions=True)
+                            results = await asyncio.gather(*tasks, return_exceptions=True)
+                            # 检查是否有异常
+                            for i, result in enumerate(results):
+                                if isinstance(result, Exception):
+                                    console.print(f"[red]账号 {account_configs[i].account_id} 监控任务异常:[/red] {result}")
+                                    logger.error(f"账号 {account_configs[i].account_id} 监控任务异常", exc_info=result)
+                                    if debug:
+                                        console.print_exception()
                         except KeyboardInterrupt:
                             console.print("\n[yellow]监控已停止[/yellow]")
+                        except Exception as e:
+                            console.print(f"[red]多账号监控异常:[/red] {e}")
+                            logger.error("多账号监控异常", exc_info=True)
+                            if debug:
+                                console.print_exception()
                     
                     asyncio.run(run_multi_account_watch())
                     return

@@ -82,7 +82,7 @@ cp config/accounts.example.json config/accounts.json
 | `exchange` | string | 是 | 交易所名称（目前仅支持 "xt"） |
 | `api_key` | string | 是 | XT API Key |
 | `api_secret` | string | 是 | XT API Secret |
-| `enabled` | boolean | 否 | 是否启用（默认 true） |
+| `enabled` | boolean | 否 | 是否启用（默认 true）。主要用于 `multi-account` 命令中过滤账号，`enabled: false` 的账号不会被处理 |
 | `channels` | array | 否 | 订阅频道列表：account, position, order, trade |
 | `metrics_config` | object | 否 | 指标配置（告警阈值等） |
 | `lark_webhook` | string/null | 否 | Lark 告警 Webhook URL |

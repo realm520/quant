@@ -35,6 +35,12 @@ cextools account watch-account -x xt --account-id account_001
 # 从配置文件读取账号信息
 cextools account watch-account -x xt --config config/accounts.json --account-id account_001
 
+# 同时监控多个账号（只监控 enabled: true 的账号）
+cextools account watch-account -x xt --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号
+cextools account watch-account -x xt --config config/accounts.json --all-accounts
+
 # 自定义间隔
 cextools account watch-account -x xt --account-id account_001 --interval 5
 
@@ -61,6 +67,12 @@ cextools account watch-balance -x xt -e perp --account-id account_001
 # 从配置文件读取账号信息
 cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
 
+# 同时监控多个账号（只监控 enabled: true 的账号）
+cextools account watch-balance -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号
+cextools account watch-balance -x xt -e perp --config config/accounts.json --all-accounts
+
 # 现货账户
 cextools account watch-balance -x xt -e spot --account-id account_001
 
@@ -80,6 +92,12 @@ cextools account watch-positions -x xt -e perp --account-id account_001
 
 # 从配置文件读取账号信息
 cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
+
+# 同时监控多个账号
+cextools account watch-positions -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号
+cextools account watch-positions -x xt -e perp --config config/accounts.json --all-accounts
 
 # 自定义间隔
 cextools account watch-positions -x xt -e perp --account-id account_001 --interval 5

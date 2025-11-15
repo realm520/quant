@@ -102,8 +102,14 @@ cextools account watch-account -x xt --account-id account_001 --disable-metrics
 **使用配置文件方式**:
 
 ```bash
-# 从配置文件读取账号信息（API密钥、Lark配置等）
+# 从配置文件读取单个账号信息（API密钥、Lark配置等）
 cextools account watch-account -x xt --config config/accounts.json --account-id account_001
+
+# 同时监控多个账号（只监控 enabled: true 的账号）
+cextools account watch-account -x xt --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号
+cextools account watch-account -x xt --config config/accounts.json --all-accounts
 
 # 从配置文件读取并启用 Lark 告警
 cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --enable-lark
@@ -111,6 +117,14 @@ cextools account watch-account -x xt --config config/accounts.json --account-id 
 # 自定义间隔
 cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --interval 5
 ```
+
+**多账号模式说明**:
+- `--accounts account_001,account_002`: 同时监控指定的多个账号（逗号分隔），只监控 `enabled: true` 的账号
+- `--all-accounts`: 监控配置文件中所有 `enabled: true` 的账号
+- 多账号模式下，每个账号使用独立的数据库表和连接
+- 所有账号的查询间隔相同，但查询时间可能略有差异（避免同时连接过多）
+- 输出会显示账号标识，便于区分不同账号的数据
+- **重要**: 只有 `enabled: true` 的账号才会被监控，`enabled: false` 的账号会被自动跳过
 
 **验证表**:
 - `xt_spot_balances_account_001`
@@ -164,9 +178,22 @@ cextools account watch-balance -x xt -e perp --account-id account_001 --output j
 # 从配置文件读取账号信息（API密钥等）
 cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
 
+# 同时监控多个账号（只监控 enabled: true 的账号）
+cextools account watch-balance -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号
+cextools account watch-balance -x xt -e perp --config config/accounts.json --all-accounts
+
 # 自定义间隔
 cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001 --interval 5
 ```
+
+**多账号模式说明**:
+- `--accounts account_001,account_002`: 同时监控指定的多个账号（逗号分隔），只监控 `enabled: true` 的账号
+- `--all-accounts`: 监控配置文件中所有 `enabled: true` 的账号
+- 多账号模式下，每个账号使用独立的数据库表和连接
+- 所有账号的查询间隔相同，但查询时间可能略有差异（避免同时连接过多）
+- 输出会显示账号标识，便于区分不同账号的数据
 
 **验证表**:
 - `xt_account_updates_account_001`（复用 WebSocket 表）
@@ -208,18 +235,32 @@ cextools account watch-positions -x xt -e perp --account-id account_001 --output
 
 **使用配置文件方式**:
 
-`watch-positions` 命令支持从配置文件读取账号信息：
+`watch-positions` 命令支持从配置文件读取账号信息，并支持同时监控多个账号：
 
 ```bash
-# 从配置文件读取账号信息（API密钥、Lark配置等）
+# 从配置文件读取单个账号信息（API密钥、Lark配置等）
 cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
 
 # 从配置文件读取并启用 Lark 告警
 cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --enable-lark
 
+# 同时监控多个账号（指定账号列表，只监控 enabled: true 的账号）
+cextools account watch-positions -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+
+# 监控配置文件中所有启用的账号（enabled: true）
+cextools account watch-positions -x xt -e perp --config config/accounts.json --all-accounts
+
 # 自定义间隔
 cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --interval 5
 ```
+
+**多账号模式说明**:
+- `--accounts account_001,account_002`: 同时监控指定的多个账号（逗号分隔），只监控 `enabled: true` 的账号
+- `--all-accounts`: 监控配置文件中所有 `enabled: true` 的账号
+- 多账号模式下，每个账号使用独立的数据库表和连接
+- 所有账号的查询间隔相同，但查询时间可能略有差异（避免同时连接过多）
+- 输出会显示账号标识，便于区分不同账号的数据
+- **重要**: 只有 `enabled: true` 的账号才会被监控，`enabled: false` 的账号会被自动跳过
 
 **配置文件示例** (`config/accounts.json`):
 ```json
@@ -233,15 +274,36 @@ cextools account watch-positions -x xt -e perp --config config/accounts.json --a
       "enabled": true,
       "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/...",
       "lark_secret": "optional_secret"
+    },
+    "account_002": {
+      "name": "测试账号",
+      "exchange": "xt",
+      "api_key": "another_api_key",
+      "api_secret": "another_api_secret",
+      "enabled": false
     }
   }
 }
 ```
 
-**说明**:
+**配置字段说明**:
+
+1. **`enabled` 字段的作用**:
+   - `enabled: true`: 账号启用，可以被使用
+   - `enabled: false`: 账号禁用，主要用于 `multi-account` 命令中过滤账号
+   - 对于单个 `watch-*` 命令，即使 `enabled: false`，只要指定了 `--account-id`，仍然可以使用该账号（但建议保持 `enabled: true`）
+
+2. **为什么需要 `--account-id` 参数**:
+   - 配置文件中可能包含多个账号（如上面的 `account_001` 和 `account_002`）
+   - `--account-id` 用于指定从配置文件中读取哪个账号的信息
+   - 如果不提供 `--account-id`，系统不知道应该使用哪个账号的配置
+   - 示例：`--account-id account_001` 会读取 `accounts.account_001` 下的配置
+
+**使用说明**:
 - 如果提供了 `--config` 和 `--account-id`，将从配置文件读取该账号的 API 密钥和 Lark 配置
 - 命令行参数会覆盖配置文件中的值
 - 如果配置文件中没有找到账号，会使用命令行参数或环境变量
+- 配置文件可以同时管理多个账号，通过 `--account-id` 切换使用不同的账号
 
 **验证表**:
 - `xt_rest_position_updates_account_001`

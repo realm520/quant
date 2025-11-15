@@ -36,6 +36,199 @@ from tri_arb.config.metrics_loader import (
 )
 
 
+async def _run_xt_watch_positions_async(
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    symbol: Optional[str],
+    debug: bool,
+    lark_webhook: Optional[str] = None,
+    lark_secret: Optional[str] = None,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+) -> None:
+    """异步版本的 XT 仓位监控（用于多账号并发）."""
+    from rich.table import Table
+    from tri_arb.exchanges.xt_perp import XTPerpExchange
+    from tri_arb.services.xt_rest_data_service import XTRestDataService
+
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的仓位监控")
+
+    db_manager = DatabaseManager()
+    perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
+    xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
+
+    normalized_target = None
+    if symbol:
+        normalized_target = symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+
+    async def fetch_positions(iteration_num: int):
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        console.print(f"\n[cyan][账号 {account_label}] 第 {iteration_num} 次查询 - {current_time}[/cyan]")
+
+        try:
+            positions = await perp_exchange.get_positions(symbol=None)
+        except Exception as exc:
+            console.print(f"[red][账号 {account_label}] 获取仓位失败:[/red] {exc}")
+            logger.error(f"账号 {account_label} watch-positions fetch error", error=str(exc))
+            if debug:
+                console.print_exception()
+            return
+
+        if not positions:
+            console.print(f"[yellow][账号 {account_label}] 当前无持仓[/yellow]")
+            return
+
+        position_table = Table(
+            title=f"XT 合约账户仓位 - {account_label}",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        position_table.add_column("Symbol", style="cyan")
+        position_table.add_column("Side", style="white")
+        position_table.add_column("Quantity", justify="right")
+        position_table.add_column("Entry Price", justify="right")
+        position_table.add_column("Mark Price", justify="right")
+        position_table.add_column("Liquidation Price", justify="right")
+        position_table.add_column("Unrealized PnL", justify="right")
+        position_table.add_column("Realized PnL", justify="right")
+        position_table.add_column("ROE", justify="right")
+        position_table.add_column("Leverage", justify="right")
+
+        positions_payload: list[dict[str, Any]] = []
+        rows_added = 0
+
+        for pos in positions:
+            try:
+                if hasattr(pos, "symbol"):
+                    pos_symbol = pos.symbol
+                    side = getattr(pos, "side", getattr(pos, "position_side", ""))
+                    quantity = getattr(pos, "quantity", Decimal("0"))
+                    entry_price = getattr(pos, "entry_price", Decimal("0"))
+                    mark_price = getattr(pos, "mark_price", Decimal("0"))
+                    unrealized_pnl = getattr(pos, "unrealized_pnl", Decimal("0"))
+                    realized_pnl = getattr(pos, "realized_pnl", Decimal("0"))
+                    margin = getattr(pos, "margin", Decimal("0"))
+                    leverage = getattr(pos, "leverage", "")
+                    liquidation_price = getattr(pos, "liquidation_price", Decimal("0"))
+                else:
+                    pos_symbol = pos.get("symbol", "")
+                    side = pos.get("positionSide") or pos.get("side", "")
+                    quantity = Decimal(str(pos.get("positionSize") or pos.get("positionAmt") or "0"))
+                    entry_price = Decimal(str(pos.get("entryPrice") or "0"))
+                    mark_price = Decimal(str(pos.get("calMarkPrice") or pos.get("markPrice") or "0"))
+                    unrealized_pnl = Decimal(str(pos.get("floatingPL") or pos.get("unRealizedProfit") or pos.get("unrealizedPnl") or "0"))
+                    realized_pnl = Decimal(str(pos.get("realizedProfit") or pos.get("realizedPnl") or "0"))
+                    margin = Decimal(str(pos.get("isolatedMargin") or pos.get("margin") or "0"))
+                    leverage = pos.get("leverage", "")
+                    liquidation_price = Decimal(str(pos.get("breakPrice") or pos.get("liquidationPrice") or "0"))
+
+                normalized_symbol = pos_symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+                if normalized_target and normalized_symbol != normalized_target:
+                    continue
+
+                roe = Decimal("0")
+                if margin and margin != Decimal("0"):
+                    roe = (unrealized_pnl / margin) * Decimal("100")
+
+                unrealized_style = "green" if unrealized_pnl >= 0 else "red"
+                realized_style = "green" if realized_pnl >= 0 else "red"
+                roe_style = "green" if roe >= 0 else "red"
+
+                position_table.add_row(
+                    pos_symbol,
+                    side,
+                    f"{quantity:.8f}",
+                    f"{entry_price:.8f}",
+                    f"{mark_price:.8f}",
+                    f"{liquidation_price:.8f}",
+                    f"[{unrealized_style}]{unrealized_pnl:.8f}[/{unrealized_style}]",
+                    f"[{realized_style}]{realized_pnl:.8f}[/{realized_style}]",
+                    f"[{roe_style}]{roe:.2f}%[/{roe_style}]",
+                    f"{leverage}x" if leverage else "-",
+                )
+
+                positions_payload.append(
+                    {
+                        "symbol": pos_symbol,
+                        "positionSide": side,
+                        "positionSize": str(quantity),
+                        "entryPrice": str(entry_price),
+                        "calMarkPrice": str(mark_price),
+                        "floatingPL": str(unrealized_pnl),
+                        "realizedProfit": str(realized_pnl),
+                        "isolatedMargin": str(margin),
+                        "leverage": leverage,
+                        "roe": str(roe),
+                        "breakPrice": str(liquidation_price),
+                    }
+                )
+                rows_added += 1
+            except Exception as inner_exc:
+                logger.warning(f"账号 {account_label} 解析仓位记录失败", error=str(inner_exc))
+                if debug:
+                    console.print_exception()
+
+        if rows_added == 0:
+            if symbol:
+                console.print(f"[yellow][账号 {account_label}] 未发现 {symbol} 的持仓[/yellow]")
+            else:
+                console.print(f"[yellow][账号 {account_label}] 当前无持仓[/yellow]")
+            return
+
+        console.print(position_table)
+        console.print(f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]")
+
+        await xt_rest_service.save_position_updates(
+            positions_data=positions_payload,
+            query_type="scheduled",
+        )
+        console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据已保存到数据库\n")
+
+        if lark_webhook:
+            await _send_lark_alert(
+                webhook_url=lark_webhook,
+                secret=lark_secret,
+                positions=positions_payload,
+                timestamp=current_time,
+                interval=interval,
+                debug=debug,
+            )
+
+    async def _ensure_xt_rest_tables():
+        if account_id:
+            await xt_rest_service.ensure_account_tables()
+        else:
+            from tri_arb.storage.xt_rest_models import Base as XTRestBase
+            async with db_manager.async_engine.begin() as conn:
+                await conn.run_sync(
+                    lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
+                )
+
+    iteration = 0
+    try:
+        await _ensure_xt_rest_tables()
+        await perp_exchange.connect()
+
+        iteration = 1
+        await fetch_positions(iteration)
+
+        while True:
+            await asyncio.sleep(interval * 60)
+            iteration += 1
+            await fetch_positions(iteration)
+
+    except KeyboardInterrupt:
+        logger.info(f"账号 {account_label} 的监控已停止")
+    except Exception as e:
+        logger.error(f"账号 {account_label} 的监控异常", error=str(e), exc_info=True)
+        if debug:
+            console.print_exception()
+    finally:
+        await perp_exchange.disconnect()
+
+
 def _run_xt_watch_positions(
     interval: int,
     api_key: str,
@@ -1264,6 +1457,16 @@ def watch_balance(
         "-c",
         help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥等）"
     ),
+    accounts: Optional[str] = typer.Option(
+        None,
+        "--accounts",
+        help="多个账号ID（逗号分隔），例如: account_001,account_002。需要配合 --config 使用，只监控 enabled: true 的账号"
+    ),
+    all_accounts: bool = typer.Option(
+        False,
+        "--all-accounts",
+        help="从配置文件读取所有启用的账号（enabled: true）并同时监控。需要配合 --config 使用"
+    ),
 ):
     """定时查询账户余额.
     
@@ -1273,6 +1476,8 @@ def watch_balance(
     
     支持从配置文件读取账号信息：
     - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥
+    - 如果提供了 --config 和 --accounts，将同时监控多个账号（逗号分隔，只监控 enabled: true 的账号）
+    - 如果提供了 --config 和 --all-accounts，将监控配置文件中所有 enabled: true 的账号
     - 配置文件格式参考: config/accounts.example.json
     
     按 Ctrl+C 停止监控。
@@ -1287,6 +1492,12 @@ def watch_balance(
         # 从配置文件读取账号信息
         cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
         
+        # 同时监控多个账号（只监控启用的账号）
+        cextools account watch-balance -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+        
+        # 监控配置文件中所有启用的账号
+        cextools account watch-balance -x xt -e perp --config config/accounts.json --all-accounts
+        
         # 每5分钟查询一次Binance余额
         cextools account watch-balance -x binance -e perp --interval 5
         
@@ -1298,25 +1509,117 @@ def watch_balance(
         if interval < 1:
             raise ValueError("查询间隔必须至少为1分钟")
         
-        # 如果提供了配置文件，尝试从配置文件读取账号信息
-        if config_path and account_id and exchange == ExchangeName.XT:
-            try:
-                from tri_arb.config.account_manager import AccountManager
-                account_manager = AccountManager(config_path)
-                account_config = account_manager.get_account(account_id)
+        # 检查是否使用多账号模式（仅支持XT）
+        if exchange == ExchangeName.XT:
+            account_id_list = None
+            if accounts:
+                account_id_list = [acc_id.strip() for acc_id in accounts.split(",")]
+            elif all_accounts:
+                if not config_path:
+                    console.print("[red]错误:[/red] --all-accounts 需要配合 --config 使用")
+                    raise typer.Exit(code=1)
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
+                    enabled_accounts = account_manager.get_enabled_accounts()
+                    account_id_list = [acc.account_id for acc in enabled_accounts]
+                    if not account_id_list:
+                        console.print("[red]错误:[/red] 配置文件中没有启用的账号")
+                        raise typer.Exit(code=1)
+                except Exception as e:
+                    console.print(f"[red]错误:[/red] 读取配置文件失败: {e}")
+                    raise typer.Exit(code=1)
+            
+            # 多账号模式
+            if account_id_list:
+                if not config_path:
+                    console.print("[red]错误:[/red] 多账号模式需要配合 --config 使用")
+                    raise typer.Exit(code=1)
                 
-                if account_config:
-                    # 从配置文件读取 API 密钥（如果命令行未提供）
-                    if not api_key:
-                        api_key = account_config.api_key
-                    if not api_secret:
-                        api_secret = account_config.api_secret
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
                     
-                    console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
-                else:
-                    console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号 {account_id}，使用命令行参数或环境变量")
-            except Exception as e:
-                console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
+                    # 验证所有账号是否存在，并过滤出启用的账号
+                    account_configs = []
+                    for acc_id in account_id_list:
+                        acc_config = account_manager.get_account(acc_id)
+                        if not acc_config:
+                            console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号: {acc_id}，跳过")
+                            continue
+                        if not acc_config.enabled:
+                            console.print(f"[yellow]警告:[/yellow] 账号 {acc_id} 未启用（enabled: false），跳过")
+                            continue
+                        account_configs.append(acc_config)
+                    
+                    if not account_configs:
+                        console.print("[red]错误:[/red] 没有可用的启用账号")
+                        raise typer.Exit(code=1)
+                    
+                    console.print(f"[cyan]多账号监控模式[/cyan]")
+                    console.print(f"[cyan]账号数量: {len(account_configs)}[/cyan]")
+                    for acc in account_configs:
+                        console.print(f"  - {acc.account_id}: {acc.name}")
+                    console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
+                    console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+                    
+                    # 为每个账号启动独立的监控任务
+                    async def run_multi_account_watch():
+                        tasks = []
+                        for acc_config in account_configs:
+                            task = asyncio.create_task(
+                                _run_xt_watch_balance_async(
+                                    interval=interval,
+                                    api_key=acc_config.api_key,
+                                    api_secret=acc_config.api_secret,
+                                    exchange_type=exchange_type,
+                                    output=output,
+                                    debug=debug,
+                                    account_id=acc_config.account_id,
+                                    account_name=acc_config.name,
+                                )
+                            )
+                            tasks.append(task)
+                            # 稍微延迟，避免同时连接过多
+                            await asyncio.sleep(0.5)
+                        
+                        try:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                        except KeyboardInterrupt:
+                            console.print("\n[yellow]监控已停止[/yellow]")
+                    
+                    asyncio.run(run_multi_account_watch())
+                    return
+                    
+                except Exception as e:
+                    console.print(f"[red]错误:[/red] 多账号模式启动失败: {e}")
+                    if debug:
+                        console.print_exception()
+                    raise typer.Exit(code=1)
+            
+            # 单账号模式：如果提供了配置文件，尝试从配置文件读取账号信息
+            if config_path and account_id:
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
+                    account_config = account_manager.get_account(account_id)
+                    
+                    if account_config:
+                        # 检查账号是否启用
+                        if not account_config.enabled:
+                            console.print(f"[yellow]警告:[/yellow] 账号 {account_id} 未启用（enabled: false）")
+                        
+                        # 从配置文件读取 API 密钥（如果命令行未提供）
+                        if not api_key:
+                            api_key = account_config.api_key
+                        if not api_secret:
+                            api_secret = account_config.api_secret
+                        
+                        console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
+                    else:
+                        console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号 {account_id}，使用命令行参数或环境变量")
+                except Exception as e:
+                    console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
         
         # 创建 exchange 实例
         exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
@@ -1348,7 +1651,7 @@ def watch_balance(
                                 )
                         console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
                     else:
-                        await db_manager.create_tables()
+                    await db_manager.create_tables()
                 except Exception as init_exc:
                     logger.warning(f"初始化数据库表失败: {init_exc}")
                 
@@ -1482,6 +1785,111 @@ def watch_balance(
         raise typer.Exit(code=1)
 
 
+async def _run_xt_watch_balance_async(
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    exchange_type: ExchangeType,
+    output: str,
+    debug: bool,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+) -> None:
+    """异步版本的 XT 余额监控（用于多账号并发）."""
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的余额监控")
+
+    exchange_instance = create_exchange(exchange_type, api_key, api_secret, ExchangeName.XT)
+    db_manager = DatabaseManager()
+
+    async def watch_loop():
+        iteration = 0
+        try:
+            await exchange_instance.connect()
+            # 确保所需表存在
+            try:
+                if account_id:
+                    from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                    account_models = create_account_table_models(account_id)
+                    async with db_manager.async_engine.begin() as conn:
+                        for model_class in account_models.values():
+                            await conn.run_sync(
+                                lambda sync_conn, m=model_class: m.metadata.create_all(
+                                    sync_conn, checkfirst=True
+                                )
+                            )
+                    logger.info(f"账号 {account_label} 的数据库表已就绪")
+                else:
+                    await db_manager.create_tables()
+            except Exception as init_exc:
+                logger.warning(f"账号 {account_label} 初始化数据库表失败: {init_exc}")
+
+            while True:
+                iteration += 1
+                current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                console.print(f"\n[cyan][账号 {account_label}] 第 {iteration} 次查询 - {current_time}[/cyan]")
+
+                try:
+                    balance_data = await exchange_instance.get_balance()
+
+                    if not balance_data:
+                        console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
+                    else:
+                        # 根据输出格式显示
+                        if output == "json":
+                            print_json(balance_data)
+                        else:  # table (default)
+                            format_balance_table(balance_data, exchange_instance)
+
+                        # 保存到数据库
+                        try:
+                            now = datetime.datetime.utcnow()
+                            for currency, data in balance_data.items():
+                                available = Decimal(str(data.get("available", 0)))
+                                frozen = Decimal(str(data.get("frozen", 0)))
+                                total = Decimal(str(data.get("total", 0)))
+                                raw_json = json.dumps(data, default=str)
+
+                                async with db_manager.session() as session:
+                                    if account_id:
+                                        from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                                        account_models = create_account_table_models(account_id)
+                                        AccountUpdateModel = account_models['XTAccountUpdate']
+                                    else:
+                                        AccountUpdateModel = XTAccountUpdate
+                                    
+                                    record = AccountUpdateModel(
+                                        update_time=now,
+                                        currency=currency.upper(),
+                                        available=available,
+                                        frozen=frozen,
+                                        total=total,
+                                        raw_data=raw_json,
+                                    )
+                                    session.add(record)
+                        except Exception as save_exc:
+                            logger.warning(f"账号 {account_label} 保存余额到数据库失败: {save_exc}")
+
+                        next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
+                        console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+
+                except Exception as e:
+                    console.print(f"[red][账号 {account_label}] 查询失败:[/red] {e}")
+                    if debug:
+                        console.print_exception()
+
+                console.print(f"[dim][账号 {account_label}] 等待 {interval} 分钟...[/dim]")
+                await asyncio.sleep(interval * 60)
+
+        except KeyboardInterrupt:
+            logger.info(f"账号 {account_label} 的监控已停止")
+        finally:
+            await exchange_instance.disconnect()
+
+    await watch_loop()
+
+
 @app.command("watch-account")
 def watch_account(
     exchange: ExchangeName = typer.Option(
@@ -1548,6 +1956,16 @@ def watch_account(
         "-c",
         help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥、Lark配置、指标配置等）"
     ),
+    accounts: Optional[str] = typer.Option(
+        None,
+        "--accounts",
+        help="多个账号ID（逗号分隔），例如: account_001,account_002。需要配合 --config 使用，只监控 enabled: true 的账号"
+    ),
+    all_accounts: bool = typer.Option(
+        False,
+        "--all-accounts",
+        help="从配置文件读取所有启用的账号（enabled: true）并同时监控。需要配合 --config 使用"
+    ),
 ):
     """定时获取账户数据（现货余额、合约余额、合约仓位）.
     
@@ -1562,6 +1980,8 @@ def watch_account(
     
     支持从配置文件读取账号信息：
     - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥、Lark 配置和指标配置
+    - 如果提供了 --config 和 --accounts，将同时监控多个账号（逗号分隔，只监控 enabled: true 的账号）
+    - 如果提供了 --config 和 --all-accounts，将监控配置文件中所有 enabled: true 的账号
     - 配置文件格式参考: config/accounts.example.json
     
     按 Ctrl+C 停止监控。
@@ -1575,6 +1995,12 @@ def watch_account(
         
         # 从配置文件读取账号信息
         cextools account watch-account -x xt --config config/accounts.json --account-id account_001
+        
+        # 同时监控多个账号（只监控启用的账号）
+        cextools account watch-account -x xt --config config/accounts.json --accounts account_001,account_002
+        
+        # 监控配置文件中所有启用的账号
+        cextools account watch-account -x xt --config config/accounts.json --all-accounts
         
         # 通过命令行参数提供API密钥
         cextools account watch-account -x xt --api-key YOUR_KEY --api-secret YOUR_SECRET
@@ -1591,7 +2017,97 @@ def watch_account(
             console.print("\n请使用: [cyan]cextools account watch-account -x xt[/cyan]")
             raise typer.Exit(code=1)
         
-        # 如果提供了配置文件，尝试从配置文件读取账号信息
+        # 检查是否使用多账号模式
+        account_id_list = None
+        if accounts:
+            account_id_list = [acc_id.strip() for acc_id in accounts.split(",")]
+        elif all_accounts:
+            if not config_path:
+                console.print("[red]错误:[/red] --all-accounts 需要配合 --config 使用")
+                raise typer.Exit(code=1)
+            try:
+                from tri_arb.config.account_manager import AccountManager
+                account_manager = AccountManager(config_path)
+                enabled_accounts = account_manager.get_enabled_accounts()
+                account_id_list = [acc.account_id for acc in enabled_accounts]
+                if not account_id_list:
+                    console.print("[red]错误:[/red] 配置文件中没有启用的账号")
+                    raise typer.Exit(code=1)
+            except Exception as e:
+                console.print(f"[red]错误:[/red] 读取配置文件失败: {e}")
+                raise typer.Exit(code=1)
+        
+        # 多账号模式
+        if account_id_list:
+            if not config_path:
+                console.print("[red]错误:[/red] 多账号模式需要配合 --config 使用")
+                raise typer.Exit(code=1)
+            
+            try:
+                from tri_arb.config.account_manager import AccountManager
+                account_manager = AccountManager(config_path)
+                
+                # 验证所有账号是否存在，并过滤出启用的账号
+                account_configs = []
+                for acc_id in account_id_list:
+                    acc_config = account_manager.get_account(acc_id)
+                    if not acc_config:
+                        console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号: {acc_id}，跳过")
+                        continue
+                    if not acc_config.enabled:
+                        console.print(f"[yellow]警告:[/yellow] 账号 {acc_id} 未启用（enabled: false），跳过")
+                        continue
+                    account_configs.append(acc_config)
+                
+                if not account_configs:
+                    console.print("[red]错误:[/red] 没有可用的启用账号")
+                    raise typer.Exit(code=1)
+                
+                console.print(f"[cyan]多账号监控模式[/cyan]")
+                console.print(f"[cyan]账号数量: {len(account_configs)}[/cyan]")
+                for acc in account_configs:
+                    console.print(f"  - {acc.account_id}: {acc.name}")
+                console.print(f"[cyan]查询间隔: {interval_minutes} 分钟[/cyan]")
+                console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+                
+                # 为每个账号启动独立的监控任务
+                async def run_multi_account_watch():
+                    tasks = []
+                    for acc_config in account_configs:
+                        task = asyncio.create_task(
+                            _run_xt_watch_account_async(
+                                interval_minutes=interval_minutes,
+                                api_key=acc_config.api_key,
+                                api_secret=acc_config.api_secret,
+                                debug=debug,
+                                enable_lark=enable_lark,
+                                lark_webhook=acc_config.lark_webhook if enable_lark else None,
+                                lark_secret=acc_config.lark_secret if enable_lark else None,
+                                metrics_config=metrics_config,
+                                enable_metrics=enable_metrics,
+                                account_id=acc_config.account_id,
+                                account_name=acc_config.name,
+                            )
+                        )
+                        tasks.append(task)
+                        # 稍微延迟，避免同时连接过多
+                        await asyncio.sleep(0.5)
+                    
+                    try:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    except KeyboardInterrupt:
+                        console.print("\n[yellow]监控已停止[/yellow]")
+                
+                asyncio.run(run_multi_account_watch())
+                return
+                
+            except Exception as e:
+                console.print(f"[red]错误:[/red] 多账号模式启动失败: {e}")
+                if debug:
+                    console.print_exception()
+                raise typer.Exit(code=1)
+        
+        # 单账号模式：如果提供了配置文件，尝试从配置文件读取账号信息
         if config_path and account_id:
             try:
                 from tri_arb.config.account_manager import AccountManager
@@ -1599,6 +2115,10 @@ def watch_account(
                 account_config = account_manager.get_account(account_id)
                 
                 if account_config:
+                    # 检查账号是否启用
+                    if not account_config.enabled:
+                        console.print(f"[yellow]警告:[/yellow] 账号 {account_id} 未启用（enabled: false）")
+                    
                     # 从配置文件读取 API 密钥（如果命令行未提供）
                     if not api_key:
                         api_key = account_config.api_key
@@ -1997,6 +2517,323 @@ def watch_account(
         raise typer.Exit(code=1)
 
 
+async def _run_xt_watch_account_async(
+    interval_minutes: int,
+    api_key: str,
+    api_secret: str,
+    debug: bool,
+    enable_lark: bool,
+    lark_webhook: Optional[str],
+    lark_secret: Optional[str],
+    metrics_config: Optional[str],
+    enable_metrics: bool,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+) -> None:
+    """异步版本的 XT 账户监控（用于多账号并发）."""
+    from rich.table import Table
+    from tri_arb.exchanges.xt_spot import XTSpotExchange
+    from tri_arb.exchanges.xt_perp import XTPerpExchange
+    from tri_arb.services.xt_rest_data_service import XTRestDataService
+
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的账户监控")
+
+    db_manager = DatabaseManager()
+    spot_exchange = XTSpotExchange(
+        name="xt",
+        api_key=api_key,
+        api_secret=api_secret,
+    )
+    perp_exchange = XTPerpExchange(
+        api_key=api_key,
+        api_secret=api_secret,
+    )
+    xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
+
+    webhook_url: Optional[str] = lark_webhook
+    webhook_secret: Optional[str] = lark_secret
+    if enable_lark and not webhook_url:
+        webhook_url = os.getenv("LARK_WEBHOOK_URL")
+    if enable_lark and not webhook_secret:
+        webhook_secret = os.getenv("LARK_WEBHOOK_SECRET")
+
+    metrics_definition: Optional[MetricsConfig] = None
+    if enable_metrics:
+        metrics_path = metrics_config or os.getenv("METRICS_CONFIG_PATH")
+        metrics_definition = load_metrics_config(metrics_path)
+        if not metrics_definition.exchanges:
+            logger.info(f"账号 {account_label} 指标配置为空，跳过指标评估")
+            metrics_definition = None
+
+    async def fetch_and_display(iteration_num: int):
+        """获取数据并显示表格."""
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        console.print(f"\n[cyan][账号 {account_label}] 第 {iteration_num} 次查询 - {current_time}[/cyan]")
+
+        try:
+            # 1. 获取并显示现货账户余额
+            try:
+                spot_balances = await spot_exchange.get_balance()
+                if spot_balances:
+                    spot_table = Table(
+                        title=f"XT 现货账户余额 - {account_label}",
+                        show_header=True,
+                        header_style="bold magenta"
+                    )
+                    spot_table.add_column("Currency", style="cyan", width=12)
+                    spot_table.add_column("Available", justify="right", style="green")
+                    spot_table.add_column("Frozen", justify="right", style="yellow")
+                    spot_table.add_column("Total", justify="right", style="white")
+                    
+                    for currency, data in spot_balances.items():
+                        available = data.get('available', Decimal('0'))
+                        frozen = data.get('frozen', Decimal('0'))
+                        total = data.get('total', available + frozen)
+                        
+                        spot_table.add_row(
+                            currency,
+                            f"{available:.8f}",
+                            f"{frozen:.8f}",
+                            f"{total:.8f}",
+                        )
+                    
+                    console.print(spot_table)
+                    console.print(f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                    
+                    await xt_rest_service.save_spot_balance(
+                        balances_data=spot_balances,
+                        query_type="scheduled",
+                    )
+                else:
+                    console.print(f"[yellow][账号 {account_label}] XT 现货账户余额为空[/yellow]\n")
+            except Exception as e:
+                console.print(f"[red][账号 {account_label}] 获取现货余额失败:[/red] {e}\n")
+                if debug:
+                    console.print_exception()
+
+            # 2. 获取并显示合约账户余额
+            try:
+                perp_balances = await perp_exchange.get_balance()
+                if perp_balances:
+                    balances_data: dict[str, dict[str, Any]] = {}
+                    for currency, balance_info in perp_balances.items():
+                        balances_data[currency] = {
+                            "available": balance_info.get("available", Decimal("0")),
+                            "frozen": balance_info.get("frozen", Decimal("0")),
+                            "total": balance_info.get("total", Decimal("0")),
+                            "unrealized_pnl": balance_info.get("unrealized_pnl", Decimal("0")),
+                            "realized_pnl": balance_info.get("realized_pnl", Decimal("0")),
+                            "equity": balance_info.get("equity", Decimal("0")),
+                            "margin": balance_info.get("margin", Decimal("0")),
+                            "margin_ratio": balance_info.get("margin_ratio", Decimal("0")),
+                        }
+
+                    perp_table = Table(
+                        title=f"XT 合约账户余额 - {account_label}",
+                        show_header=True,
+                        header_style="bold magenta"
+                    )
+                    perp_table.add_column("Currency", style="cyan", width=12)
+                    perp_table.add_column("Available", justify="right", style="green")
+                    perp_table.add_column("Frozen", justify="right", style="yellow")
+                    perp_table.add_column("Total", justify="right", style="white")
+                    perp_table.add_column("Unrealized PnL", justify="right")
+                    perp_table.add_column("Realized PnL", justify="right")
+                    perp_table.add_column("Equity", justify="right")
+                    perp_table.add_column("Margin", justify="right")
+
+                    for currency, data in balances_data.items():
+                        available = data.get("available", Decimal("0"))
+                        frozen = data.get("frozen", Decimal("0"))
+                        total = data.get("total", Decimal("0"))
+                        unrealized_pnl = data.get("unrealized_pnl", Decimal("0"))
+                        realized_pnl = data.get("realized_pnl", Decimal("0"))
+                        equity = data.get("equity", Decimal("0"))
+                        margin = data.get("margin", Decimal("0"))
+
+                        unrealized_style = "green" if unrealized_pnl >= 0 else "red"
+                        realized_style = "green" if realized_pnl >= 0 else "red"
+
+                        perp_table.add_row(
+                            currency,
+                            f"{available:.8f}",
+                            f"{frozen:.8f}",
+                            f"{total:.8f}",
+                            f"[{unrealized_style}]{unrealized_pnl:.8f}[/{unrealized_style}]",
+                            f"[{realized_style}]{realized_pnl:.8f}[/{realized_style}]",
+                            f"{equity:.8f}",
+                            f"{margin:.8f}",
+                        )
+
+                    console.print(perp_table)
+                    console.print(f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                    
+                    await xt_rest_service.save_perp_balance(
+                        balances_data=balances_data,
+                        query_type="scheduled",
+                    )
+                else:
+                    console.print(f"[yellow][账号 {account_label}] XT 合约账户余额为空[/yellow]\n")
+            except Exception as e:
+                console.print(f"[red][账号 {account_label}] 获取合约余额失败:[/red] {e}\n")
+                if debug:
+                    console.print_exception()
+
+            # 3. 获取并显示合约账户仓位
+            try:
+                positions = await perp_exchange.get_positions(symbol=None)
+                if positions:
+                    position_table = Table(
+                        title=f"XT 合约账户仓位 - {account_label}",
+                        show_header=True,
+                        header_style="bold magenta"
+                    )
+                    position_table.add_column("Symbol", style="cyan")
+                    position_table.add_column("Side", style="white")
+                    position_table.add_column("Quantity", justify="right")
+                    position_table.add_column("Entry Price", justify="right")
+                    position_table.add_column("Mark Price", justify="right")
+                    position_table.add_column("Liquidation Price", justify="right")
+                    position_table.add_column("Unrealized PnL", justify="right")
+                    position_table.add_column("Realized PnL", justify="right")
+                    position_table.add_column("Maintenance Margin", justify="right")
+                    position_table.add_column("Leverage", justify="right")
+
+                    positions_data: list[dict[str, Any]] = []
+                    for pos in positions:
+                        if hasattr(pos, "symbol"):
+                            pos_symbol = pos.symbol
+                            side = getattr(pos, "side", getattr(pos, "position_side", ""))
+                            quantity = getattr(pos, "quantity", Decimal("0"))
+                            entry_price = getattr(pos, "entry_price", Decimal("0"))
+                            mark_price = getattr(pos, "mark_price", Decimal("0"))
+                            unrealized_pnl = getattr(pos, "unrealized_pnl", Decimal("0"))
+                            realized_pnl = getattr(pos, "realized_pnl", Decimal("0"))
+                            liquidation_price = getattr(pos, "liquidation_price", Decimal("0"))
+                            leverage = getattr(pos, "leverage", "")
+                            maintenance_margin = getattr(pos, "maintenance_margin", Decimal("0"))
+                        else:
+                            pos_symbol = pos.get("symbol", "")
+                            side = pos.get("positionSide") or pos.get("side", "")
+                            quantity = Decimal(str(pos.get("positionSize") or pos.get("positionAmt") or "0"))
+                            entry_price = Decimal(str(pos.get("entryPrice") or "0"))
+                            mark_price = Decimal(str(pos.get("calMarkPrice") or pos.get("markPrice") or "0"))
+                            unrealized_pnl = Decimal(str(pos.get("floatingPL") or pos.get("unRealizedProfit") or pos.get("unrealizedPnl") or "0"))
+                            realized_pnl = Decimal(str(pos.get("realizedProfit") or pos.get("realizedPnl") or "0"))
+                            liquidation_price = Decimal(str(pos.get("breakPrice") or pos.get("liquidationPrice") or "0"))
+                            leverage = pos.get("leverage", "")
+                            maintenance_margin = Decimal(str(pos.get("maintMargin") or "0"))
+
+                        if quantity == Decimal("0"):
+                            continue
+
+                        unrealized_style = "green" if unrealized_pnl >= 0 else "red"
+                        realized_style = "green" if realized_pnl >= 0 else "red"
+
+                        position_table.add_row(
+                            pos_symbol,
+                            side,
+                            f"{quantity:.8f}",
+                            f"{entry_price:.8f}",
+                            f"{mark_price:.8f}",
+                            f"{liquidation_price:.8f}",
+                            f"[{unrealized_style}]{unrealized_pnl:.8f}[/{unrealized_style}]",
+                            f"[{realized_style}]{realized_pnl:.8f}[/{realized_style}]",
+                            f"{maintenance_margin:.8f}",
+                            f"{leverage}x" if leverage else "-",
+                        )
+
+                        pos_dict = {
+                            "symbol": pos_symbol,
+                            "positionSide": side,
+                            "positionSize": str(quantity),
+                            "entryPrice": str(entry_price),
+                            "calMarkPrice": str(mark_price),
+                            "floatingPL": str(unrealized_pnl),
+                            "realizedProfit": str(realized_pnl),
+                            "breakPrice": str(liquidation_price),
+                            "isolatedMargin": str(getattr(pos, "margin", Decimal("0")) if hasattr(pos, "margin") else pos.get("isolatedMargin", "0")),
+                            "maintMargin": str(maintenance_margin),
+                            "leverage": leverage,
+                        }
+                        positions_data.append(pos_dict)
+
+                    if positions_data:
+                        console.print(position_table)
+                        console.print(f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
+                        
+                        await xt_rest_service.save_perp_positions(
+                            positions_data=positions_data,
+                            query_type="scheduled",
+                        )
+                    else:
+                        console.print(f"[yellow][账号 {account_label}] XT 当前无持仓[/yellow]\n")
+                else:
+                    console.print(f"[yellow][账号 {account_label}] XT 当前无持仓[/yellow]\n")
+            except Exception as e:
+                console.print(f"[red][账号 {account_label}] 获取仓位失败:[/red] {e}\n")
+                if debug:
+                    console.print_exception()
+
+            # 4. 评估指标（如果启用）
+            if metrics_definition:
+                await _evaluate_metrics(
+                    metrics_config=metrics_definition,
+                    db_manager=db_manager,
+                    enable_lark=enable_lark,
+                    default_webhook=webhook_url,
+                    default_secret=webhook_secret,
+                    debug=debug,
+                )
+
+            # 显示下次查询时间
+            next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
+            console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+            console.print(f"[dim][账号 {account_label}] 等待 {interval_minutes} 分钟...[/dim]\n")
+
+        except Exception as e:
+            console.print(f"[red][账号 {account_label}] 查询过程出错:[/red] {e}")
+            if debug:
+                console.print_exception()
+
+    iteration = 0
+    try:
+        # 创建数据库表
+        if account_id:
+            await xt_rest_service.ensure_account_tables()
+            logger.info(f"账号 {account_label} 的数据库表已就绪")
+        else:
+            await db_manager.create_tables()
+
+        # 连接交易所
+        await spot_exchange.connect()
+        await perp_exchange.connect()
+        logger.info(f"账号 {account_label} 交易所连接成功")
+
+        # 立即执行一次查询
+        iteration = 1
+        await fetch_and_display(iteration)
+
+        # 定时查询循环
+        while True:
+            await asyncio.sleep(interval_minutes * 60)
+            iteration += 1
+            await fetch_and_display(iteration)
+
+    except KeyboardInterrupt:
+        logger.info(f"账号 {account_label} 的监控已停止")
+    except Exception as e:
+        logger.error(f"账号 {account_label} 的监控异常", error=str(e), exc_info=True)
+        if debug:
+            console.print_exception()
+    finally:
+        await spot_exchange.disconnect()
+        await perp_exchange.disconnect()
+        await db_manager.close()
+
+
 @app.command("watch-positions")
 def watch_positions(
     exchange_type: ExchangeType = typer.Option(
@@ -2071,6 +2908,16 @@ def watch_positions(
         "-c",
         help="账号配置文件路径（JSON格式）。如果提供，将从配置文件读取账号信息（API密钥、Lark配置等）"
     ),
+    accounts: Optional[str] = typer.Option(
+        None,
+        "--accounts",
+        help="多个账号ID（逗号分隔），例如: account_001,account_002。需要配合 --config 使用"
+    ),
+    all_accounts: bool = typer.Option(
+        False,
+        "--all-accounts",
+        help="从配置文件读取所有启用的账号并同时监控。需要配合 --config 使用"
+    ),
 ):
     """定时查询持仓（仅永续合约）.
     
@@ -2080,6 +2927,8 @@ def watch_positions(
     
     支持从配置文件读取账号信息：
     - 如果提供了 --config 和 --account-id，将从配置文件读取该账号的 API 密钥和 Lark 配置
+    - 如果提供了 --config 和 --accounts，将同时监控多个账号（逗号分隔）
+    - 如果提供了 --config 和 --all-accounts，将监控配置文件中所有启用的账号
     - 配置文件格式参考: config/accounts.example.json
     
     按 Ctrl+C 停止监控。
@@ -2091,8 +2940,14 @@ def watch_positions(
         # 使用账号特定的表（XT）
         cextools account watch-positions -x xt -e perp --account-id account_001
         
-        # 从配置文件读取账号信息
+        # 从配置文件读取单个账号信息
         cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
+        
+        # 同时监控多个账号
+        cextools account watch-positions -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+        
+        # 监控配置文件中所有启用的账号
+        cextools account watch-positions -x xt -e perp --config config/accounts.json --all-accounts
         
         # 每2分钟查询Binance的BTC持仓
         cextools account watch-positions -x binance -e perp -s BTC/USDT --interval 2
@@ -2128,6 +2983,95 @@ def watch_positions(
                 enable_lark = False
 
         if exchange == ExchangeName.XT:
+            # 检查是否使用多账号模式
+            account_id_list = None
+            if accounts:
+                account_id_list = [acc_id.strip() for acc_id in accounts.split(",")]
+            elif all_accounts:
+                if not config_path:
+                    console.print("[red]错误:[/red] --all-accounts 需要配合 --config 使用")
+                    raise typer.Exit(code=1)
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
+                    enabled_accounts = account_manager.get_enabled_accounts()
+                    account_id_list = [acc.account_id for acc in enabled_accounts]
+                    if not account_id_list:
+                        console.print("[red]错误:[/red] 配置文件中没有启用的账号")
+                        raise typer.Exit(code=1)
+                except Exception as e:
+                    console.print(f"[red]错误:[/red] 读取配置文件失败: {e}")
+                    raise typer.Exit(code=1)
+            
+            # 多账号模式
+            if account_id_list:
+                if not config_path:
+                    console.print("[red]错误:[/red] 多账号模式需要配合 --config 使用")
+                    raise typer.Exit(code=1)
+                
+                try:
+                    from tri_arb.config.account_manager import AccountManager
+                    account_manager = AccountManager(config_path)
+                    
+                    # 验证所有账号是否存在，并过滤出启用的账号
+                    account_configs = []
+                    for acc_id in account_id_list:
+                        acc_config = account_manager.get_account(acc_id)
+                        if not acc_config:
+                            console.print(f"[yellow]警告:[/yellow] 配置文件中未找到账号: {acc_id}，跳过")
+                            continue
+                        if not acc_config.enabled:
+                            console.print(f"[yellow]警告:[/yellow] 账号 {acc_id} 未启用（enabled: false），跳过")
+                            continue
+                        account_configs.append(acc_config)
+                    
+                    if not account_configs:
+                        console.print("[red]错误:[/red] 没有可用的启用账号")
+                        raise typer.Exit(code=1)
+                    
+                    console.print(f"[cyan]多账号监控模式[/cyan]")
+                    console.print(f"[cyan]账号数量: {len(account_configs)}[/cyan]")
+                    for acc in account_configs:
+                        console.print(f"  - {acc.account_id}: {acc.name}")
+                    console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
+                    console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+                    
+                    # 为每个账号启动独立的监控任务
+                    async def run_multi_account_watch():
+                        tasks = []
+                        for acc_config in account_configs:
+                            task = asyncio.create_task(
+                                _run_xt_watch_positions_async(
+                                    interval=interval,
+                                    api_key=acc_config.api_key,
+                                    api_secret=acc_config.api_secret,
+                                    symbol=symbol,
+                                    debug=debug,
+                                    lark_webhook=acc_config.lark_webhook if enable_lark else None,
+                                    lark_secret=acc_config.lark_secret if enable_lark else None,
+                                    account_id=acc_config.account_id,
+                                    account_name=acc_config.name,
+                                )
+                            )
+                            tasks.append(task)
+                            # 稍微延迟，避免同时连接过多
+                            await asyncio.sleep(0.5)
+                        
+                        try:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                        except KeyboardInterrupt:
+                            console.print("\n[yellow]监控已停止[/yellow]")
+                    
+                    asyncio.run(run_multi_account_watch())
+                    return
+                    
+                except Exception as e:
+                    console.print(f"[red]错误:[/red] 多账号模式启动失败: {e}")
+                    if debug:
+                        console.print_exception()
+                    raise typer.Exit(code=1)
+            
+            # 单账号模式（原有逻辑）
             # 如果提供了配置文件，尝试从配置文件读取账号信息
             if config_path and account_id:
                 try:

@@ -46,6 +46,7 @@ async def _run_xt_watch_positions_async(
     lark_secret: Optional[str] = None,
     account_id: Optional[str] = None,
     account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
 ) -> None:
     """异步版本的 XT 仓位监控（用于多账号并发）."""
     from rich.table import Table
@@ -56,7 +57,7 @@ async def _run_xt_watch_positions_async(
     logger.info(f"启动账号 {account_label} 的仓位监控")
     console.print(f"[cyan]启动账号 {account_label} 的仓位监控[/cyan]")
 
-    db_manager = DatabaseManager()
+    db_manager = DatabaseManager(database_url=database_url)
     perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
     xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
 
@@ -1575,6 +1576,9 @@ def watch_balance(
                     console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
                     
                     # 为每个账号启动独立的监控任务
+                    # 从配置文件获取 database_url
+                    database_url = account_manager.global_settings.get("database_url")
+                    
                     async def run_multi_account_watch():
                         tasks = []
                         for acc_config in account_configs:
@@ -1588,6 +1592,7 @@ def watch_balance(
                                     debug=debug,
                                     account_id=acc_config.account_id,
                                     account_name=acc_config.name,
+                                    database_url=database_url,
                                 )
                             )
                             tasks.append(task)
@@ -1805,13 +1810,14 @@ async def _run_xt_watch_balance_async(
     debug: bool,
     account_id: Optional[str] = None,
     account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
 ) -> None:
     """异步版本的 XT 余额监控（用于多账号并发）."""
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的余额监控")
 
     exchange_instance = create_exchange(exchange_type, api_key, api_secret, ExchangeName.XT)
-    db_manager = DatabaseManager()
+    db_manager = DatabaseManager(database_url=database_url)
 
     async def watch_loop():
         iteration = 0
@@ -2082,6 +2088,9 @@ def watch_account(
                 console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
                 
                 # 为每个账号启动独立的监控任务
+                # 从配置文件获取 database_url
+                database_url = account_manager.global_settings.get("database_url")
+                
                 async def run_multi_account_watch():
                     tasks = []
                     for acc_config in account_configs:
@@ -2098,6 +2107,7 @@ def watch_account(
                                 enable_metrics=enable_metrics,
                                 account_id=acc_config.account_id,
                                 account_name=acc_config.name,
+                                database_url=database_url,
                             )
                         )
                         tasks.append(task)
@@ -2540,6 +2550,7 @@ async def _run_xt_watch_account_async(
     enable_metrics: bool,
     account_id: Optional[str] = None,
     account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
 ) -> None:
     """异步版本的 XT 账户监控（用于多账号并发）."""
     from rich.table import Table
@@ -2550,7 +2561,7 @@ async def _run_xt_watch_account_async(
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的账户监控")
 
-    db_manager = DatabaseManager()
+    db_manager = DatabaseManager(database_url=database_url)
     spot_exchange = XTSpotExchange(
         name="xt",
         api_key=api_key,
@@ -3062,6 +3073,9 @@ def watch_positions(
                     console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
                     
                     # 为每个账号启动独立的监控任务
+                    # 从配置文件获取 database_url
+                    database_url = account_manager.global_settings.get("database_url")
+                    
                     async def run_multi_account_watch():
                         tasks = []
                         for acc_config in account_configs:
@@ -3076,6 +3090,7 @@ def watch_positions(
                                     lark_secret=acc_config.lark_secret if enable_lark else None,
                                     account_id=acc_config.account_id,
                                     account_name=acc_config.name,
+                                    database_url=database_url,
                                 )
                             )
                             tasks.append(task)

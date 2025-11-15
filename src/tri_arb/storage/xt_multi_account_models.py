@@ -12,6 +12,9 @@ from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
 
+# 缓存已创建的表模型，避免重复定义
+_account_models_cache: dict[str, dict] = {}
+
 
 def create_account_table_models(account_id: str):
     """为指定账号创建表模型类.
@@ -22,8 +25,14 @@ def create_account_table_models(account_id: str):
     Returns:
         dict: 包含所有表模型类的字典
     """
+    # 检查缓存
+    if account_id in _account_models_cache:
+        return _account_models_cache[account_id]
+    
     # 表名后缀（清理特殊字符，确保表名合法）
     table_suffix = account_id.replace("-", "_").replace(".", "_").lower()
+    # 类名后缀（用于确保类名唯一）
+    class_suffix = account_id.replace("-", "_").replace(".", "_").title().replace("_", "")
     
     class XTAccountUpdate(Base):
         """XT WebSocket账户信息更新记录（账号特定表）."""
@@ -41,6 +50,7 @@ def create_account_table_models(account_id: str):
         __table_args__ = (
             Index(f'idx_xt_account_{table_suffix}_currency_time', 'currency', 'update_time'),
             Index(f'idx_xt_account_{table_suffix}_time', 'update_time'),
+            {'extend_existing': True},
         )
     
     class XTSpotUpdate(Base):
@@ -59,6 +69,7 @@ def create_account_table_models(account_id: str):
         __table_args__ = (
             Index(f'idx_xt_spot_{table_suffix}_currency_time', 'currency', 'update_time'),
             Index(f'idx_xt_spot_{table_suffix}_time', 'update_time'),
+            {'extend_existing': True},
         )
     
     class XTPositionUpdate(Base):
@@ -84,6 +95,7 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_position_{table_suffix}_symbol_time', 'symbol', 'update_time'),
             Index(f'idx_xt_position_{table_suffix}_side_time', 'side', 'update_time'),
             Index(f'idx_xt_position_{table_suffix}_time', 'update_time'),
+            {'extend_existing': True},
         )
     
     class XTOrderUpdate(Base):
@@ -113,6 +125,7 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_order_{table_suffix}_symbol_status_time', 'symbol', 'status', 'update_time'),
             Index(f'idx_xt_order_{table_suffix}_time', 'update_time'),
             UniqueConstraint('order_id', 'update_time', name=f'uq_xt_order_{table_suffix}_id_time'),
+            {'extend_existing': True},
         )
     
     class XTTradeUpdate(Base):
@@ -139,6 +152,7 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_trade_{table_suffix}_symbol_time', 'symbol', 'update_time'),
             Index(f'idx_xt_trade_{table_suffix}_order_trade', 'order_id', 'trade_id'),
             Index(f'idx_xt_trade_{table_suffix}_time', 'update_time'),
+            {'extend_existing': True},
         )
     
     class XTTransfer(Base):
@@ -162,6 +176,7 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_transfer_{table_suffix}_currency_time', 'currency', 'transfer_time'),
             Index(f'idx_xt_transfer_{table_suffix}_time', 'transfer_time'),
             Index(f'idx_xt_transfer_{table_suffix}_type', 'transfer_type'),
+            {'extend_existing': True},
         )
     
     # REST API 相关表
@@ -182,6 +197,7 @@ def create_account_table_models(account_id: str):
         __table_args__ = (
             Index(f'idx_xt_spot_balance_{table_suffix}_asset_time', 'asset', 'query_time'),
             Index(f'idx_xt_spot_balance_{table_suffix}_query_type_time', 'query_type', 'query_time'),
+            {'extend_existing': True},
         )
     
     class XTPerpBalance(Base):
@@ -206,6 +222,7 @@ def create_account_table_models(account_id: str):
         __table_args__ = (
             Index(f'idx_xt_perp_balance_{table_suffix}_asset_time', 'asset', 'query_time'),
             Index(f'idx_xt_perp_balance_{table_suffix}_query_type_time', 'query_type', 'query_time'),
+            {'extend_existing': True},
         )
     
     class XTPerpPosition(Base):
@@ -237,6 +254,7 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_perp_position_{table_suffix}_symbol_time', 'symbol', 'query_time'),
             Index(f'idx_xt_perp_position_{table_suffix}_side_time', 'position_side', 'query_time'),
             Index(f'idx_xt_perp_position_{table_suffix}_query_type_time', 'query_type', 'query_time'),
+            {'extend_existing': True},
         )
     
     class XTRestPositionUpdate(Base):
@@ -265,9 +283,10 @@ def create_account_table_models(account_id: str):
             Index(f'idx_xt_rest_position_{table_suffix}_symbol_time', 'symbol', 'query_time'),
             Index(f'idx_xt_rest_position_{table_suffix}_side_time', 'position_side', 'query_time'),
             Index(f'idx_xt_rest_position_{table_suffix}_query_type_time', 'query_type', 'query_time'),
+            {'extend_existing': True},
         )
     
-    return {
+    models = {
         'XTAccountUpdate': XTAccountUpdate,
         'XTSpotUpdate': XTSpotUpdate,
         'XTPositionUpdate': XTPositionUpdate,
@@ -279,4 +298,9 @@ def create_account_table_models(account_id: str):
         'XTPerpPosition': XTPerpPosition,
         'XTRestPositionUpdate': XTRestPositionUpdate,
     }
+    
+    # 缓存模型
+    _account_models_cache[account_id] = models
+    
+    return models
 

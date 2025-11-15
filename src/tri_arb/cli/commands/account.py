@@ -208,8 +208,13 @@ async def _run_xt_watch_positions_async(
 
     iteration = 0
     try:
+        console.print(f"[dim][账号 {account_label}] 正在初始化数据库表...[/dim]")
         await _ensure_xt_rest_tables()
+        console.print(f"[green]✓[/green] [账号 {account_label}] 数据库表已就绪")
+        
+        console.print(f"[dim][账号 {account_label}] 正在连接交易所...[/dim]")
         await perp_exchange.connect()
+        console.print(f"[green]✓[/green] [账号 {account_label}] 交易所连接成功\n")
 
         iteration = 1
         await fetch_positions(iteration)
@@ -220,13 +225,18 @@ async def _run_xt_watch_positions_async(
             await fetch_positions(iteration)
 
     except KeyboardInterrupt:
+        console.print(f"\n[yellow][账号 {account_label}] 监控已停止[/yellow]")
         logger.info(f"账号 {account_label} 的监控已停止")
     except Exception as e:
+        console.print(f"[red][账号 {account_label}] 监控异常:[/red] {e}")
         logger.error(f"账号 {account_label} 的监控异常", error=str(e), exc_info=True)
         if debug:
             console.print_exception()
     finally:
-        await perp_exchange.disconnect()
+        try:
+            await perp_exchange.disconnect()
+        except Exception:
+            pass
 
 
 def _run_xt_watch_positions(

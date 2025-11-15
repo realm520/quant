@@ -9,10 +9,12 @@ from rich.console import Console
 from dotenv import load_dotenv
 
 from tri_arb.cli.utils.exchange_factory import ExchangeName
+from tri_arb.config.account_manager import AccountManager
 from tri_arb.services.binance_user_stream import BinanceUserStreamService
 from tri_arb.services.okx_user_stream import OKXUserStreamService
 from tri_arb.services.gate_user_stream import GateUserStreamService
 from tri_arb.services.xt_user_stream import XTUserStreamService
+from tri_arb.services.xt_multi_account_stream import XTMultiAccountStreamService
 from tri_arb.storage.database import DatabaseManager
 
 app = typer.Typer(help="WebSocket订阅命令")
@@ -74,12 +76,21 @@ def user_stream(
         True,
         "--enable-data-sync/--disable-data-sync",
         help="启用/禁用数据同步（默认启用，防止数据丢失）"
-    )
+    ),
+    account_id: Optional[str] = typer.Option(
+        None,
+        "--account-id",
+        "-a",
+        help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001"
+    ),
 ):
     """订阅用户数据流.
     
     实时接收账户更新、订单更新和成交信息，并存储到PostgreSQL数据库。
     默认订阅永续合约数据。
+    
+    如果提供账号ID（仅支持XT），数据会保存到账号特定的表中。
+    表会在首次运行时自动创建，不会重复创建。
     
     示例:
         # Binance永续合约
@@ -238,11 +249,24 @@ def user_stream(
             # 初始化数据库管理器
             db_manager = DatabaseManager(database_url=db_url)
             
-            # 创建数据库表（如果指定）
-            if create_tables:
+            # 创建数据库表（如果指定或提供了账号ID）
+            if create_tables or account_id:
                 console.print("[cyan]正在创建数据库表...[/cyan]")
-                await db_manager.create_tables()
-                console.print("[green]✅ 数据库表创建成功[/green]\n")
+                if account_id and exchange == ExchangeName.XT:
+                    # 为账号创建特定的表
+                    from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                    account_models = create_account_table_models(account_id)
+                    async with db_manager.async_engine.begin() as conn:
+                        for model_class in account_models.values():
+                            await conn.run_sync(
+                                lambda sync_conn, m=model_class: m.metadata.create_all(
+                                    sync_conn, checkfirst=True
+                                )
+                            )
+                    console.print(f"[green]✅ 账号 {account_id} 的数据库表已就绪[/green]\n")
+                else:
+                    await db_manager.create_tables()
+                    console.print("[green]✅ 数据库表创建成功[/green]\n")
             
             # 验证输出格式
             if output not in ["table", "json", "none"]:
@@ -280,6 +304,7 @@ def user_stream(
                     enabled_channels=channel_list,
                 )
             else:  # XT
+                # 如果提供了账号ID，附加到服务实例
                 service = XTUserStreamService(
                     api_key=key,
                     api_secret=secret,
@@ -289,6 +314,11 @@ def user_stream(
                     enabled_channels=channel_list,
                     enable_data_sync=enable_data_sync,
                 )
+                if account_id:
+                    service.account_id = account_id
+                    # 加载账号特定的表模型
+                    from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                    service.account_models = create_account_table_models(account_id)
             
             console.print("[green]✅ 服务已启动[/green]")
             console.print("[cyan]正在连接WebSocket...[/cyan]\n")
@@ -302,7 +332,188 @@ def user_stream(
                 console.print("[green]✅ 服务已停止[/green]")
         
         asyncio.run(run_service())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]订阅已停止[/yellow]")
+    except Exception as e:
+        if debug:
+            console.print_exception()
+        else:
+            console.print(f"[red]错误:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("multi-account")
+def multi_account(
+    config_path: str = typer.Option(
+        "config/accounts.json",
+        "--config",
+        "-c",
+        help="账号配置文件路径（JSON格式）"
+    ),
+    account_ids: Optional[str] = typer.Option(
+        None,
+        "--accounts",
+        "-a",
+        help="要启动的账号ID列表，用逗号分隔。留空则启动所有启用的账号"
+    ),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL连接URL（覆盖环境变量和配置文件）"
+    ),
+    create_tables: bool = typer.Option(
+        False,
+        "--create-tables",
+        help="自动创建数据库表"
+    ),
+    output: str = typer.Option(
+        "table",
+        "--output",
+        "-o",
+        help="输出格式: table(表格), json(JSON), none(不显示)"
+    ),
+    enable_data_sync: bool = typer.Option(
+        True,
+        "--enable-data-sync/--disable-data-sync",
+        help="启用/禁用数据同步（默认启用）"
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="启用调试模式"
+    ),
+):
+    """多账号订阅服务（仅支持XT）.
+    
+    从配置文件加载多个账号，同时订阅它们的 WebSocket 数据流。
+    每个账号使用独立的数据库表。
+    
+    示例:
+        # 使用默认配置文件
+        cextools subscribe multi-account
         
+        # 指定配置文件
+        cextools subscribe multi-account --config config/my_accounts.json
+        
+        # 只启动指定的账号
+        cextools subscribe multi-account --accounts account_001,account_002
+        
+        # 首次运行，创建数据库表
+        cextools subscribe multi-account --create-tables
+    """
+    import logging
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+    
+    # 加载账号配置
+    try:
+        account_manager = AccountManager(config_path)
+    except FileNotFoundError:
+        console.print(f"[red]错误:[/red] 配置文件不存在: {config_path}")
+        console.print(f"请创建配置文件，参考: config/accounts.example.json")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]错误:[/red] 加载配置文件失败: {e}")
+        raise typer.Exit(code=1)
+    
+    # 获取数据库URL
+    db_url = database_url
+    if not db_url:
+        db_url = account_manager.global_settings.get("database_url")
+    if not db_url:
+        db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        console.print("[red]错误:[/red] 未指定数据库URL")
+        console.print("请通过 --database-url 参数、配置文件或 DATABASE_URL 环境变量指定")
+        raise typer.Exit(code=1)
+    
+    # 解析账号ID列表
+    account_id_list = None
+    if account_ids:
+        account_id_list = [acc_id.strip() for acc_id in account_ids.split(",")]
+        # 验证账号是否存在
+        for acc_id in account_id_list:
+            if not account_manager.get_account(acc_id):
+                console.print(f"[red]错误:[/red] 账号不存在: {acc_id}")
+                raise typer.Exit(code=1)
+    
+    # 显示账号信息
+    enabled_accounts = account_manager.get_enabled_accounts()
+    if account_id_list:
+        enabled_accounts = [
+            acc for acc in enabled_accounts
+            if acc.account_id in account_id_list
+        ]
+    
+    if not enabled_accounts:
+        console.print("[red]错误:[/red] 没有可用的账号")
+        raise typer.Exit(code=1)
+    
+    console.print(f"[cyan]XT多账号订阅服务[/cyan]")
+    console.print(f"[cyan]配置文件: {config_path}[/cyan]")
+    console.print(f"[cyan]数据库: {db_url.split('@')[-1] if '@' in db_url else 'localhost'}[/cyan]")
+    console.print(f"[cyan]账号数量: {len(enabled_accounts)}[/cyan]")
+    for acc in enabled_accounts:
+        console.print(f"  - {acc.account_id}: {acc.name} (频道: {', '.join(acc.channels)})")
+    console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
+    console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
+    
+    async def run_multi_account_service():
+        # 初始化数据库管理器
+        db_manager = DatabaseManager(database_url=db_url)
+        
+        # 创建数据库表（如果指定）
+        if create_tables:
+            console.print("[cyan]正在创建数据库表...[/cyan]")
+            # 为每个账号创建表
+            from tri_arb.storage.xt_multi_account_models import create_account_table_models
+            for acc in enabled_accounts:
+                models = create_account_table_models(acc.account_id)
+                async with db_manager.async_engine.begin() as conn:
+                    for model_class in models.values():
+                        await conn.run_sync(
+                            lambda sync_conn, m=model_class: m.metadata.create_all(
+                                sync_conn, checkfirst=True
+                            )
+                        )
+            console.print("[green]✅ 数据库表创建成功[/green]\n")
+        
+        # 验证输出格式
+        if output not in ["table", "json", "none"]:
+            console.print(f"[red]错误:[/red] 无效的输出格式: {output}")
+            console.print("支持的格式: table, json, none")
+            raise typer.Exit(code=1)
+        
+        # 创建多账号订阅服务
+        service = XTMultiAccountStreamService(
+            account_manager=account_manager,
+            db_manager=db_manager,
+            auto_reconnect=True,
+            display_format=output,
+            enable_data_sync=enable_data_sync,
+        )
+        
+        console.print("[green]✅ 服务已启动[/green]")
+        console.print("[cyan]正在连接WebSocket...[/cyan]\n")
+        
+        try:
+            await service.start(account_ids=account_id_list)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]正在停止服务...[/yellow]")
+            await service.stop()
+            console.print("[green]✅ 服务已停止[/green]")
+        except Exception as e:
+            console.print(f"[red]错误:[/red] {e}")
+            if debug:
+                import traceback
+                traceback.print_exc()
+            await service.stop()
+            raise typer.Exit(code=1)
+        finally:
+            await db_manager.close()
+    
+    try:
+        asyncio.run(run_multi_account_service())
     except KeyboardInterrupt:
         console.print("\n[yellow]订阅已停止[/yellow]")
     except Exception as e:

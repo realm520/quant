@@ -6,7 +6,7 @@
 import json
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -30,15 +30,25 @@ class XTRestDataService:
     - xt_perp_balances: XT合约账户余额
     - xt_perp_positions: XT合约账户仓位（REST定时拉取）
     - xt_rest_position_updates: XT合约仓位定时快照（watch-positions 命令）
+    
+    支持账号特定的表：如果提供 account_id，数据会保存到 {table_name}_{account_id} 表中。
     """
     
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager, account_id: Optional[str] = None):
         """初始化XT REST数据服务.
         
         Args:
             db_manager: 数据库管理器
+            account_id: 账号ID（可选），如果提供则使用账号特定的表
         """
         self.db_manager = db_manager
+        self.account_id = account_id
+        self._account_models = None
+        
+        # 如果提供了账号ID，加载账号特定的表模型
+        if account_id:
+            from tri_arb.storage.xt_multi_account_models import create_account_table_models
+            self._account_models = create_account_table_models(account_id)
     
     async def save_spot_balance(
         self,
@@ -52,6 +62,12 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 选择使用账号特定的表模型或默认表模型
+            if self._account_models:
+                BalanceModel = self._account_models['XTSpotBalance']
+            else:
+                BalanceModel = XTSpotBalance
+            
             async with self.db_manager.session() as session:
                 for asset, data in balances_data.items():
                     # 准备原始数据（保存完整的传入数据，包括所有字段）
@@ -62,7 +78,7 @@ class XTRestDataService:
                         "query_type": query_type,
                     }
                     
-                    balance_record = XTSpotBalance(
+                    balance_record = BalanceModel(
                         query_time=datetime.utcnow(),
                         query_type=query_type,
                         asset=asset,
@@ -74,7 +90,8 @@ class XTRestDataService:
                     session.add(balance_record)
                 
                 await session.commit()
-                logger.info(f"Saved {len(balances_data)} XT spot balance records")
+                account_info = f" (account: {self.account_id})" if self.account_id else ""
+                logger.info(f"Saved {len(balances_data)} XT spot balance records{account_info}")
                 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT spot balance: {e}")
@@ -92,6 +109,12 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 选择使用账号特定的表模型或默认表模型
+            if self._account_models:
+                BalanceModel = self._account_models['XTPerpBalance']
+            else:
+                BalanceModel = XTPerpBalance
+            
             async with self.db_manager.session() as session:
                 for asset, data in balances_data.items():
                     # 准备原始数据（保存完整的传入数据，包括所有字段）
@@ -102,7 +125,7 @@ class XTRestDataService:
                         "query_type": query_type,
                     }
                     
-                    balance_record = XTPerpBalance(
+                    balance_record = BalanceModel(
                         query_time=datetime.utcnow(),
                         query_type=query_type,
                         asset=asset,
@@ -119,7 +142,8 @@ class XTRestDataService:
                     session.add(balance_record)
                 
                 await session.commit()
-                logger.info(f"Saved {len(balances_data)} XT perp balance records")
+                account_info = f" (account: {self.account_id})" if self.account_id else ""
+                logger.info(f"Saved {len(balances_data)} XT perp balance records{account_info}")
                 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT perp balance: {e}")
@@ -137,6 +161,12 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 选择使用账号特定的表模型或默认表模型
+            if self._account_models:
+                PositionModel = self._account_models['XTPerpPosition']
+            else:
+                PositionModel = XTPerpPosition
+            
             async with self.db_manager.session() as session:
                 now = datetime.utcnow()
                 for pos_data in positions_data:
@@ -166,7 +196,7 @@ class XTRestDataService:
                     # 保存原始数据（完整的API响应）
                     raw_data = json.dumps(pos_data, ensure_ascii=False, default=str)
                     
-                    position_record = XTPerpPosition(
+                    position_record = PositionModel(
                         query_time=now,
                         query_type=query_type,
                         symbol=str(symbol),
@@ -189,7 +219,8 @@ class XTRestDataService:
                     session.add(position_record)
                 
                 await session.commit()
-                logger.info(f"Saved {len(positions_data)} XT perp position records")
+                account_info = f" (account: {self.account_id})" if self.account_id else ""
+                logger.info(f"Saved {len(positions_data)} XT perp position records{account_info}")
                 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT perp positions: {e}")
@@ -202,6 +233,12 @@ class XTRestDataService:
     ):
         """保存XT永续仓位定时更新记录."""
         try:
+            # 选择使用账号特定的表模型或默认表模型
+            if self._account_models:
+                PositionUpdateModel = self._account_models['XTRestPositionUpdate']
+            else:
+                PositionUpdateModel = XTRestPositionUpdate
+            
             async with self.db_manager.session() as session:
                 now = datetime.utcnow()
                 for pos_data in positions_data:
@@ -222,7 +259,7 @@ class XTRestDataService:
                     leverage = pos_data.get("leverage")
                     roe = pos_data.get("roe")
 
-                    record = XTRestPositionUpdate(
+                    record = PositionUpdateModel(
                         query_time=now,
                         query_type=query_type,
                         symbol=str(symbol),
@@ -242,9 +279,28 @@ class XTRestDataService:
                     session.add(record)
 
                 await session.commit()
-                logger.info(f"Saved {len(positions_data)} XT rest position update records")
+                account_info = f" (account: {self.account_id})" if self.account_id else ""
+                logger.info(f"Saved {len(positions_data)} XT rest position update records{account_info}")
 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT rest position updates: {e}")
+            raise
+    
+    async def ensure_account_tables(self):
+        """确保账号特定的表已创建."""
+        if not self.account_id or not self._account_models:
+            return
+        
+        try:
+            async with self.db_manager.async_engine.begin() as conn:
+                for model_class in self._account_models.values():
+                    await conn.run_sync(
+                        lambda sync_conn, m=model_class: m.metadata.create_all(
+                            sync_conn, checkfirst=True
+                        )
+                    )
+            logger.info(f"账号 {self.account_id} 的数据库表已就绪")
+        except Exception as e:
+            logger.error(f"创建账号 {self.account_id} 的表失败: {e}")
             raise
 

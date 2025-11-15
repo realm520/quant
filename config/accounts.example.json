@@ -1,0 +1,51 @@
+{
+  "accounts": {
+    "account_001": {
+      "name": "主账号",
+      "exchange": "xt",
+      "api_key": "your_xt_api_key_1",
+      "api_secret": "your_xt_api_secret_1",
+      "enabled": true,
+      "channels": ["account", "position", "order"],
+      "metrics_config": {
+        "perp_balance_volatility": {
+          "enabled": true,
+          "window_minutes": 1440,
+          "warning_threshold": 0.05,
+          "critical_threshold": 0.10
+        },
+        "perp_risk_ratio": {
+          "enabled": true,
+          "asset": "USDT",
+          "warning_threshold": 0.50,
+          "critical_threshold": 0.80
+        }
+      },
+      "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/...",
+      "lark_secret": "optional_secret"
+    },
+    "account_002": {
+      "name": "测试账号",
+      "exchange": "xt",
+      "api_key": "your_xt_api_key_2",
+      "api_secret": "your_xt_api_secret_2",
+      "enabled": true,
+      "channels": ["account", "position"],
+      "metrics_config": {
+        "perp_risk_ratio": {
+          "enabled": true,
+          "asset": "USDT",
+          "warning_threshold": 0.60,
+          "critical_threshold": 0.90
+        }
+      },
+      "lark_webhook": null
+    }
+  },
+  "global_settings": {
+    "default_interval_minutes": 10,
+    "enable_lark_by_default": false,
+    "database_url": "${DATABASE_URL}"
+  }
+}
+

@@ -44,6 +44,7 @@ def _run_xt_watch_positions(
     debug: bool,
     lark_webhook: Optional[str] = None,
     lark_secret: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> None:
     """运行XT永续仓位定时监控并写入数据库."""
     from rich.table import Table
@@ -54,11 +55,13 @@ def _run_xt_watch_positions(
     console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")
     if symbol:
         console.print(f"[cyan]仅监控交易对: {symbol}[/cyan]")
+    if account_id:
+        console.print(f"[cyan]账号ID: {account_id}[/cyan]")
     console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
 
     db_manager = DatabaseManager()
     perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
-    xt_rest_service = XTRestDataService(db_manager)
+    xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
 
     normalized_target = None
     if symbol:
@@ -200,18 +203,24 @@ def _run_xt_watch_positions(
             )
 
     async def _ensure_xt_rest_tables():
-        from tri_arb.storage.xt_rest_models import Base as XTRestBase
-
-        async with db_manager.async_engine.begin() as conn:
-            await conn.run_sync(
-                lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
-            )
+        if account_id:
+            # 确保账号特定的表已创建
+            await xt_rest_service.ensure_account_tables()
+        else:
+            from tri_arb.storage.xt_rest_models import Base as XTRestBase
+            async with db_manager.async_engine.begin() as conn:
+                await conn.run_sync(
+                    lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
+                )
 
     async def run_scheduler():
         iteration = 0
         try:
             await _ensure_xt_rest_tables()
-            console.print("[green]✓[/green] XT REST 数据表已就绪\n")
+            if account_id:
+                console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
+            else:
+                console.print("[green]✓[/green] XT REST 数据表已就绪\n")
 
             await perp_exchange.connect()
             console.print("[green]✓[/green] 交易所连接成功\n")
@@ -1243,15 +1252,27 @@ def watch_balance(
         "--debug",
         help="启用调试模式"
     ),
+    account_id: Optional[str] = typer.Option(
+        None,
+        "--account-id",
+        "-a",
+        help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001"
+    ),
 ):
     """定时查询账户余额.
     
     每隔指定分钟查询一次余额，持续监控账户变化。
+    如果提供账号ID（仅支持XT），数据会保存到账号特定的表中。
+    表会在首次运行时自动创建，不会重复创建。
+    
     按 Ctrl+C 停止监控。
     
     示例:
         # 每1分钟查询一次余额
         cextools account watch-balance -e perp
+        
+        # 使用账号特定的表（XT）
+        cextools account watch-balance -x xt -e perp --account-id account_001
         
         # 每5分钟查询一次Binance余额
         cextools account watch-balance -x binance -e perp --interval 5
@@ -1281,7 +1302,20 @@ def watch_balance(
                 await exchange_instance.connect()
                 # 确保所需表存在（只执行一次）
                 try:
-                    await db_manager.create_tables()
+                    if account_id and exchange == ExchangeName.XT:
+                        # 为账号创建特定的表
+                        from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                        account_models = create_account_table_models(account_id)
+                        async with db_manager.async_engine.begin() as conn:
+                            for model_class in account_models.values():
+                                await conn.run_sync(
+                                    lambda sync_conn, m=model_class: m.metadata.create_all(
+                                        sync_conn, checkfirst=True
+                                    )
+                                )
+                        console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
+                    else:
+                        await db_manager.create_tables()
                 except Exception as init_exc:
                     logger.warning(f"初始化数据库表失败: {init_exc}")
                 
@@ -1353,8 +1387,16 @@ def watch_balance(
                                                 raw_data=raw_json,
                                             )
                                         elif exchange == ExchangeName.XT:
+                                            # 如果提供了账号ID，使用账号特定的表模型
+                                            if account_id:
+                                                from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                                                account_models = create_account_table_models(account_id)
+                                                AccountUpdateModel = account_models['XTAccountUpdate']
+                                            else:
+                                                AccountUpdateModel = XTAccountUpdate
+                                            
                                             # 复用 XT WebSocket 的账户更新表，记录 REST 快照
-                                            record = XTAccountUpdate(
+                                            record = AccountUpdateModel(
                                                 update_time=now,
                                                 currency=currency.upper(),
                                                 available=available,
@@ -1461,6 +1503,12 @@ def watch_account(
         "--enable-metrics/--disable-metrics",
         help="是否启用指标评估（默认启用）"
     ),
+    account_id: Optional[str] = typer.Option(
+        None,
+        "--account-id",
+        "-a",
+        help="账号ID（可选），如果提供则使用账号特定的表。例如: account_001"
+    ),
 ):
     """定时获取账户数据（现货余额、合约余额、合约仓位）.
     
@@ -1470,11 +1518,17 @@ def watch_account(
     - 合约账户仓位
     
     数据自动保存到PostgreSQL数据库。
+    如果提供账号ID，数据会保存到账号特定的表中（例如: xt_spot_balances_account_001）。
+    表会在首次运行时自动创建，不会重复创建。
+    
     按 Ctrl+C 停止监控。
     
     示例:
         # 使用环境变量中的API密钥（XT交易所）
         cextools account watch-account -x xt
+        
+        # 使用账号特定的表
+        cextools account watch-account -x xt --account-id account_001
         
         # 通过命令行参数提供API密钥
         cextools account watch-account -x xt --api-key YOUR_KEY --api-secret YOUR_SECRET
@@ -1553,15 +1607,21 @@ def watch_account(
             api_key=final_api_key,
             api_secret=final_api_secret,
         )
-        xt_rest_service = XTRestDataService(db_manager)
+        xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
         
         # 异步运行定时任务
         async def run_scheduler():
             iteration = 0
             try:
                 # 创建数据库表（如果不存在）
-                await db_manager.create_tables()
-                console.print("[green]✓[/green] 数据库表已就绪\n")
+                if account_id:
+                    # 确保账号特定的表已创建
+                    await xt_rest_service.ensure_account_tables()
+                    console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
+                else:
+                    # 创建默认表
+                    await db_manager.create_tables()
+                    console.print("[green]✓[/green] 数据库表已就绪\n")
                 
                 # 连接交易所
                 await spot_exchange.connect()
@@ -1925,16 +1985,28 @@ def watch_positions(
         False,
         "--enable-lark/--disable-lark",
         help="启用/禁用 Lark 告警推送（默认禁用）"
-    )
+    ),
+    account_id: Optional[str] = typer.Option(
+        None,
+        "--account-id",
+        "-a",
+        help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001"
+    ),
 ):
     """定时查询持仓（仅永续合约）.
     
     每隔指定分钟查询一次持仓，持续监控持仓变化。
+    如果提供账号ID（仅支持XT），数据会保存到账号特定的表中。
+    表会在首次运行时自动创建，不会重复创建。
+    
     按 Ctrl+C 停止监控。
     
     示例:
         # 每1分钟查询一次所有持仓
         cextools account watch-positions -e perp
+        
+        # 使用账号特定的表（XT）
+        cextools account watch-positions -x xt -e perp --account-id account_001
         
         # 每2分钟查询Binance的BTC持仓
         cextools account watch-positions -x binance -e perp -s BTC/USDT --interval 2
@@ -1988,6 +2060,7 @@ def watch_positions(
                 debug=debug,
                 lark_webhook=webhook_url if enable_lark else None,
                 lark_secret=webhook_secret if enable_lark else None,
+                account_id=account_id,
             )
             return
 

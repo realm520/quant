@@ -135,12 +135,46 @@ class XTUserStreamService:
         self._last_spot_balances = {}  # 存储上次现货账户余额，用于划转分析
         self._supported_transfer_currencies = {"USDT"}
         
+        # 账号特定的表模型（如果提供了 account_id）
+        self.account_id = None
+        self.account_models = None
+        
         logger.debug("XT WebSocket service initialized",
                     extra={
                         "enabled_channels": list(self.enabled_channels),
                         "data_sync_enabled": self.enable_data_sync,
                         "fixed_lookback_hours": 1
                     })
+    
+    def _get_model(self, model_name: str):
+        """获取表模型（账号特定的或默认的）.
+        
+        Args:
+            model_name: 模型名称，如 'XTAccountUpdate', 'XTPositionUpdate' 等
+        
+        Returns:
+            表模型类
+        """
+        if self.account_models and model_name in self.account_models:
+            return self.account_models[model_name]
+        # 返回默认模型
+        from tri_arb.storage.xt_websocket_models import (
+            XTAccountUpdate,
+            XTSpotUpdate,
+            XTPositionUpdate,
+            XTOrderUpdate,
+            XTTradeUpdate,
+            XTTransfer,
+        )
+        model_map = {
+            'XTAccountUpdate': XTAccountUpdate,
+            'XTSpotUpdate': XTSpotUpdate,
+            'XTPositionUpdate': XTPositionUpdate,
+            'XTOrderUpdate': XTOrderUpdate,
+            'XTTradeUpdate': XTTradeUpdate,
+            'XTTransfer': XTTransfer,
+        }
+        return model_map.get(model_name)
     async def start(self) -> None:
         """启动WebSocket服务."""
         if self.is_running:
@@ -940,7 +974,8 @@ class XTUserStreamService:
                     frozen = self._safe_decimal(data.get("openOrderMarginFrozen", "0"))
                     total = self._safe_decimal(data.get("walletBalance", "0"))
                     
-                    record = XTAccountUpdate(
+                    AccountUpdateModel = self._get_model('XTAccountUpdate')
+                    record = AccountUpdateModel(
                         update_time=update_time,
                         currency=currency,
                         available=available,
@@ -962,7 +997,8 @@ class XTUserStreamService:
                         frozen = self._safe_decimal(balance.get("frozen", "0"))
                         total = available + frozen
                         
-                        record = XTAccountUpdate(
+                        AccountUpdateModel = self._get_model('XTAccountUpdate')
+                        record = AccountUpdateModel(
                             update_time=update_time,
                             currency=currency,
                             available=available,
@@ -1038,7 +1074,8 @@ class XTUserStreamService:
                     # XT API uses breakPrice, fallback to liquidationPrice
                     liquidation_price_raw = data.get("breakPrice") or data.get("liquidationPrice", "0")
                     
-                    record = XTPositionUpdate(
+                    PositionUpdateModel = self._get_model('XTPositionUpdate')
+                    record = PositionUpdateModel(
                         update_time=update_time,
                         symbol=symbol,
                         side=side,
@@ -1103,7 +1140,8 @@ class XTUserStreamService:
                         # XT API uses breakPrice, fallback to liquidationPrice
                         liquidation_price_raw = position.get("breakPrice") or position.get("liquidationPrice") or position.get("liquidation_price", "0")
                         
-                        record = XTPositionUpdate(
+                        PositionUpdateModel = self._get_model('XTPositionUpdate')
+                        record = PositionUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             side=side,
@@ -1154,7 +1192,8 @@ class XTUserStreamService:
                     # XT API uses state, fallback to status
                     status = data.get("state") or data.get("status", "")
                     
-                    record = XTOrderUpdate(
+                    OrderUpdateModel = self._get_model('XTOrderUpdate')
+                    record = OrderUpdateModel(
                         update_time=update_time,
                         symbol=symbol,
                         order_id=str(order_id),
@@ -1196,7 +1235,8 @@ class XTUserStreamService:
                         # XT API uses state, fallback to status
                         status = order.get("state") or order.get("status", "")
                         
-                        record = XTOrderUpdate(
+                        OrderUpdateModel = self._get_model('XTOrderUpdate')
+                        record = OrderUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             order_id=str(order_id),
@@ -1242,7 +1282,8 @@ class XTUserStreamService:
                     quantity = self._safe_decimal(trade.get("quantity", "0"))
                     quote_quantity = price * quantity
                     
-                    record = XTTradeUpdate(
+                    TradeUpdateModel = self._get_model('XTTradeUpdate')
+                    record = TradeUpdateModel(
                         update_time=update_time,
                         symbol=symbol,
                         order_id=order_id,
@@ -1345,8 +1386,9 @@ class XTUserStreamService:
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
                 
+                AccountUpdateModel = self._get_model('XTAccountUpdate')
                 for currency, balance_data in balances.items():
-                    record = XTAccountUpdate(
+                    record = AccountUpdateModel(
                         update_time=update_time,
                         currency=currency,
                         available=balance_data.get("available", Decimal("0")),
@@ -1379,8 +1421,9 @@ class XTUserStreamService:
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
                 
+                PositionUpdateModel = self._get_model('XTPositionUpdate')
                 for position in positions:
-                    record = XTPositionUpdate(
+                    record = PositionUpdateModel(
                         update_time=update_time,
                         symbol=position.symbol,
                         side=position.side,
@@ -1453,10 +1496,11 @@ class XTUserStreamService:
                         order_id = order.exchange_order_id
 
                         # 检查订单是否已存在（去重）
+                        OrderUpdateModel = self._get_model('XTOrderUpdate')
                         existing_result = await session.execute(
-                            select(XTOrderUpdate).where(
-                                XTOrderUpdate.order_id == order_id,
-                                XTOrderUpdate.symbol == symbol
+                            select(OrderUpdateModel).where(
+                                OrderUpdateModel.order_id == order_id,
+                                OrderUpdateModel.symbol == symbol
                             ).limit(1)
                         )
                         existing_order = existing_result.scalar_one_or_none()
@@ -1466,7 +1510,8 @@ class XTUserStreamService:
                             skipped_count += 1
                             continue
 
-                        record = XTOrderUpdate(
+                        OrderUpdateModel = self._get_model('XTOrderUpdate')
+                        record = OrderUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             order_id=order_id,
@@ -1550,10 +1595,11 @@ class XTUserStreamService:
                             continue
 
                         # 检查成交是否已存在（去重）
+                        TradeUpdateModel = self._get_model('XTTradeUpdate')
                         existing_result = await session.execute(
-                            select(XTTradeUpdate).where(
-                                XTTradeUpdate.trade_id == str(trade_id),
-                                XTTradeUpdate.symbol == symbol
+                            select(TradeUpdateModel).where(
+                                TradeUpdateModel.trade_id == str(trade_id),
+                                TradeUpdateModel.symbol == symbol
                             ).limit(1)
                         )
                         existing_trade = existing_result.scalar_one_or_none()
@@ -1639,10 +1685,11 @@ class XTUserStreamService:
                         order_id = order.exchange_order_id
 
                         # 检查订单是否已存在（去重）
+                        OrderUpdateModel = self._get_model('XTOrderUpdate')
                         existing_result = await session.execute(
-                            select(XTOrderUpdate).where(
-                                XTOrderUpdate.order_id == order_id,
-                                XTOrderUpdate.symbol == symbol
+                            select(OrderUpdateModel).where(
+                                OrderUpdateModel.order_id == order_id,
+                                OrderUpdateModel.symbol == symbol
                             ).limit(1)
                         )
                         existing_order = existing_result.scalar_one_or_none()
@@ -1652,7 +1699,8 @@ class XTUserStreamService:
                             skipped_count += 1
                             continue
 
-                        record = XTOrderUpdate(
+                        OrderUpdateModel = self._get_model('XTOrderUpdate')
+                        record = OrderUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             order_id=order_id,
@@ -1734,10 +1782,11 @@ class XTUserStreamService:
                             continue
 
                         # 检查成交是否已存在（去重）
+                        TradeUpdateModel = self._get_model('XTTradeUpdate')
                         existing_result = await session.execute(
-                            select(XTTradeUpdate).where(
-                                XTTradeUpdate.trade_id == str(trade_id),
-                                XTTradeUpdate.symbol == symbol
+                            select(TradeUpdateModel).where(
+                                TradeUpdateModel.trade_id == str(trade_id),
+                                TradeUpdateModel.symbol == symbol
                             ).limit(1)
                         )
                         existing_trade = existing_result.scalar_one_or_none()
@@ -2199,10 +2248,11 @@ class XTUserStreamService:
             async with self.db_manager.session() as session:
                 # 查询该币种的最新记录（按update_time降序）
                 currency_key = currency.lower()
+                AccountUpdateModel = self._get_model('XTAccountUpdate')
                 stmt = (
-                    select(XTAccountUpdate)
-                    .where(XTAccountUpdate.currency == currency_key)
-                    .order_by(XTAccountUpdate.update_time.desc())
+                    select(AccountUpdateModel)
+                    .where(AccountUpdateModel.currency == currency_key)
+                    .order_by(AccountUpdateModel.update_time.desc())
                     .limit(1)
                 )
                 result = await session.execute(stmt)
@@ -2292,9 +2342,10 @@ class XTUserStreamService:
             return
         
         try:
+            SpotUpdateModel = self._get_model('XTSpotUpdate')
             async with self.db_manager.session() as session:
                 for payload in records:
-                    session.add(XTSpotUpdate(**payload))
+                    session.add(SpotUpdateModel(**payload))
                 await session.commit()
         except Exception as e:
             error_msg = str(e)
@@ -2791,7 +2842,8 @@ class XTUserStreamService:
         """保存资金划转记录到数据库."""
         try:
             async with self.db_manager.session() as session:
-                transfer_record = XTTransfer(
+                TransferModel = self._get_model('XTTransfer')
+                transfer_record = TransferModel(
                     transfer_time=transfer_time,
                     currency=currency,
                     amount=amount,
@@ -2835,8 +2887,9 @@ class XTUserStreamService:
                         await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
                     logger.info("XT WebSocket 数据库表创建成功，重试保存划转记录...")
                     # 重试保存
+                    TransferModel = self._get_model('XTTransfer')
                     async with self.db_manager.session() as session:
-                        transfer_record = XTTransfer(
+                        transfer_record = TransferModel(
                             transfer_time=transfer_time,
                             currency=currency,
                             amount=amount,

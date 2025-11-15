@@ -1651,7 +1651,7 @@ def watch_balance(
                                 )
                         console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
                     else:
-                    await db_manager.create_tables()
+                        await db_manager.create_tables()
                 except Exception as init_exc:
                     logger.warning(f"初始化数据库表失败: {init_exc}")
                 

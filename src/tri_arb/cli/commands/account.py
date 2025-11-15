@@ -2985,6 +2985,7 @@ def watch_positions(
         if exchange == ExchangeName.XT:
             # 检查是否使用多账号模式
             account_id_list = None
+            account_manager = None
             if accounts:
                 account_id_list = [acc_id.strip() for acc_id in accounts.split(",")]
             elif all_accounts:
@@ -3011,7 +3012,9 @@ def watch_positions(
                 
                 try:
                     from tri_arb.config.account_manager import AccountManager
-                    account_manager = AccountManager(config_path)
+                    # 如果之前已经初始化过，复用实例；否则创建新实例
+                    if account_manager is None:
+                        account_manager = AccountManager(config_path)
                     
                     # 验证所有账号是否存在，并过滤出启用的账号
                     account_configs = []
@@ -3029,8 +3032,19 @@ def watch_positions(
                         console.print("[red]错误:[/red] 没有可用的启用账号")
                         raise typer.Exit(code=1)
                     
+                    # 显示统计信息
+                    all_accounts_list = account_manager.get_all_accounts()
+                    total_count = len(all_accounts_list)
+                    enabled_count = len(account_configs)
+                    disabled_count = total_count - enabled_count
+                    
                     console.print(f"[cyan]多账号监控模式[/cyan]")
-                    console.print(f"[cyan]账号数量: {len(account_configs)}[/cyan]")
+                    console.print(f"[cyan]配置文件账号统计:[/cyan]")
+                    console.print(f"  - 总账号数: {total_count}")
+                    console.print(f"  - 启用账号: {enabled_count}")
+                    if disabled_count > 0:
+                        console.print(f"  - 禁用账号: {disabled_count} (已自动跳过)")
+                    console.print(f"[cyan]监控账号列表:[/cyan]")
                     for acc in account_configs:
                         console.print(f"  - {acc.account_id}: {acc.name}")
                     console.print(f"[cyan]查询间隔: {interval} 分钟[/cyan]")

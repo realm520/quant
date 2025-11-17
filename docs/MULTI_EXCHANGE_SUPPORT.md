@@ -5,7 +5,7 @@
 `cextools` 现在支持在同一个配置文件中配置多个不同交易所的账号，并可以同时监控它们。支持的交易所包括：
 
 - **XT** (`xt`) - 完整支持，包括 `watch-balance / watch-account / watch-positions` 以及账号特定表
-- **Binance** (`binance`) - 支持 `watch-balance` 与 `watch-account`，现货/合约余额及合约仓位会写入 `rest_balances` / `rest_positions`
+- **Binance** (`binance`) - 支持 `watch-balance / watch-account / watch-positions`，数据写入 `rest_balances` / `rest_positions`
 - **OKX** (`okx`) - 支持 `watch-balance`（仅余额监控）
 - **Gate.io** (`gate`) - 支持 `watch-balance`（仅余额监控）
 
@@ -61,20 +61,29 @@
 ### 监控所有启用的账号（多交易所）
 
 ```bash
-# 监控所有账号的永续合约余额
-cextools account watch-balance -x xt -e perp --config config/accounts.json --all-accounts
+# 永续合约余额（自动识别交易所）
+cextools account watch-balance --config config/accounts.json --all-accounts -e perp
 
-# 监控所有账号的现货余额
-cextools account watch-balance -x xt -e spot --config config/accounts.json --all-accounts
+# 账户总览（XT + Binance 混合）
+cextools account watch-account --config config/accounts.json --all-accounts
+
+# 仓位监控（XT + Binance）
+cextools account watch-positions --config config/accounts.json --all-accounts
+
+# WebSocket 多账号订阅（XT / Binance / OKX / Gate）
+cextools subscribe multi-account --config config/accounts.json
 ```
 
-**注意**：`-x` 参数在多账号模式下会被忽略，系统会根据每个账号配置中的 `exchange` 字段自动选择对应的交易所。
+**注意**：多账号模式下 `-x` 参数会被忽略，系统会根据每个账号配置中的 `exchange` 字段自动选择对应的交易所。
 
 ### 监控特定账号
 
 ```bash
-# 监控特定账号（可以是不同交易所）
-cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
+# 监控指定账号
+cextools account watch-balance --config config/accounts.json --account-id account_001 -e perp
+
+# 监控多个账号（逗号分隔）
+cextools account watch-account --config config/accounts.json --accounts account_001,binance_main
 ```
 
 ## 功能特性
@@ -87,22 +96,29 @@ cextools account watch-balance -x xt -e perp --config config/accounts.json --acc
 - ✅ 支持账户监控（`watch-account`）
 - ✅ 支持 WebSocket 数据流订阅
 
-### 其他交易所（Binance, OKX, Gate）
+### Binance 交易所
+
+- ✅ 支持余额监控、账户监控、仓位监控（`watch-balance / watch-account / watch-positions`）
+- ✅ 余额与仓位写入 `rest_balances`、`rest_positions`（按账号维度区分）
+- ⚠️ 暂未提供账号特定表（共享通用表结构）
+
+### 其他交易所（OKX, Gate）
 
 - ✅ 支持余额监控和显示
 - ✅ 支持日志记录（暂不保存到数据库）
-- ⚠️ 暂不支持账号特定表（使用默认表结构）
-- ⚠️ 暂不支持仓位监控和账户监控（仅支持余额监控）
+- ⚠️ 暂未提供仓位/账户监控
 
 ## 实现原理
 
-1. **路由机制**：`_run_watch_balance_async` 函数根据账号配置中的 `exchange` 字段，自动路由到对应的交易所处理函数。
+1. **统一调度层**：`watch-balance`、`watch-account`、`watch-positions` 在进入多账号模式后，会先读取配置文件，再根据账号的 `exchange` 字段自动路由到 XT/Binance/通用实现。
 
-2. **XT 专用实现**：XT 交易所使用 `_run_xt_watch_balance_async`，支持账号特定表和完整的数据保存功能。
+2. **XT 专用实现**：XT 交易所对应 `_run_xt_watch_balance_async` / `_run_xt_watch_account_async` / `_run_xt_watch_positions_async`，支持账号特定表和完整的数据保存、Lark 告警、指标计算。
 
-3. **通用实现**：其他交易所使用 `_run_generic_watch_balance_async`，提供基础的余额监控和显示功能。
+3. **通用实现**：Binance 及其他交易所使用 `_run_generic_watch_balance_async`、`_run_binance_watch_account_async` 等函数，向 `rest_balances` / `rest_positions` 写入标准化数据。
 
-4. **并发执行**：所有账号的监控任务通过 `asyncio.gather` 并发执行，互不干扰。
+4. **WebSocket 多账号**：`subscribe multi-account` 会为每个账号创建独立的用户数据流服务（XT 账号继续复用账号特表），并行运行互不干扰。
+
+5. **并发执行**：所有任务通过 `asyncio.gather` 并发执行，单个账号异常不会影响其它账号。
 
 ## 数据库存储
 
@@ -164,9 +180,11 @@ cextools account watch-balance -x xt -e perp --config config/accounts.json --acc
 
 ### 常用命令
 
-- XT 多账号监控：`cextools account watch-account --config config/accounts.json --all-accounts`
-- Binance 单账号监控：`cextools account watch-account -x binance --api-key YOUR_KEY --api-secret YOUR_SECRET`
-- Binance 使用配置文件：`cextools account watch-account --config config/accounts.json --account-id binance_main`
+- 多交易所余额监控：`cextools account watch-balance --config config/accounts.json --all-accounts -e perp`
+- 多交易所账户监控：`cextools account watch-account --config config/accounts.json --all-accounts`
+- 多交易所仓位监控：`cextools account watch-positions --config config/accounts.json --all-accounts`
+- 指定账号仓位：`cextools account watch-positions --config config/accounts.json --account-id binance_main`
+- 多账号 WebSocket：`cextools subscribe multi-account --config config/accounts.json`
 
 ## 未来计划
 

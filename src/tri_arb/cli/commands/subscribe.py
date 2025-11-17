@@ -242,7 +242,7 @@ def user_stream(
             console.print(f"[cyan]订阅频道: {', '.join(channel_list)}[/cyan]")
         else:
             console.print(f"[cyan]订阅频道: 全部[/cyan]")
-        console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
+        console.print(f"[cyan]数据同步: {"启用" if enable_data_sync else "禁用"}[/cyan]")
         console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
         
         async def run_service():
@@ -383,146 +383,202 @@ def multi_account(
         help="启用调试模式"
     ),
 ):
-    """多账号订阅服务（仅支持XT）.
-    
-    从配置文件加载多个账号，同时订阅它们的 WebSocket 数据流。
-    每个账号使用独立的数据库表。
-    
-    示例:
-        # 使用默认配置文件
-        cextools subscribe multi-account
-        
-        # 指定配置文件
-        cextools subscribe multi-account --config config/my_accounts.json
-        
-        # 只启动指定的账号
-        cextools subscribe multi-account --accounts account_001,account_002
-        
-        # 首次运行，创建数据库表
-        cextools subscribe multi-account --create-tables
+    """多交易所多账号订阅服务.
+
+    - 支持 XT / Binance / OKX / Gate.io 等交易所账号混合运行
+    - 账号信息、频道、API 凭证从 JSON 配置文件读取
+    - XT 账号自动使用账号特定的表结构
     """
     import logging
     if debug:
         logging.basicConfig(level=logging.DEBUG)
-    
+
     # 加载账号配置
     try:
         account_manager = AccountManager(config_path)
     except FileNotFoundError:
         console.print(f"[red]错误:[/red] 配置文件不存在: {config_path}")
-        console.print(f"请创建配置文件，参考: config/accounts.example.json")
+        console.print("请创建配置文件，参考: config/accounts.example.json")
         raise typer.Exit(code=1)
-    except Exception as e:
-        console.print(f"[red]错误:[/red] 加载配置文件失败: {e}")
+    except Exception as exc:
+        console.print(f"[red]错误:[/red] 加载配置文件失败: {exc}")
         raise typer.Exit(code=1)
-    
-    # 获取数据库URL
-    db_url = database_url
-    if not db_url:
-        db_url = account_manager.global_settings.get("database_url")
-    if not db_url:
-        db_url = os.getenv("DATABASE_URL")
+
+    # 获取数据库URL，优先级: 参数 > 配置 > 环境变量
+    db_url = database_url or account_manager.global_settings.get("database_url") or os.getenv("DATABASE_URL")
     if not db_url:
         console.print("[red]错误:[/red] 未指定数据库URL")
-        console.print("请通过 --database-url 参数、配置文件或 DATABASE_URL 环境变量指定")
+        console.print("请通过 --database-url 参数、配置文件 global_settings 或 DATABASE_URL 环境变量指定")
         raise typer.Exit(code=1)
-    
+
     # 解析账号ID列表
-    account_id_list = None
+    requested_ids = None
     if account_ids:
-        account_id_list = [acc_id.strip() for acc_id in account_ids.split(",")]
-        # 验证账号是否存在
-        for acc_id in account_id_list:
-            if not account_manager.get_account(acc_id):
-                console.print(f"[red]错误:[/red] 账号不存在: {acc_id}")
-                raise typer.Exit(code=1)
-    
-    # 显示账号信息
+        requested_ids = [acc_id.strip() for acc_id in account_ids.split(",") if acc_id.strip()]
+        if not requested_ids:
+            console.print("[red]错误:[/red] --accounts 参数为空")
+            raise typer.Exit(code=1)
+
+    # 过滤启用账号
     enabled_accounts = account_manager.get_enabled_accounts()
-    if account_id_list:
-        enabled_accounts = [
-            acc for acc in enabled_accounts
-            if acc.account_id in account_id_list
-        ]
-    
+    if requested_ids is not None:
+        enabled_accounts = [acc for acc in enabled_accounts if acc.account_id in requested_ids]
+        missing = set(requested_ids) - {acc.account_id for acc in enabled_accounts}
+        if missing:
+            console.print(f"[yellow]警告:[/yellow] 下列账号未启用或不存在: {', '.join(sorted(missing))}")
     if not enabled_accounts:
-        console.print("[red]错误:[/red] 没有可用的账号")
+        console.print("[red]错误:[/red] 没有可用的启用账号")
         raise typer.Exit(code=1)
-    
-    console.print(f"[cyan]XT多账号订阅服务[/cyan]")
+
+    total_accounts = len(account_manager.get_all_accounts())
+    console.print(f"[cyan]多交易所多账号订阅服务[/cyan]")
     console.print(f"[cyan]配置文件: {config_path}[/cyan]")
-    console.print(f"[cyan]数据库: {db_url.split('@')[-1] if '@' in db_url else 'localhost'}[/cyan]")
-    console.print(f"[cyan]账号数量: {len(enabled_accounts)}[/cyan]")
+    console.print(f"[cyan]数据库: {db_url.split('@')[-1] if '@' in db_url else db_url}[/cyan]")
+    console.print(f"[cyan]启用账号: {len(enabled_accounts)} / {total_accounts}[/cyan]")
     for acc in enabled_accounts:
-        console.print(f"  - {acc.account_id}: {acc.name} (频道: {', '.join(acc.channels)})")
-    console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
-    console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
-    
-    async def run_multi_account_service():
-        # 初始化数据库管理器
+        exchange_name = acc.exchange.upper()
+        channels_desc = ", ".join(acc.channels) if acc.channels else "全部"
+        console.print(f"  - {acc.account_id}: {acc.name} [{exchange_name}] 频道: {channels_desc}")
+    console.print(f"[cyan]输出格式: {output}[/cyan]")
+    console.print(f"[cyan]数据同步: {"启用" if enable_data_sync else "禁用"}[/cyan]")
+    console.print("[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
+
+    async def prepare_tables_if_needed():
+        if not create_tables:
+            return
+        console.print("[cyan]正在创建基础数据库表...[/cyan]")
         db_manager = DatabaseManager(database_url=db_url)
-        
-        # 创建数据库表（如果指定）
-        if create_tables:
-            console.print("[cyan]正在创建数据库表...[/cyan]")
-            # 为每个账号创建表
-            from tri_arb.storage.xt_multi_account_models import create_account_table_models
-            for acc in enabled_accounts:
-                models = create_account_table_models(acc.account_id)
-                async with db_manager.async_engine.begin() as conn:
-                    for model_class in models.values():
-                        await conn.run_sync(
-                            lambda sync_conn, m=model_class: m.metadata.create_all(
-                                sync_conn, checkfirst=True
-                            )
-                        )
-            console.print("[green]✅ 数据库表创建成功[/green]\n")
-        
-        # 验证输出格式
-        if output not in ["table", "json", "none"]:
-            console.print(f"[red]错误:[/red] 无效的输出格式: {output}")
-            console.print("支持的格式: table, json, none")
-            raise typer.Exit(code=1)
-        
-        # 创建多账号订阅服务
-        service = XTMultiAccountStreamService(
-            account_manager=account_manager,
-            db_manager=db_manager,
-            auto_reconnect=True,
-            display_format=output,
-            enable_data_sync=enable_data_sync,
-        )
-        
-        console.print("[green]✅ 服务已启动[/green]")
-        console.print("[cyan]正在连接WebSocket...[/cyan]\n")
-        
         try:
-            await service.start(account_ids=account_id_list)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]正在停止服务...[/yellow]")
-            await service.stop()
-            console.print("[green]✅ 服务已停止[/green]")
-        except Exception as e:
-            console.print(f"[red]错误:[/red] {e}")
-            if debug:
-                import traceback
-                traceback.print_exc()
-            await service.stop()
-            raise typer.Exit(code=1)
+            await db_manager.create_tables()
+            xt_accounts = [acc for acc in enabled_accounts if acc.exchange.lower() == "xt"]
+            if xt_accounts:
+                from tri_arb.storage.xt_multi_account_models import create_account_table_models
+                for acc in xt_accounts:
+                    models = create_account_table_models(acc.account_id)
+                    async with db_manager.async_engine.begin() as conn:
+                        for model_class in models.values():
+                            await conn.run_sync(
+                                lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
+                            )
+            console.print("[green]✅ 数据库表创建成功[/green]\n")
         finally:
             await db_manager.close()
-    
+
+    async def run_account_stream(acc_config):
+        try:
+            acc_exchange = ExchangeName(acc_config.exchange.lower())
+        except ValueError:
+            console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 的交易所 {acc_config.exchange} 暂不支持，跳过")
+            return
+
+        key = acc_config.api_key
+        secret = acc_config.api_secret
+        passphrase = getattr(acc_config, "passphrase", None)
+        if not key or not secret:
+            console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 缺少 API 凭证，跳过")
+            return
+
+        db_manager = DatabaseManager(database_url=db_url)
+        enabled_channels = [ch.strip().lower() for ch in acc_config.channels] if acc_config.channels else None
+
+        if output not in ["table", "json", "none"]:
+            raise ValueError("输出格式仅支持 table/json/none")
+
+        if acc_exchange == ExchangeName.BINANCE:
+            service = BinanceUserStreamService(
+                api_key=key,
+                api_secret=secret,
+                db_manager=db_manager,
+                auto_reconnect=True,
+                display_format=output,
+                enabled_channels=enabled_channels,
+            )
+        elif acc_exchange == ExchangeName.OKX:
+            if not passphrase:
+                console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 缺少 OKX passphrase，跳过")
+                await db_manager.close()
+                return
+            service = OKXUserStreamService(
+                api_key=key,
+                api_secret=secret,
+                passphrase=passphrase,
+                db_manager=db_manager,
+                auto_reconnect=True,
+                display_format=output,
+                enabled_channels=enabled_channels,
+            )
+        elif acc_exchange == ExchangeName.GATE:
+            service = GateUserStreamService(
+                api_key=key,
+                api_secret=secret,
+                db_manager=db_manager,
+                auto_reconnect=True,
+                display_format=output,
+                enabled_channels=enabled_channels,
+            )
+        else:  # XT
+            service = XTUserStreamService(
+                api_key=key,
+                api_secret=secret,
+                db_manager=db_manager,
+                auto_reconnect=True,
+                display_format=output,
+                enabled_channels=enabled_channels,
+                enable_data_sync=enable_data_sync,
+            )
+            service.account_id = acc_config.account_id
+            from tri_arb.storage.xt_multi_account_models import create_account_table_models
+            service.account_models = create_account_table_models(acc_config.account_id)
+
+        console.print(f"[cyan]账号 {acc_config.account_id} ({acc_config.name}) 开始订阅 - {acc_exchange.value.upper()}[/cyan]")
+
+        try:
+            await service.start()
+        except asyncio.CancelledError:
+            await service.stop()
+            raise
+        except Exception as exc:
+            console.print(f"[red]账号 {acc_config.account_id} 订阅异常:[/red] {exc}")
+            logger = logging.getLogger(__name__)
+            logger.error("account %s stream error", acc_config.account_id, exc_info=debug)
+            if debug:
+                console.print_exception()
+        finally:
+            try:
+                await service.stop()
+            except Exception:
+                pass
+            await db_manager.close()
+
+    async def run_multi_account_service():
+        await prepare_tables_if_needed()
+        tasks = []
+        for acc in enabled_accounts:
+            task = asyncio.create_task(run_account_stream(acc))
+            tasks.append(task)
+            await asyncio.sleep(0.3)
+
+        if not tasks:
+            console.print("[red]错误:[/red] 没有可运行的账号订阅任务")
+            return
+
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     try:
         asyncio.run(run_multi_account_service())
     except KeyboardInterrupt:
         console.print("\n[yellow]订阅已停止[/yellow]")
-    except Exception as e:
+    except Exception as exc:
         if debug:
             console.print_exception()
         else:
-            console.print(f"[red]错误:[/red] {e}")
+            console.print(f"[red]错误:[/red] {exc}")
         raise typer.Exit(code=1)
-
 
 @app.command("binance-user-stream")
 def binance_user_stream_legacy(

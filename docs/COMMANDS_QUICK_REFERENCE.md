@@ -29,28 +29,31 @@ cextools subscribe user-stream -x xt --account-id account_001 --disable-data-syn
 ### 2. 定时账户监控
 
 ```bash
-# 基本用法（10分钟间隔）
+# XT 单账号（10分钟间隔）
 cextools account watch-account -x xt --account-id account_001
 
-# 从配置文件读取账号信息
-cextools account watch-account -x xt --config config/accounts.json --account-id account_001
+# Binance 单账号（命令行提供密钥）
+cextools account watch-account -x binance --api-key YOUR_KEY --api-secret YOUR_SECRET
 
-# 同时监控多个账号（只监控 enabled: true 的账号）
-cextools account watch-account -x xt --config config/accounts.json --accounts account_001,account_002
+# 从配置文件读取账号信息（自动识别交易所）
+cextools account watch-account --config config/accounts.json --account-id account_001
+
+# 同时监控多个账号（可混合 XT / Binance）
+cextools account watch-account --config config/accounts.json --accounts account_001,binance_main
 
 # 监控配置文件中所有启用的账号
-cextools account watch-account -x xt --config config/accounts.json --all-accounts
+cextools account watch-account --config config/accounts.json --all-accounts
 
 # 自定义间隔
 cextools account watch-account -x xt --account-id account_001 --interval 5
 
-# 启用 Lark 告警（从配置文件读取）
-cextools account watch-account -x xt --config config/accounts.json --account-id account_001 --enable-lark
+# 启用 Lark 告警（从配置文件读取，仅 XT）
+cextools account watch-account --config config/accounts.json --account-id account_001 --enable-lark
 
-# 启用 Lark 告警（手动指定）
+# 启用 Lark 告警（手动指定，仅 XT）
 cextools account watch-account -x xt --account-id account_001 --enable-lark --lark-webhook "https://..."
 
-# 指定指标配置
+# 指定指标配置（仅 XT）
 cextools account watch-account -x xt --account-id account_001 --metrics-config config/metrics.yaml
 ```
 
@@ -64,14 +67,17 @@ cextools account watch-account -x xt --account-id account_001 --metrics-config c
 # 合约账户（默认5分钟）
 cextools account watch-balance -x xt -e perp --account-id account_001
 
-# 从配置文件读取账号信息
-cextools account watch-balance -x xt -e perp --config config/accounts.json --account-id account_001
+# Binance 合约账户（命令行提供密钥）
+cextools account watch-balance -x binance -e perp --api-key YOUR_KEY --api-secret YOUR_SECRET
 
-# 同时监控多个账号（只监控 enabled: true 的账号）
-cextools account watch-balance -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+# 从配置文件读取账号信息（自动识别交易所）
+cextools account watch-balance --config config/accounts.json --account-id account_001 -e perp
+
+# 同时监控多个账号（可混合交易所）
+cextools account watch-balance --config config/accounts.json --accounts account_001,binance_main -e perp
 
 # 监控配置文件中所有启用的账号
-cextools account watch-balance -x xt -e perp --config config/accounts.json --all-accounts
+cextools account watch-balance --config config/accounts.json --all-accounts -e perp
 
 # 现货账户
 cextools account watch-balance -x xt -e spot --account-id account_001
@@ -87,17 +93,17 @@ cextools account watch-balance -x xt -e perp --account-id account_001 --interval
 ### 4. 定时持仓监控
 
 ```bash
-# 基本用法（1分钟间隔）
+# XT 基本用法（1分钟间隔）
 cextools account watch-positions -x xt -e perp --account-id account_001
 
-# 从配置文件读取账号信息
-cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001
+# 从配置文件读取 XT 账号信息
+cextools account watch-positions --config config/accounts.json --account-id account_001
 
-# 同时监控多个账号
-cextools account watch-positions -x xt -e perp --config config/accounts.json --accounts account_001,account_002
+# 同时监控多个账号（可混合 XT / Binance）
+cextools account watch-positions --config config/accounts.json --accounts account_001,binance_main_001
 
-# 监控配置文件中所有启用的账号
-cextools account watch-positions -x xt -e perp --config config/accounts.json --all-accounts
+# 监控配置文件中所有启用的账号（自动按 exchange 路由）
+cextools account watch-positions --config config/accounts.json --all-accounts
 
 # 自定义间隔
 cextools account watch-positions -x xt -e perp --account-id account_001 --interval 5
@@ -105,32 +111,37 @@ cextools account watch-positions -x xt -e perp --account-id account_001 --interv
 # 指定交易对
 cextools account watch-positions -x xt -e perp --account-id account_001 -s BTC/USDT
 
-# 启用 Lark 告警（从配置文件读取）
-cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --enable-lark
+# 启用 Lark 告警（从配置文件读取，仅 XT）
+cextools account watch-positions --config config/accounts.json --account-id account_001 --enable-lark
 
-# 启用 Lark 告警（手动指定）
+# 启用 Lark 告警（手动指定，仅 XT）
 cextools account watch-positions -x xt -e perp --account-id account_001 --enable-lark --lark-webhook "https://..."
+
+# Binance 单账号（命令行提供密钥）
+cextools account watch-positions -x binance --api-key YOUR_BINANCE_KEY --api-secret YOUR_BINANCE_SECRET
 ```
 
-**保存的表**: `xt_rest_position_updates_{account_id}`
+**保存的表**: 
+- XT: `xt_rest_position_updates_{account_id}`
+- Binance: `rest_positions`（按 `account_id` 区分）
 
 ---
 
 ## 🔧 多账号命令
 
-### 多账号订阅（配置文件）
+### 多账号订阅（配置文件 + 多交易所）
 
 ```bash
-# 使用默认配置文件
+# 使用默认配置文件（自动识别 XT / Binance / OKX / Gate）
 cextools subscribe multi-account
 
 # 指定配置文件
 cextools subscribe multi-account --config config/accounts.json
 
-# 只启动指定账号
-cextools subscribe multi-account --accounts account_001,account_002
+# 只启动指定账号（逗号分隔）
+cextools subscribe multi-account --accounts account_001,binance_main
 
-# 首次运行创建表
+# 首次运行创建表（XT 账号会自动生成账号特定表）
 cextools subscribe multi-account --create-tables
 ```
 
@@ -220,7 +231,7 @@ cextools account watch-account -x xt --account-id account_002 --interval 10 &
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `--account-id` / `-a` | 账号ID（可选，仅XT） | `account_001` |
+| `--account-id` / `-a` | 账号ID（可选；XT 使用账号特表，其他交易所用于区分 rest_* 记录） | `account_001` |
 | `--interval` / `-i` | 查询间隔（分钟） | `10` |
 | `--channels` / `-c` | 订阅频道（逗号分隔） | `account,position` |
 | `--output` / `-o` | 输出格式 | `table`, `json`, `none` |
@@ -233,7 +244,7 @@ cextools account watch-account -x xt --account-id account_002 --interval 10 &
 ## ⚠️ 注意事项
 
 1. **账号ID命名**: 使用字母、数字和下划线（`account_001`）
-2. **仅支持 XT**: 账号特定表功能目前仅支持 XT 交易所
+2. **表支持范围**: 账号特定表功能目前仅适用于 XT，其他交易所写入 `rest_*` 通用表
 3. **表自动创建**: 首次运行自动创建，不会重复创建
 4. **数据隔离**: 每个账号的数据保存在独立的表中
 

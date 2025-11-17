@@ -212,7 +212,7 @@ ORDER BY update_time DESC LIMIT 10;
 
 **命令**: `cextools account watch-positions`
 
-**功能**: 定时查询永续合约持仓，持续监控持仓变化
+**功能**: 定时查询永续合约持仓，持续监控持仓变化（当前支持 XT、Binance）
 
 **测试命令**:
 
@@ -231,6 +231,9 @@ cextools account watch-positions -x xt -e perp --account-id account_001 --enable
 
 # JSON 输出格式
 cextools account watch-positions -x xt -e perp --account-id account_001 --output json
+
+# Binance 单账号（命令行提供密钥）
+cextools account watch-positions -x binance --api-key YOUR_BINANCE_KEY --api-secret YOUR_BINANCE_SECRET
 ```
 
 **使用配置文件方式**:
@@ -252,12 +255,18 @@ cextools account watch-positions -x xt -e perp --config config/accounts.json --a
 
 # 自定义间隔
 cextools account watch-positions -x xt -e perp --config config/accounts.json --account-id account_001 --interval 5
+
+# 多交易所（XT + Binance）同时监控
+cextools account watch-positions --config config/accounts.json --accounts account_001,binance_main_001
+
+# 监控所有启用账号（根据各自 exchange 自动路由）
+cextools account watch-positions --config config/accounts.json --all-accounts
 ```
 
 **多账号模式说明**:
 - `--accounts account_001,account_002`: 同时监控指定的多个账号（逗号分隔），只监控 `enabled: true` 的账号
 - `--all-accounts`: 监控配置文件中所有 `enabled: true` 的账号
-- 多账号模式下，每个账号使用独立的数据库表和连接
+- 多账号模式下，XT 账号使用账号特定表，其他交易所写入通用 `rest_positions` 表
 - 所有账号的查询间隔相同，但查询时间可能略有差异（避免同时连接过多）
 - 输出会显示账号标识，便于区分不同账号的数据
 - **重要**: 只有 `enabled: true` 的账号才会被监控，`enabled: false` 的账号会被自动跳过
@@ -281,6 +290,13 @@ cextools account watch-positions -x xt -e perp --config config/accounts.json --a
       "api_key": "another_api_key",
       "api_secret": "another_api_secret",
       "enabled": false
+    },
+    "binance_main_001": {
+      "name": "Binance账号1",
+      "exchange": "binance",
+      "api_key": "your_binance_key",
+      "api_secret": "your_binance_secret",
+      "enabled": true
     }
   }
 }

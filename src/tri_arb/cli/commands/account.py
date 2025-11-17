@@ -5218,20 +5218,47 @@ def watch_positions(
                     async def run_multi_account_watch():
                         tasks = []
                         for acc_config in account_configs:
-                            task = asyncio.create_task(
-                                _run_xt_watch_positions_async(
-                                    interval=interval,
-                                    api_key=acc_config.api_key,
-                                    api_secret=acc_config.api_secret,
-                                    symbol=symbol,
-                                    debug=debug,
-                                    lark_webhook=acc_config.lark_webhook if enable_lark else None,
-                                    lark_secret=acc_config.lark_secret if enable_lark else None,
-                                    account_id=acc_config.account_id,
-                                    account_name=acc_config.name,
-                                    database_url=database_url,
+                            try:
+                                acc_exchange = ExchangeName(acc_config.exchange.lower())
+                                console.print(f"[dim]调试: 账号 {acc_config.account_id} 交易所识别为: {acc_exchange.value}[/dim]")
+                            except ValueError:
+                                console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 使用未支持的交易所 {acc_config.exchange}，跳过")
+                                continue
+
+                            if acc_exchange == ExchangeName.XT:
+                                console.print(f"[dim]调试: 账号 {acc_config.account_id} 路由到 XT 实现[/dim]")
+                                task = asyncio.create_task(
+                                    _run_xt_watch_positions_async(
+                                        interval=interval,
+                                        api_key=acc_config.api_key,
+                                        api_secret=acc_config.api_secret,
+                                        symbol=symbol,
+                                        debug=debug,
+                                        lark_webhook=acc_config.lark_webhook if enable_lark else None,
+                                        lark_secret=acc_config.lark_secret if enable_lark else None,
+                                        account_id=acc_config.account_id,
+                                        account_name=acc_config.name,
+                                        database_url=database_url,
+                                    )
                                 )
-                            )
+                            elif acc_exchange == ExchangeName.BINANCE:
+                                console.print(f"[dim]调试: 账号 {acc_config.account_id} 路由到 Binance 实现[/dim]")
+                                task = asyncio.create_task(
+                                    _run_binance_watch_positions_async(
+                                        interval=interval,
+                                        api_key=acc_config.api_key,
+                                        api_secret=acc_config.api_secret,
+                                        symbol=symbol,
+                                        debug=debug,
+                                        account_id=acc_config.account_id,
+                                        account_name=acc_config.name,
+                                        database_url=database_url,
+                                    )
+                                )
+                            else:
+                                console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 的交易所 {acc_exchange.value} 暂不支持 watch-positions，跳过")
+                                continue
+
                             tasks.append(task)
                             # 稍微延迟，避免同时连接过多
                             await asyncio.sleep(0.5)

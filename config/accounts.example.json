@@ -1,51 +1,40 @@
 {
+  "global_settings": {
+    "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
+  },
   "accounts": {
     "account_001": {
       "name": "主账号",
       "exchange": "xt",
-      "api_key": "48e87084-4cb8-4134-958d-1ff294ee3796",
-      "api_secret": "e98ebc0389dd9ca6d404a10cb472a306e3ce3229",
+      "api_key": "your_xt_api_key",
+      "api_secret": "your_xt_api_secret",
       "enabled": true,
-      "channels": ["account", "position"],
-      "metrics_config": {
-        "perp_balance_volatility": {
-          "enabled": true,
-          "window_minutes": 1440,
-          "warning_threshold": 0.05,
-          "critical_threshold": 0.10
-        },
-        "perp_risk_ratio": {
-          "enabled": true,
-          "asset": "USDT",
-          "warning_threshold": 0.50,
-          "critical_threshold": 0.80
-        }
-      },
-      "lark_webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/e4788562-3474-4386-b04e-6cf183f7e149",
-      "lark_secret": "optional_secret"
+      "channels": ["account", "position"]
     },
     "account_002": {
-      "name": "测试账号",
-      "exchange": "xt",
-      "api_key": "your_xt_api_key_2",
-      "api_secret": "your_xt_api_secret_2",
+      "name": "Binance账号",
+      "exchange": "binance",
+      "api_key": "your_binance_api_key",
+      "api_secret": "your_binance_api_secret",
+      "enabled": true,
+      "channels": ["account", "position"]
+    },
+    "account_003": {
+      "name": "OKX账号",
+      "exchange": "okx",
+      "api_key": "your_okx_api_key",
+      "api_secret": "your_okx_api_secret",
+      "passphrase": "your_okx_passphrase",
       "enabled": false,
-      "channels": ["account", "position"],
-      "metrics_config": {
-        "perp_risk_ratio": {
-          "enabled": true,
-          "asset": "USDT",
-          "warning_threshold": 0.60,
-          "critical_threshold": 0.90
-        }
-      },
-      "lark_webhook": null
+      "channels": ["account", "position"]
+    },
+    "account_004": {
+      "name": "Gate账号",
+      "exchange": "gate",
+      "api_key": "your_gate_api_key",
+      "api_secret": "your_gate_api_secret",
+      "enabled": true,
+      "channels": ["account", "position"]
     }
-  },
-  "global_settings": {
-    "default_interval_minutes": 10,
-    "enable_lark_by_default": false,
-    "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
   }
 }
-

@@ -27,6 +27,7 @@ class RestBalance(Base):
     exchange_type = Column(String(10), nullable=False, index=True)  # spot, perp
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（可选）
     
     # 余额信息
     asset = Column(String(20), nullable=False, index=True)  # 资产类型（如USDT）
@@ -42,6 +43,7 @@ class RestBalance(Base):
         Index('idx_rest_balance_exchange_type_time', 'exchange', 'exchange_type', 'query_time'),
         Index('idx_rest_balance_asset_time', 'asset', 'query_time'),
         Index('idx_rest_balance_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_balance_account_time', 'account_id', 'query_time'),
     )
 
 
@@ -58,6 +60,7 @@ class RestPosition(Base):
     exchange_type = Column(String(10), nullable=False, index=True)  # spot, perp
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（可选）
     
     # 持仓信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
@@ -79,6 +82,7 @@ class RestPosition(Base):
         Index('idx_rest_position_symbol_time', 'symbol', 'query_time'),
         Index('idx_rest_position_side_time', 'position_side', 'query_time'),
         Index('idx_rest_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_position_account_time', 'account_id', 'query_time'),
     )
 
 
@@ -95,6 +99,7 @@ class RestOrder(Base):
     exchange_type = Column(String(10), nullable=False, index=True)  # spot, perp
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（可选）
     
     # 订单信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
@@ -124,6 +129,7 @@ class RestOrder(Base):
         Index('idx_rest_order_id_time', 'order_id', 'query_time'),
         Index('idx_rest_order_symbol_status_time', 'symbol', 'order_status', 'query_time'),
         Index('idx_rest_order_query_type_time', 'query_type', 'query_time'),
+        Index('idx_rest_order_account_time', 'account_id', 'query_time'),
     )
 
 
@@ -139,6 +145,7 @@ class ScheduledQuery(Base):
     exchange = Column(String(20), nullable=False, index=True)  # binance, okx, gate, xt
     query_type = Column(String(20), nullable=False)  # balance, position, order
     exchange_type = Column(String(10), nullable=False)  # spot, perp
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（可选）
     start_time = Column(DateTime, nullable=False)  # 开始时间
     end_time = Column(DateTime, nullable=True)  # 结束时间
     interval_minutes = Column(Integer, nullable=False)  # 查询间隔（分钟）

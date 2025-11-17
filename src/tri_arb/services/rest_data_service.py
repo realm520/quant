@@ -38,7 +38,8 @@ class RestDataService:
         exchange: str,
         exchange_type: str,
         balances_data: Dict[str, Any],
-        query_type: str = "manual"
+        query_type: str = "manual",
+        account_id: Optional[str] = None,
     ):
         """保存余额查询结果到数据库.
         
@@ -47,6 +48,7 @@ class RestDataService:
             exchange_type: 交易类型 (spot, perp)
             balances_data: 余额数据字典
             query_type: 查询类型 (manual, scheduled)
+            account_id: 账号ID（可选，用于区分多账号）
         """
         try:
             async with self.db_manager.session() as session:
@@ -56,11 +58,12 @@ class RestDataService:
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,
+                        account_id=account_id,
                         asset=asset,
                         free=Decimal(str(data.get("available", 0))),
                         locked=Decimal(str(data.get("frozen", 0))),
                         total=Decimal(str(data.get("total", 0))),
-                        raw_data=json.dumps(data)
+                        raw_data=json.dumps(data, ensure_ascii=False, default=str)
                     )
                     session.add(balance_record)
                 
@@ -76,7 +79,8 @@ class RestDataService:
         exchange: str,
         exchange_type: str,
         positions_data: List[Dict[str, Any]],
-        query_type: str = "manual"
+        query_type: str = "manual",
+        account_id: Optional[str] = None,
     ):
         """保存持仓查询结果到数据库.
         
@@ -85,6 +89,7 @@ class RestDataService:
             exchange_type: 交易类型 (spot, perp)
             positions_data: 持仓数据列表
             query_type: 查询类型 (manual, scheduled)
+            account_id: 账号ID（可选，用于区分多账号）
         """
         try:
             async with self.db_manager.session() as session:
@@ -116,6 +121,7 @@ class RestDataService:
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,
+                        account_id=account_id,
                         symbol=str(symbol),
                         position_side=str(position_side),
                         position_amount=Decimal(str(position_amount)),
@@ -126,7 +132,7 @@ class RestDataService:
                         notional=Decimal(str(pos_data.get("notional"))) if pos_data.get("notional") else None,
                         isolated=pos_data.get("isolated", False),
                         leverage=str(leverage) if leverage else None,
-                        raw_data=json.dumps(pos_data)
+                    raw_data=json.dumps(pos_data, ensure_ascii=False, default=str)
                     )
                     session.add(position_record)
                 
@@ -142,7 +148,8 @@ class RestDataService:
         exchange: str,
         exchange_type: str,
         orders_data: List[Dict[str, Any]],
-        query_type: str = "manual"
+        query_type: str = "manual",
+        account_id: Optional[str] = None,
     ):
         """保存订单查询结果到数据库.
         
@@ -151,6 +158,7 @@ class RestDataService:
             exchange_type: 交易类型 (spot, perp)
             orders_data: 订单数据列表
             query_type: 查询类型 (manual, scheduled)
+            account_id: 账号ID（可选，用于区分多账号）
         """
         try:
             async with self.db_manager.session() as session:
@@ -183,6 +191,7 @@ class RestDataService:
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,
+                        account_id=account_id,
                         symbol=str(symbol),
                         order_id=str(order_id),
                         client_order_id=str(client_order_id) if client_order_id else None,
@@ -199,7 +208,7 @@ class RestDataService:
                         is_reduce_only=is_reduce_only,
                         order_time=order_time,
                         update_time=update_time,
-                        raw_data=json.dumps(order_data)
+                        raw_data=json.dumps(order_data, ensure_ascii=False, default=str)
                     )
                     session.add(order_record)
                 
@@ -215,7 +224,8 @@ class RestDataService:
         exchange: str,
         query_type: str,
         exchange_type: str,
-        interval_minutes: int
+        interval_minutes: int,
+        account_id: Optional[str] = None,
     ) -> int:
         """记录定时查询的开始.
         
@@ -224,6 +234,7 @@ class RestDataService:
             query_type: 查询类型 (balance, position, order)
             exchange_type: 交易类型 (spot, perp)
             interval_minutes: 查询间隔（分钟）
+            account_id: 账号ID（可选，用于区分多账号）
             
         Returns:
             定时查询记录ID
@@ -236,7 +247,8 @@ class RestDataService:
                     exchange_type=exchange_type,
                     start_time=datetime.utcnow(),
                     interval_minutes=interval_minutes,
-                    is_active=True
+                    is_active=True,
+                    account_id=account_id,
                 )
                 session.add(scheduled_query)
                 await session.commit()
@@ -251,7 +263,7 @@ class RestDataService:
         self,
         query_id: int,
         success: bool,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ):
         """更新定时查询的统计信息.
         

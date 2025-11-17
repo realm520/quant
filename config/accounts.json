@@ -1,0 +1,56 @@
+{
+  "global_settings": {
+    "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
+  },
+  "accounts": {
+    "account_001": {
+      "name": "账号1",
+      "exchange": "xt",
+      "api_key": "ad8e6d04-f871-4e38-9a7f-35991f0e09e1",
+      "api_secret": "99d6de5b456211edaa58add12693a581b7d537cc",
+      "enabled": false,
+      "channels": ["account", "position"]
+    },
+    "account_002": {
+      "name": "账号2",
+      "exchange": "xt",
+      "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
+      "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
+      "enabled": true,
+      "channels": ["account", "position"]
+    },
+    "account_003": {
+      "name": "账号3",
+      "exchange": "xt",
+      "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
+      "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
+      "enabled": true,
+      "channels": ["account", "position"]
+    },
+    "account_004": {
+      "name": "账号4",
+      "exchange": "xt",
+      "api_key": "840dfa00-6cfa-43d8-af92-5fde9e6f7f49",
+      "api_secret": "0fd61a99adf218bd4be79767f086195b15caab55",
+      "enabled": false,
+      "channels": ["account", "position"]
+    },
+    "binance_main_001": {
+      "name": "Binance账号1",
+      "exchange": "binance",
+      "api_key": "E5A9RhZzXVm2cNaYxD0GuoAZhOTiCCM7RfbRUbmapE5n81ErkIAOxejF7BMlTF4J",
+      "api_secret": "BqyOid9aZAB2zq0e2zzb2YpeqPrZpNT0QuyFPUELDzB5O5XX4Zhm8OX0zWZ4U4vu",
+      "enabled": true,
+      "channels": ["account"]
+    },
+    "binance_main_002": {
+      "name": "Binance账号2",
+      "exchange": "binance",
+      "api_key": "zt6mWuKhEVK9N5TUoelZQaYbplpKae5WAfETltgsUt6vtQeRNA9MlDqrwrijHhfi",
+      "api_secret": "EVOO5JrSdy74kMLIjZw9AiNLf42pZoK3X0tftmg2uinlknzdVGyqmrlz0pwNLuo3",
+      "enabled": true,
+      "channels": ["account"]
+    }
+  }
+}
+

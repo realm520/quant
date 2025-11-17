@@ -34,7 +34,8 @@ def create_exchange(
     exchange_type: ExchangeType,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
-    exchange_name: ExchangeName = ExchangeName.XT
+    exchange_name: ExchangeName = ExchangeName.XT,
+    passphrase: Optional[str] = None,
 ) -> BaseExchange:
     """根据 exchange 和 exchange-type 创建对应的 exchange 实例.
 
@@ -87,12 +88,12 @@ def create_exchange(
 
     # OKX 交易所
     elif exchange_name == ExchangeName.OKX:
-        # OKX 需要额外的 passphrase
-        passphrase = os.getenv(f'{env_prefix}_PASSPHRASE', '')
+        # OKX 需要额外的 passphrase（优先使用参数，其次环境变量）
+        okx_passphrase = passphrase or os.getenv(f'{env_prefix}_PASSPHRASE', '')
         
         if exchange_type == ExchangeType.PERP:
             # OKX 永续合约
-            return OKXPerpExchange(api_key=key, api_secret=secret, passphrase=passphrase)
+            return OKXPerpExchange(api_key=key, api_secret=secret, passphrase=okx_passphrase)
         elif exchange_type == ExchangeType.SPOT:
             raise ValueError(
                 "OKX 现货交易暂未实现\n"

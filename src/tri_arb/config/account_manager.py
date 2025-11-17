@@ -27,6 +27,7 @@ class AccountConfig:
     metrics_config: Optional[Dict[str, Any]] = None
     lark_webhook: Optional[str] = None
     lark_secret: Optional[str] = None
+    passphrase: Optional[str] = None  # OKX 交易所需要
     
     def __post_init__(self):
         if self.channels is None:
@@ -79,10 +80,13 @@ class AccountManager:
                     metrics_config=account_data.get("metrics_config"),
                     lark_webhook=account_data.get("lark_webhook"),
                     lark_secret=account_data.get("lark_secret"),
+                    passphrase=account_data.get("passphrase"),  # OKX 交易所需要
                 )
                 
-                if config.exchange != "xt":
-                    logger.warning(f"账号 {account_id} 使用不支持的交易所: {config.exchange}")
+                # 验证交易所名称（支持: xt, binance, okx, gate）
+                supported_exchanges = ["xt", "binance", "okx", "gate"]
+                if config.exchange.lower() not in supported_exchanges:
+                    logger.warning(f"账号 {account_id} 使用不支持的交易所: {config.exchange}，支持的交易所: {', '.join(supported_exchanges)}")
                     continue
                 
                 if not config.api_key or not config.api_secret:

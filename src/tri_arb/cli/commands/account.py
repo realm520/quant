@@ -26,6 +26,7 @@ from tri_arb.storage.models import BinanceAccountBalance
 from tri_arb.storage.okx_models import OKXAccountBalance
 from tri_arb.storage.gate_models import GateAccountBalance
 from tri_arb.storage.xt_websocket_models import XTAccountUpdate
+from tri_arb.services.rest_data_service import RestDataService
 from sqlalchemy import select, func
 
 from tri_arb.storage.xt_rest_models import XTPerpBalance, XTPerpPosition
@@ -973,6 +974,11 @@ def balance(
         "--api-secret",
         help="API 密钥（覆盖环境变量）"
     ),
+    passphrase: Optional[str] = typer.Option(
+        None,
+        "--passphrase",
+        help="OKX 交易所需要的 passphrase（覆盖环境变量）"
+    ),
     output: str = typer.Option(
         "table",
         "--output",
@@ -1009,7 +1015,7 @@ def balance(
     """
     try:
         # 创建 exchange 实例
-        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange, passphrase=passphrase)
 
         # 异步获取余额
         async def get_balance():
@@ -1446,6 +1452,11 @@ def watch_balance(
         "--api-secret",
         help="API 密钥（覆盖环境变量）"
     ),
+    passphrase: Optional[str] = typer.Option(
+        None,
+        "--passphrase",
+        help="OKX 交易所需要的 passphrase（覆盖环境变量）"
+    ),
     output: str = typer.Option(
         "table",
         "--output",
@@ -1582,8 +1593,10 @@ def watch_balance(
                     async def run_multi_account_watch():
                         tasks = []
                         for acc_config in account_configs:
+                            # 根据账号配置中的交易所类型路由到不同的监控函数
                             task = asyncio.create_task(
-                                _run_xt_watch_balance_async(
+                                _run_watch_balance_async(
+                                    exchange=acc_config.exchange.lower(),
                                     interval=interval,
                                     api_key=acc_config.api_key,
                                     api_secret=acc_config.api_secret,
@@ -1593,6 +1606,7 @@ def watch_balance(
                                     account_id=acc_config.account_id,
                                     account_name=acc_config.name,
                                     database_url=database_url,
+                                    passphrase=getattr(acc_config, 'passphrase', None),
                                 )
                             )
                             tasks.append(task)
@@ -1630,6 +1644,8 @@ def watch_balance(
                             api_key = account_config.api_key
                         if not api_secret:
                             api_secret = account_config.api_secret
+                        if not passphrase and account_config.passphrase:
+                            passphrase = account_config.passphrase
                         
                         console.print(f"[cyan]从配置文件加载账号: {account_id} ({account_config.name})[/cyan]")
                     else:
@@ -1914,6 +1930,410 @@ async def _run_xt_watch_balance_async(
     await watch_loop()
 
 
+async def _run_watch_balance_async(
+    exchange: str,
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    exchange_type: ExchangeType,
+    output: str,
+    debug: bool,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
+    passphrase: Optional[str] = None,
+) -> None:
+    """通用的多交易所余额监控函数（用于多账号并发）.
+    
+    Args:
+        exchange: 交易所名称 (xt, binance, okx, gate)
+        interval: 查询间隔（分钟）
+        api_key: API密钥
+        api_secret: API密钥
+        exchange_type: 交易类型 (spot, perp)
+        output: 输出格式 (table, json)
+        debug: 是否启用调试模式
+        account_id: 账号ID（可选）
+        account_name: 账号名称（可选）
+        database_url: 数据库连接URL（可选）
+    """
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的余额监控 (交易所: {exchange})")
+    
+    # 根据交易所名称创建对应的ExchangeName枚举
+    exchange_name_map = {
+        "xt": ExchangeName.XT,
+        "binance": ExchangeName.BINANCE,
+        "okx": ExchangeName.OKX,
+        "gate": ExchangeName.GATE,
+    }
+    
+    exchange_name = exchange_name_map.get(exchange.lower())
+    if not exchange_name:
+        raise ValueError(f"不支持的交易所: {exchange}，支持的交易所: {', '.join(exchange_name_map.keys())}")
+    
+    # 对于XT交易所，使用专门的实现（支持账号特定表）
+    if exchange.lower() == "xt":
+        await _run_xt_watch_balance_async(
+            interval=interval,
+            api_key=api_key,
+            api_secret=api_secret,
+            exchange_type=exchange_type,
+            output=output,
+            debug=debug,
+            account_id=account_id,
+            account_name=account_name,
+            database_url=database_url,
+        )
+        return
+    
+    # 对于其他交易所，使用通用实现
+    await _run_generic_watch_balance_async(
+        exchange_name=exchange_name,
+        interval=interval,
+        api_key=api_key,
+        api_secret=api_secret,
+        exchange_type=exchange_type,
+        output=output,
+        debug=debug,
+        account_id=account_id,
+        account_name=account_name,
+        database_url=database_url,
+        passphrase=passphrase,
+    )
+
+
+async def _run_generic_watch_balance_async(
+    exchange_name: ExchangeName,
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    exchange_type: ExchangeType,
+    output: str,
+    debug: bool,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
+    passphrase: Optional[str] = None,
+) -> None:
+    """通用的多交易所余额监控函数（用于非XT交易所）.
+    
+    Args:
+        exchange_name: 交易所名称枚举
+        interval: 查询间隔（分钟）
+        api_key: API密钥
+        api_secret: API密钥
+        exchange_type: 交易类型 (spot, perp)
+        output: 输出格式 (table, json)
+        debug: 是否启用调试模式
+        account_id: 账号ID（可选）
+        account_name: 账号名称（可选）
+        database_url: 数据库连接URL（可选）
+    """
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的余额监控 ({exchange_name.value})")
+    
+    exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange_name, passphrase=passphrase)
+    db_manager = DatabaseManager(database_url=database_url)
+    rest_data_service = RestDataService(db_manager)
+    
+    async def watch_loop():
+        iteration = 0
+        try:
+            await exchange_instance.connect()
+            # 确保所需表存在（使用默认表，不支持账号特定表）
+            try:
+                await db_manager.create_tables()
+            except Exception as init_exc:
+                logger.warning(f"账号 {account_label} 初始化数据库表失败: {init_exc}")
+            
+            while True:
+                iteration += 1
+                current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                console.print(f"\n[cyan][账号 {account_label}] 第 {iteration} 次查询 - {current_time}[/cyan]")
+                
+                try:
+                    balance_data = await exchange_instance.get_balance()
+                    
+                    if not balance_data:
+                        console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
+                    else:
+                        # 根据输出格式显示
+                        if output == "json":
+                            print_json(balance_data)
+                        else:  # table (default)
+                            format_balance_table(balance_data, exchange_instance)
+                        
+                        # 保存到数据库（rest_balances 表，支持多交易所）
+                        try:
+                            await rest_data_service.save_balance_query(
+                                exchange=exchange_name.value,
+                                exchange_type=exchange_type.value,
+                                balances_data=balance_data,
+                                query_type="scheduled",
+                                account_id=account_id,
+                            )
+                            console.print(
+                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 rest_balances ({exchange_name.value})"
+                            )
+                        except Exception as save_exc:
+                            logger.warning(
+                                f"账号 {account_label} 保存余额到 rest_balances 失败: {save_exc}",
+                                extra={"exchange": exchange_name.value, "account_id": account_id},
+                            )
+                            console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")
+                        
+                        next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
+                        console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+                
+                except Exception as e:
+                    console.print(f"[red][账号 {account_label}] 查询失败:[/red] {e}")
+                    logger.error(f"账号 {account_label} watch-balance query error", error=str(e))
+                    if debug:
+                        console.print_exception()
+                
+                console.print(f"[dim][账号 {account_label}] 等待 {interval} 分钟...[/dim]")
+                await asyncio.sleep(interval * 60)
+        
+        except KeyboardInterrupt:
+            console.print(f"\n[yellow][账号 {account_label}] 监控已停止[/yellow]")
+            raise
+        except Exception as e:
+            console.print(f"[red][账号 {account_label}] 监控异常:[/red] {e}")
+            logger.error(f"账号 {account_label} watch-balance error", error=str(e))
+            if debug:
+                console.print_exception()
+            raise
+        finally:
+            try:
+                await exchange_instance.disconnect()
+            except Exception:
+                pass
+    
+    await watch_loop()
+
+
+async def _run_binance_watch_account_async(
+    interval_minutes: int,
+    api_key: str,
+    api_secret: str,
+    debug: bool,
+    enable_lark: bool,
+    lark_webhook: Optional[str],
+    lark_secret: Optional[str],
+    metrics_config: Optional[str],
+    enable_metrics: bool,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+    database_url: Optional[str] = None,
+) -> None:
+    """Binance 账户监控实现（spot + perp + positions）."""
+    from rich.table import Table
+    from tri_arb.exchanges.binance_spot import BinanceSpotExchange
+    from tri_arb.exchanges.binance_perp import BinancePerpExchange
+
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的 Binance 账户监控")
+
+    if enable_lark:
+        console.print("[yellow]提示:[/yellow] Binance 模式暂不支持 Lark 告警，选项已忽略。")
+    if enable_metrics:
+        console.print("[yellow]提示:[/yellow] Binance 模式暂不支持指标评估，选项已忽略。")
+
+    db_manager = DatabaseManager(database_url=database_url)
+    rest_data_service = RestDataService(db_manager)
+    spot_exchange = BinanceSpotExchange(api_key=api_key, api_secret=api_secret)
+    perp_exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
+
+    async def fetch_and_display(iteration_num: int):
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        console.print(f"\n[cyan][账号 {account_label}] 第 {iteration_num} 次查询 - {current_time}[/cyan]")
+
+        # Spot balances
+        try:
+            spot_balances = await spot_exchange.get_balance()
+            if spot_balances:
+                spot_table = Table(
+                    title=f"Binance 现货账户余额 - {account_label}",
+                    show_header=True,
+                    header_style="bold magenta",
+                )
+                spot_table.add_column("Currency", style="cyan", width=12)
+                spot_table.add_column("Available", justify="right", style="green")
+                spot_table.add_column("Frozen", justify="right", style="yellow")
+                spot_table.add_column("Total", justify="right", style="white")
+
+                for currency, data in spot_balances.items():
+                    available = Decimal(str(data.get("available", 0)))
+                    frozen = Decimal(str(data.get("frozen", 0)))
+                    total = Decimal(str(data.get("total", available + frozen)))
+                    spot_table.add_row(
+                        currency,
+                        f"{available:.8f}",
+                        f"{frozen:.8f}",
+                        f"{total:.8f}",
+                    )
+
+                console.print(spot_table)
+                console.print(
+                    f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n"
+                )
+
+                await rest_data_service.save_balance_query(
+                    exchange="binance",
+                    exchange_type="spot",
+                    balances_data=spot_balances,
+                    query_type="scheduled",
+                    account_id=account_id,
+                )
+            else:
+                console.print(f"[yellow][账号 {account_label}] Binance 现货账户余额为空[/yellow]")
+        except Exception as exc:
+            console.print(f"[red][账号 {account_label}] 获取现货余额失败:[/red] {exc}")
+            if debug:
+                console.print_exception()
+
+        # Perp balances
+        try:
+            perp_balances = await perp_exchange.get_balance()
+            if perp_balances:
+                perp_table = Table(
+                    title=f"Binance 合约账户余额 - {account_label}",
+                    show_header=True,
+                    header_style="bold magenta",
+                )
+                perp_table.add_column("Currency", style="cyan", width=12)
+                perp_table.add_column("Available", justify="right", style="green")
+                perp_table.add_column("Frozen", justify="right", style="yellow")
+                perp_table.add_column("Total", justify="right", style="white")
+                perp_table.add_column("Unrealized PnL", justify="right")
+
+                for currency, data in perp_balances.items():
+                    available = Decimal(str(data.get("available", 0)))
+                    frozen = Decimal(str(data.get("frozen", 0)))
+                    total = Decimal(str(data.get("total", 0)))
+                    unrealized = Decimal(str(data.get("unrealized_pnl", 0)))
+                    perp_table.add_row(
+                        currency,
+                        f"{available:.8f}",
+                        f"{frozen:.8f}",
+                        f"{total:.8f}",
+                        f"{unrealized:.8f}",
+                    )
+
+                console.print(perp_table)
+                console.print(
+                    f"[dim][账号 {account_label}] 数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n"
+                )
+
+                await rest_data_service.save_balance_query(
+                    exchange="binance",
+                    exchange_type="perp",
+                    balances_data=perp_balances,
+                    query_type="scheduled",
+                    account_id=account_id,
+                )
+            else:
+                console.print(f"[yellow][账号 {account_label}] Binance 合约账户余额为空[/yellow]")
+        except Exception as exc:
+            console.print(f"[red][账号 {account_label}] 获取合约余额失败:[/red] {exc}")
+            if debug:
+                console.print_exception()
+
+        # Positions
+        try:
+            positions = await perp_exchange.get_positions()
+            if positions:
+                position_table = Table(
+                    title=f"Binance 合约仓位 - {account_label}",
+                    show_header=True,
+                    header_style="bold magenta",
+                )
+                position_table.add_column("Symbol", style="cyan")
+                position_table.add_column("Side", style="yellow")
+                position_table.add_column("Quantity", justify="right")
+                position_table.add_column("Entry", justify="right")
+                position_table.add_column("Mark", justify="right")
+                position_table.add_column("Unrealized PnL", justify="right")
+                position_table.add_column("Leverage", justify="right")
+
+                formatted_positions: list[dict[str, Any]] = []
+                for pos in positions:
+                    qty = Decimal(str(pos.get("positionAmt", "0")))
+                    entry = Decimal(str(pos.get("entryPrice", "0")))
+                    mark = Decimal(str(pos.get("markPrice", "0")))
+                    unrealized = Decimal(str(pos.get("unRealizedProfit", "0")))
+                    side = pos.get("positionSide", "BOTH") or "BOTH"
+                    leverage = pos.get("leverage", "1")
+
+                    position_table.add_row(
+                        pos.get("symbol", ""),
+                        side,
+                        f"{qty:.8f}",
+                        f"{entry:.4f}",
+                        f"{mark:.4f}",
+                        f"{unrealized:.4f}",
+                        str(leverage),
+                    )
+                    formatted_positions.append(pos)
+
+                console.print(position_table)
+                console.print(
+                    f"[dim][账号 {account_label}] 仓位获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n"
+                )
+
+                await rest_data_service.save_positions_query(
+                    exchange="binance",
+                    exchange_type="perp",
+                    positions_data=formatted_positions,
+                    query_type="scheduled",
+                    account_id=account_id,
+                )
+            else:
+                console.print(f"[yellow][账号 {account_label}] Binance 当前无持仓[/yellow]")
+        except Exception as exc:
+            console.print(f"[red][账号 {account_label}] 获取合约仓位失败:[/red] {exc}")
+            if debug:
+                console.print_exception()
+
+        next_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
+        console.print(f"[dim]下次查询: {next_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+        console.print(f"[dim]等待 {interval_minutes} 分钟...[/dim]\n")
+
+    async def watch_loop():
+        iteration = 0
+        try:
+            await spot_exchange.connect()
+            await perp_exchange.connect()
+            while True:
+                iteration += 1
+                await fetch_and_display(iteration)
+                await asyncio.sleep(interval_minutes * 60)
+        except asyncio.CancelledError:
+            raise
+        except KeyboardInterrupt:
+            console.print(f"\n[yellow][账号 {account_label}] 监控已停止[/yellow]")
+            raise
+        except Exception as exc:
+            console.print(f"[red][账号 {account_label}] 监控异常:[/red] {exc}")
+            logger.error("Binance watch-account loop error", error=str(exc))
+            if debug:
+                console.print_exception()
+            raise
+        finally:
+            try:
+                await spot_exchange.disconnect()
+            except Exception:
+                pass
+            try:
+                await perp_exchange.disconnect()
+            except Exception:
+                pass
+
+    await watch_loop()
+
+
 @app.command("watch-account")
 def watch_account(
     exchange: ExchangeName = typer.Option(
@@ -2032,6 +2452,14 @@ def watch_account(
         # 启用调试模式
         cextools account watch-account -x xt --debug
     """
+    account_manager = None
+    selected_account_config = None
+
+    def resolve_credentials(target_exchange: ExchangeName, key: Optional[str], secret: Optional[str]) -> tuple[str, str]:
+        env_prefix = target_exchange.value.upper()
+        final_key = key or os.getenv(f"{env_prefix}_API_KEY", "")
+        final_secret = secret or os.getenv(f"{env_prefix}_API_SECRET", "")
+        return final_key, final_secret
     try:
         # 检查交易所支持情况
         if exchange != ExchangeName.XT:
@@ -2051,7 +2479,8 @@ def watch_account(
                 raise typer.Exit(code=1)
             try:
                 from tri_arb.config.account_manager import AccountManager
-                account_manager = AccountManager(config_path)
+                if account_manager is None:
+                    account_manager = AccountManager(config_path)
                 enabled_accounts = account_manager.get_enabled_accounts()
                 account_id_list = [acc.account_id for acc in enabled_accounts]
                 if not account_id_list:
@@ -2101,25 +2530,56 @@ def watch_account(
                 async def run_multi_account_watch():
                     tasks = []
                     for acc_config in account_configs:
-                        task = asyncio.create_task(
-                            _run_xt_watch_account_async(
-                                interval_minutes=interval_minutes,
-                                api_key=acc_config.api_key,
-                                api_secret=acc_config.api_secret,
-                                debug=debug,
-                                enable_lark=enable_lark,
-                                lark_webhook=acc_config.lark_webhook if enable_lark else None,
-                                lark_secret=acc_config.lark_secret if enable_lark else None,
-                                metrics_config=metrics_config,
-                                enable_metrics=enable_metrics,
-                                account_id=acc_config.account_id,
-                                account_name=acc_config.name,
-                                database_url=database_url,
+                        try:
+                            acc_exchange = ExchangeName(acc_config.exchange.lower())
+                        except ValueError:
+                            console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 使用不支持的交易所 {acc_config.exchange}，跳过")
+                            continue
+
+                        if acc_exchange == ExchangeName.XT:
+                            task = asyncio.create_task(
+                                _run_xt_watch_account_async(
+                                    interval_minutes=interval_minutes,
+                                    api_key=acc_config.api_key,
+                                    api_secret=acc_config.api_secret,
+                                    debug=debug,
+                                    enable_lark=enable_lark,
+                                    lark_webhook=acc_config.lark_webhook if enable_lark else None,
+                                    lark_secret=acc_config.lark_secret if enable_lark else None,
+                                    metrics_config=metrics_config,
+                                    enable_metrics=enable_metrics,
+                                    account_id=acc_config.account_id,
+                                    account_name=acc_config.name,
+                                    database_url=database_url,
+                                )
                             )
-                        )
+                        elif acc_exchange == ExchangeName.BINANCE:
+                            task = asyncio.create_task(
+                                _run_binance_watch_account_async(
+                                    interval_minutes=interval_minutes,
+                                    api_key=acc_config.api_key,
+                                    api_secret=acc_config.api_secret,
+                                    debug=debug,
+                                    enable_lark=enable_lark,
+                                    lark_webhook=acc_config.lark_webhook if enable_lark else None,
+                                    lark_secret=acc_config.lark_secret if enable_lark else None,
+                                    metrics_config=metrics_config,
+                                    enable_metrics=enable_metrics,
+                                    account_id=acc_config.account_id,
+                                    account_name=acc_config.name,
+                                    database_url=database_url,
+                                )
+                            )
+                        else:
+                            console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 的交易所 {acc_exchange.value} 暂不支持 watch-account，已跳过")
+                            continue
+
                         tasks.append(task)
-                        # 稍微延迟，避免同时连接过多
                         await asyncio.sleep(0.5)
+
+                    if not tasks:
+                        console.print("[red]错误:[/red] 选择的账号交易所暂不支持 watch-account 功能")
+                        return
                     
                     try:
                         await asyncio.gather(*tasks, return_exceptions=True)
@@ -2139,10 +2599,17 @@ def watch_account(
         if config_path and account_id:
             try:
                 from tri_arb.config.account_manager import AccountManager
-                account_manager = AccountManager(config_path)
+                if account_manager is None:
+                    account_manager = AccountManager(config_path)
                 account_config = account_manager.get_account(account_id)
                 
                 if account_config:
+                    selected_account_config = account_config
+                    try:
+                        exchange = ExchangeName(account_config.exchange.lower())
+                    except ValueError:
+                        console.print(f"[yellow]警告:[/yellow] 账号 {account_id} 配置的交易所 {account_config.exchange} 无效，保持命令行参数")
+                    
                     # 检查账号是否启用
                     if not account_config.enabled:
                         console.print(f"[yellow]警告:[/yellow] 账号 {account_id} 未启用（enabled: false）")
@@ -2165,370 +2632,80 @@ def watch_account(
             except Exception as e:
                 console.print(f"[yellow]警告:[/yellow] 读取配置文件失败: {e}，使用命令行参数或环境变量")
         
-        # 获取API密钥（优先使用命令行参数，否则使用环境变量）
-        final_api_key = api_key or os.getenv("XT_API_KEY", "")
-        final_api_secret = api_secret or os.getenv("XT_API_SECRET", "")
-        
-        if not final_api_key or not final_api_secret:
-            console.print("[red]错误:[/red] 缺少XT API密钥配置")
-            console.print("\n请设置环境变量或使用命令行参数:")
-            console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
-            console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
-            console.print("  配置文件: --config config/accounts.json --account-id account_001")
-            console.print("\n注意: XT交易所的现货和合约使用同一套API密钥")
-            raise typer.Exit(code=1)
-        
-        webhook_url: Optional[str] = None
-        webhook_secret: Optional[str] = None
-        if enable_lark:
-            webhook_url = lark_webhook or os.getenv("LARK_WEBHOOK_URL")
-            if lark_secret is not None:
-                webhook_secret = lark_secret or None
-            else:
-                webhook_secret = os.getenv("LARK_WEBHOOK_SECRET")
-
-            if not webhook_url:
-                console.print("[yellow]未提供 Lark Webhook，禁用告警推送[/yellow]")
-                enable_lark = False
-
-        metrics_definition: Optional[MetricsConfig] = None
-        if enable_metrics:
-            metrics_path = metrics_config or os.getenv("METRICS_CONFIG_PATH")
-            metrics_definition = load_metrics_config(metrics_path)
-            if not metrics_definition.exchanges:
-                logger.info("指标配置为空，跳过指标评估")
-                metrics_definition = None
+        database_url = account_manager.global_settings.get("database_url") if account_manager else None
+        account_display_name = selected_account_config.name if selected_account_config else None
+        final_api_key, final_api_secret = resolve_credentials(exchange, api_key, api_secret)
 
         if interval_minutes <= 0:
             console.print("[red]错误:[/red] 查询间隔必须大于 0 分钟")
             raise typer.Exit(code=1)
 
-        console.print("[cyan]启动XT账户定时任务服务[/cyan]")
-        console.print(f"[cyan]查询间隔: {interval_minutes} 分钟[/cyan]")
-        console.print("[cyan]监控内容:[/cyan]")
-        console.print("  • 现货账户余额")
-        console.print("  • 合约账户余额")
-        console.print("  • 合约账户仓位")
-        console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
-        
-        # 初始化数据库管理器
-        db_manager = DatabaseManager()
-        
-        # 创建交易所实例
-        from tri_arb.exchanges.xt_spot import XTSpotExchange
-        from tri_arb.exchanges.xt_perp import XTPerpExchange
-        from tri_arb.services.xt_rest_data_service import XTRestDataService
-        
-        spot_exchange = XTSpotExchange(
-            name="xt",
-            api_key=final_api_key,
-            api_secret=final_api_secret,
-        )
-        perp_exchange = XTPerpExchange(
-            api_key=final_api_key,
-            api_secret=final_api_secret,
-        )
-        xt_rest_service = XTRestDataService(db_manager, account_id=account_id)
-        
-        # 异步运行定时任务
-        async def run_scheduler():
-            iteration = 0
-            try:
-                # 创建数据库表（如果不存在）
-                if account_id:
-                    # 确保账号特定的表已创建
-                    await xt_rest_service.ensure_account_tables()
-                    console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
-                else:
-                    # 创建默认表
-                    await db_manager.create_tables()
-                    console.print("[green]✓[/green] 数据库表已就绪\n")
-                
-                # 连接交易所
-                await spot_exchange.connect()
-                await perp_exchange.connect()
-                console.print("[green]✓[/green] 交易所连接成功\n")
-                
-                # 立即执行一次查询并显示
-                iteration = 1
-                await fetch_and_display(iteration)
-                
-                # 定时查询循环
-                try:
-                    while True:
-                        await asyncio.sleep(interval_minutes * 60)
-                        iteration += 1
-                        await fetch_and_display(iteration)
-                except KeyboardInterrupt:
-                    console.print("\n[yellow]收到停止信号，正在关闭...[/yellow]")
-                finally:
-                    await spot_exchange.disconnect()
-                    await perp_exchange.disconnect()
-                    await db_manager.close()
-                    console.print("[green]✓[/green] 服务已停止")
-                    
-            except Exception as e:
-                console.print(f"[red]错误:[/red] {e}")
-                if debug:
-                    console.print_exception()
+        if exchange == ExchangeName.XT:
+            if not final_api_key or not final_api_secret:
+                console.print("[red]错误:[/red] 缺少 XT API 密钥配置")
+                console.print("\n请设置环境变量或使用命令行参数:")
+                console.print("  环境变量: export XT_API_KEY=your_key && export XT_API_SECRET=your_secret")
+                console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+                console.print("  配置文件: --config config/accounts.json --account-id account_001")
                 raise typer.Exit(code=1)
-        
-        async def fetch_and_display(iteration_num: int):
-            """获取数据并显示表格."""
-            from rich.table import Table
-            
-            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            console.print(f"\n{'='*60}")
-            console.print(f"[bold]第 {iteration_num} 次查询 - {current_time}[/bold]")
-            console.print(f"{'='*60}\n")
-            
-            try:
-                # 1. 获取并显示现货账户余额
-                try:
-                    spot_balances = await spot_exchange.get_balance()
-                    if spot_balances:
-                        # 创建现货余额表格
-                        spot_table = Table(
-                            title="XT 现货账户余额",
-                            show_header=True,
-                            header_style="bold magenta"
-                        )
-                        spot_table.add_column("Currency", style="cyan", width=12)
-                        spot_table.add_column("Available", justify="right", style="green")
-                        spot_table.add_column("Frozen", justify="right", style="yellow")
-                        spot_table.add_column("Total", justify="right", style="white")
-                        
-                        for currency, data in spot_balances.items():
-                            available = data.get('available', Decimal('0'))
-                            frozen = data.get('frozen', Decimal('0'))
-                            total = data.get('total', available + frozen)
-                            
-                            spot_table.add_row(
-                                currency,
-                                f"{available:.8f}",
-                                f"{frozen:.8f}",
-                                f"{total:.8f}",
-                            )
-                        
-                        console.print(spot_table)
-                        console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
-                        
-                        # 保存到数据库（XT专用表）
-                        await xt_rest_service.save_spot_balance(
-                            balances_data=spot_balances,
-                            query_type="scheduled",
-                        )
-                    else:
-                        console.print("[yellow]XT 现货账户余额为空[/yellow]\n")
-                except Exception as e:
-                    console.print(f"[red]获取现货余额失败:[/red] {e}\n")
-                    if debug:
-                        console.print_exception()
-                
-                # 2. 获取并显示合约账户余额
-                try:
-                    perp_balances = await perp_exchange.get_balance()
-                    if perp_balances:
-                        # 转换为标准格式（包含所有字段）
-                        balances_data: dict[str, dict[str, Any]] = {}
-                        for currency, balance_info in perp_balances.items():
-                            balances_data[currency] = {
-                                "available": balance_info.get("available", Decimal("0")),
-                                "frozen": balance_info.get("frozen", Decimal("0")),
-                                "total": balance_info.get("total", Decimal("0")),
-                                "unrealized_pnl": balance_info.get("unrealized_pnl", Decimal("0")),
-                                "realized_pnl": balance_info.get("realized_pnl", Decimal("0")),
-                                "equity": balance_info.get("equity", balance_info.get("total", Decimal("0")) + balance_info.get("unrealized_pnl", Decimal("0"))),
-                                "margin": balance_info.get("margin", Decimal("0")),
-                                "margin_ratio": balance_info.get("margin_ratio", Decimal("0")),
-                            }
-                        
-                        # 创建合约余额表格
-                        perp_balance_table = Table(
-                            title="XT 合约账户余额",
-                            show_header=True,
-                            header_style="bold magenta"
-                        )
-                        perp_balance_table.add_column("Currency", style="cyan", width=12)
-                        perp_balance_table.add_column("Available", justify="right", style="green")
-                        perp_balance_table.add_column("Frozen", justify="right", style="yellow")
-                        perp_balance_table.add_column("Total", justify="right", style="white")
-                        perp_balance_table.add_column("Unrealized PnL", justify="right", style="white")
-                        perp_balance_table.add_column("Realized PnL", justify="right", style="white")
-                        perp_balance_table.add_column("Equity", justify="right", style="cyan")
-                        perp_balance_table.add_column("Margin", justify="right", style="yellow")
-                        
-                        for currency, data in balances_data.items():
-                            available = data.get("available", Decimal("0"))
-                            frozen = data.get("frozen", Decimal("0"))
-                            total = data.get("total", Decimal("0"))
-                            unrealized_pnl = data.get("unrealized_pnl", Decimal("0"))
-                            realized_pnl = data.get("realized_pnl", Decimal("0"))
-                            equity = data.get("equity", total + unrealized_pnl)
-                            margin = data.get("margin", Decimal("0"))
-                            
-                            # 格式化PnL颜色
-                            unrealized_pnl_style = "green" if unrealized_pnl >= 0 else "red"
-                            realized_pnl_style = "green" if realized_pnl >= 0 else "red"
-                            unrealized_pnl_text = f"[{unrealized_pnl_style}]{unrealized_pnl:.8f}[/{unrealized_pnl_style}]"
-                            realized_pnl_text = f"[{realized_pnl_style}]{realized_pnl:.8f}[/{realized_pnl_style}]"
-                            
-                            perp_balance_table.add_row(
-                                currency,
-                                f"{available:.8f}",
-                                f"{frozen:.8f}",
-                                f"{total:.8f}",
-                                unrealized_pnl_text,
-                                realized_pnl_text,
-                                f"{equity:.8f}",
-                                f"{margin:.8f}",
-                            )
-                        
-                        console.print(perp_balance_table)
-                        console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
-                        
-                        # 保存到数据库（XT专用表）
-                        await xt_rest_service.save_perp_balance(
-                            balances_data=balances_data,
-                            query_type="scheduled",
-                        )
-                    else:
-                        console.print("[yellow]XT 合约账户余额为空[/yellow]\n")
-                except Exception as e:
-                    console.print(f"[red]获取合约余额失败:[/red] {e}\n")
-                    if debug:
-                        console.print_exception()
-                
-                # 3. 获取并显示合约账户仓位
-                try:
-                    positions = await perp_exchange.get_positions(symbol=None)
-                    if positions:
-                        # 创建仓位表格
-                        position_table = Table(
-                            title="XT 合约账户仓位",
-                            show_header=True,
-                            header_style="bold magenta"
-                        )
-                        position_table.add_column("Symbol", style="cyan")
-                        position_table.add_column("Side", style="white")
-                        position_table.add_column("Quantity", justify="right")
-                        position_table.add_column("Entry Price", justify="right")
-                        position_table.add_column("Current Price", justify="right")
-                        position_table.add_column("Liquidation Price", justify="right")
-                        position_table.add_column("Unrealized PnL", justify="right")
-                        position_table.add_column("Realized PnL", justify="right")
-                        position_table.add_column("ROE", justify="right")
-                        position_table.add_column("Leverage", justify="right")
-                        
-                        # 转换为字典格式保存
-                        positions_data: list[dict[str, Any]] = []
-                        
-                        for pos in positions:
-                            if hasattr(pos, 'symbol'):
-                                # Position对象 (XT格式)
-                                symbol = pos.symbol
-                                side = pos.side
-                                quantity = pos.quantity
-                                entry_price = pos.entry_price
-                                mark_price = pos.mark_price
-                                unrealized_pnl = pos.unrealized_pnl
-                                realized_pnl = getattr(pos, 'realized_pnl', Decimal('0'))
-                                leverage = f"{pos.leverage}"
-                                roe = (pos.unrealized_pnl / pos.margin * 100) if hasattr(pos, 'margin') and pos.margin > 0 else Decimal('0')
-                                liquidation_price = pos.liquidation_price if hasattr(pos, 'liquidation_price') else Decimal('0')
-                                
-                                # 格式化未实现PnL
-                                unrealized_pnl_style = "green" if unrealized_pnl >= 0 else "red"
-                                unrealized_pnl_text = f"[{unrealized_pnl_style}]{unrealized_pnl:.8f}[/{unrealized_pnl_style}]"
-                                
-                                # 格式化已实现PnL
-                                realized_pnl_style = "green" if realized_pnl >= 0 else "red"
-                                realized_pnl_text = f"[{realized_pnl_style}]{realized_pnl:.8f}[/{realized_pnl_style}]"
-                                
-                                # 格式化ROE
-                                roe_style = "green" if roe >= 0 else "red"
-                                roe_text = f"[{roe_style}]{roe:.2f}%[/{roe_style}]"
-                                
-                                position_table.add_row(
-                                    symbol,
-                                    side,
-                                    f"{quantity:.8f}",
-                                    f"{entry_price:.8f}",
-                                    f"{mark_price:.8f}",
-                                    f"{liquidation_price:.8f}",
-                                    unrealized_pnl_text,
-                                    realized_pnl_text,
-                                    roe_text,
-                                    f"{leverage}x",
-                                )
-                                
-                                # 保存数据（使用XT API字段名）
-                                pos_dict = {
-                                    "symbol": symbol,
-                                    "positionSide": side,
-                                    "positionSize": str(quantity),  # XT API uses positionSize
-                                    "entryPrice": str(entry_price),
-                                    "calMarkPrice": str(mark_price),  # XT API uses calMarkPrice
-                                    "floatingPL": str(unrealized_pnl),  # XT API uses floatingPL
-                                    "realizedProfit": str(realized_pnl),  # XT API uses realizedProfit
-                                    "leverage": leverage,
-                                    "isolatedMargin": str(pos.margin) if hasattr(pos, 'margin') else "0",  # XT API uses isolatedMargin
-                                    "roe": str(roe),
-                                    "breakPrice": str(liquidation_price),  # XT API uses breakPrice
-                                    "maintMargin": str(getattr(pos, "maintenance_margin", Decimal("0"))),
-                                    # 保留兼容字段名
-                                    "positionAmt": str(quantity),
-                                    "markPrice": str(mark_price),
-                                    "unRealizedProfit": str(unrealized_pnl),
-                                    "liquidationPrice": str(liquidation_price),
-                                    "margin": str(pos.margin) if hasattr(pos, 'margin') else "0",
-                                }
-                                positions_data.append(pos_dict)
-                            else:
-                                # 字典格式
-                                positions_data.append(pos)
-                        
-                        if positions_data:
-                            console.print(position_table)
-                            console.print(f"[dim]数据获取时间: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}[/dim]\n")
-                            
-                            # 保存到数据库（XT专用表）
-                            await xt_rest_service.save_perp_positions(
-                                positions_data=positions_data,
-                                query_type="scheduled",
-                            )
-                        else:
-                            console.print("[yellow]XT 当前无持仓[/yellow]\n")
-                    else:
-                        console.print("[yellow]XT 当前无持仓[/yellow]\n")
-                except Exception as e:
-                    console.print(f"[red]获取仓位失败:[/red] {e}\n")
-                    if debug:
-                        console.print_exception()
-                
-                if metrics_definition:
-                    await _evaluate_metrics(
-                        metrics_config=metrics_definition,
-                        db_manager=db_manager,
-                        enable_lark=enable_lark,
-                        default_webhook=webhook_url,
-                        default_secret=webhook_secret,
-                        debug=debug,
-                    )
-                
-                # 显示下次查询时间
-                next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
-                console.print(f"\n[dim]下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
-                console.print(f"[dim]等待 {interval_minutes} 分钟...[/dim]\n")
-                
-            except Exception as e:
-                console.print(f"[red]查询过程出错:[/red] {e}")
-                if debug:
-                    console.print_exception()
-        
-        # 运行定时任务
-        asyncio.run(run_scheduler())
+
+            console.print("[cyan]启动 XT 账户定时任务服务[/cyan]")
+            console.print(f"[cyan]查询间隔: {interval_minutes} 分钟[/cyan]")
+            console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+            asyncio.run(
+                _run_xt_watch_account_async(
+                    interval_minutes=interval_minutes,
+                    api_key=final_api_key,
+                    api_secret=final_api_secret,
+                    debug=debug,
+                    enable_lark=enable_lark,
+                    lark_webhook=lark_webhook,
+                    lark_secret=lark_secret,
+                    metrics_config=metrics_config,
+                    enable_metrics=enable_metrics,
+                    account_id=account_id,
+                    account_name=account_display_name,
+                    database_url=database_url,
+                )
+            )
+            return
+
+        if exchange == ExchangeName.BINANCE:
+            if not final_api_key or not final_api_secret:
+                console.print("[red]错误:[/red] 缺少 Binance API 密钥配置")
+                console.print("\n请设置环境变量或使用命令行参数:")
+                console.print("  环境变量: export BINANCE_API_KEY=your_key && export BINANCE_API_SECRET=your_secret")
+                console.print("  命令行:   --api-key YOUR_KEY --api-secret YOUR_SECRET")
+                console.print("  配置文件: --config config/accounts.json --account-id account_001")
+                raise typer.Exit(code=1)
+
+            console.print("[cyan]启动 Binance 账户定时任务服务[/cyan]")
+            console.print(f"[cyan]查询间隔: {interval_minutes} 分钟[/cyan]")
+            console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+            asyncio.run(
+                _run_binance_watch_account_async(
+                    interval_minutes=interval_minutes,
+                    api_key=final_api_key,
+                    api_secret=final_api_secret,
+                    debug=debug,
+                    enable_lark=enable_lark,
+                    lark_webhook=lark_webhook,
+                    lark_secret=lark_secret,
+                    metrics_config=metrics_config,
+                    enable_metrics=enable_metrics,
+                    account_id=account_id,
+                    account_name=account_display_name,
+                    database_url=database_url,
+                )
+            )
+            return
+
+        console.print(f"[red]错误:[/red] 交易所 '{exchange.value}' 暂不支持 watch-account 功能")
+        raise typer.Exit(code=1)
+
+
         
     except KeyboardInterrupt:
         console.print("\n[yellow]监控已停止[/yellow]")

@@ -3091,11 +3091,13 @@ def watch_positions(
                 for acc in account_configs:
                     try:
                         acc_exchange = ExchangeName(acc.exchange.lower())
+                        console.print(f"[dim]调试: 账号 {acc.account_id} 交易所识别为: {acc_exchange.value}[/dim]")
                     except ValueError:
                         console.print(f"[yellow]警告:[/yellow] 账号 {acc.account_id} 使用未支持的交易所 {acc.exchange}，跳过")
                         continue
 
                     if acc_exchange == ExchangeName.XT:
+                        console.print(f"[dim]调试: 账号 {acc.account_id} 路由到 XT 实现[/dim]")
                         task = asyncio.create_task(
                             _run_xt_watch_positions_async(
                                 interval=interval,
@@ -3111,6 +3113,7 @@ def watch_positions(
                             )
                         )
                     elif acc_exchange == ExchangeName.BINANCE:
+                        console.print(f"[dim]调试: 账号 {acc.account_id} 路由到 Binance 实现[/dim]")
                         task = asyncio.create_task(
                             _run_binance_watch_positions_async(
                                 interval=interval,

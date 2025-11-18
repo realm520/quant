@@ -38,8 +38,8 @@
     "binance_main_001": {
       "name": "Binance账号1",
       "exchange": "binance",
-      "api_key": "E5A9RhZzXVm2cNaYxD0GuoAZhOTiCCM7RfbRUbmapE5n81ErkIAOxejF7BMlTF4J",
-      "api_secret": "BqyOid9aZAB2zq0e2zzb2YpeqPrZpNT0QuyFPUELDzB5O5XX4Zhm8OX0zWZ4U4vu",
+      "api_key": "2h6ps5jqtt8qYyx0KeOdWNvwkywQAP8nKBUlHFQQo4y7wM44kadCclJTrSoq4Lop",
+      "api_secret": "Ix7oHQdadgTTQEoT1WqQuxh7ui7g9YzEV90JGuffOTkcRAPkAJvC2KsdPaAFEDVx",
       "enabled": true,
       "channels": ["account"]
     },
@@ -48,7 +48,7 @@
       "exchange": "binance",
       "api_key": "zt6mWuKhEVK9N5TUoelZQaYbplpKae5WAfETltgsUt6vtQeRNA9MlDqrwrijHhfi",
       "api_secret": "EVOO5JrSdy74kMLIjZw9AiNLf42pZoK3X0tftmg2uinlknzdVGyqmrlz0pwNLuo3",
-      "enabled": true,
+      "enabled": false,
       "channels": ["account"]
     }
   }

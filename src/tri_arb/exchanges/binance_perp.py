@@ -40,6 +40,7 @@ class BinancePerpExchange(BaseExchange):
         name: str = "binance_perp",
         api_key: str = "",
         api_secret: str = "",
+        recv_window: int = 60000,
     ) -> None:
         """Initialize Binance Perpetual Futures exchange adapter.
 
@@ -52,6 +53,8 @@ class BinancePerpExchange(BaseExchange):
         self.api_key = api_key
         self.api_secret = api_secret
         self._client: httpx.AsyncClient | None = None
+        # Binance recommend increasing recvWindow when network latency may exceed 5s
+        self.recv_window = recv_window
         
         logger.info(
             "BinancePerpExchange initialized",
@@ -143,6 +146,7 @@ class BinancePerpExchange(BaseExchange):
             if params is None:
                 params = {}
             params["timestamp"] = int(time.time() * 1000)
+            params.setdefault("recvWindow", self.recv_window)
 
             # Generate signature
             query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
@@ -175,8 +179,18 @@ class BinancePerpExchange(BaseExchange):
             url=url,
             headers=headers,
         )
-        
-        response.raise_for_status()
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            text = exc.response.text if hasattr(exc.response, "text") else ""
+            logger.error(
+                "Binance Futures API request failed",
+                status_code=exc.response.status_code,
+                response_text=text[:500],
+                path=path,
+            )
+            raise
         return response
 
     async def get_trading_pair_info(

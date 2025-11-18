@@ -242,7 +242,7 @@ def user_stream(
             console.print(f"[cyan]订阅频道: {', '.join(channel_list)}[/cyan]")
         else:
             console.print(f"[cyan]订阅频道: 全部[/cyan]")
-        console.print(f"[cyan]数据同步: {"启用" if enable_data_sync else "禁用"}[/cyan]")
+        console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
         console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
         
         async def run_service():
@@ -440,7 +440,7 @@ def multi_account(
         channels_desc = ", ".join(acc.channels) if acc.channels else "全部"
         console.print(f"  - {acc.account_id}: {acc.name} [{exchange_name}] 频道: {channels_desc}")
     console.print(f"[cyan]输出格式: {output}[/cyan]")
-    console.print(f"[cyan]数据同步: {"启用" if enable_data_sync else "禁用"}[/cyan]")
+    console.print(f"[cyan]数据同步: {'启用' if enable_data_sync else '禁用'}[/cyan]")
     console.print("[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
 
     async def prepare_tables_if_needed():

@@ -28,6 +28,7 @@ from tri_arb.storage.okx_models import OKXAccountBalance, OKXPosition, OKXOrder,
 from tri_arb.storage.models import ConnectionStatus
 from tri_arb.exchanges.okx_perp import OKXPerpExchange
 from tri_arb.services.okx_reconciliation import OKXReconciliationService
+from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 
 logger = get_logger(__name__)
 console = Console()
@@ -608,9 +609,11 @@ class OKXUserStreamService:
             table.add_row("方向", f"[{side_color}]{side.upper()}[/{side_color}]")
             table.add_row("类型", order.get("ordType", "").upper())
             
-            # 持仓方向和交易模式
-            if order.get("posSide"):
-                table.add_row("持仓方向", order.get("posSide", "").upper())
+            # 持仓方向（多空）- 高亮显示
+            position_side = order.get("posSide", "NET")
+            if position_side:
+                position_color = "bright_green" if position_side.upper() == "LONG" else "bright_red" if position_side.upper() == "SHORT" else "white"
+                table.add_row("持仓方向（多空）", f"[{position_color}]{position_side.upper()}[/{position_color}]")
             table.add_row("交易模式", order.get("tdMode", "").upper())
             
             # 价格和数量
@@ -984,6 +987,20 @@ class OKXUserStreamService:
                     session.add(okx_order)
                     await session.commit()
                     saved_count += 1
+                    
+                    # 更新 Prometheus metrics
+                    try:
+                        # 订阅服务使用端口 9601
+                        ensure_metrics_server(9601)
+                        update_order_metrics(
+                            exchange="okx",
+                            exchange_type="perp",
+                            account_id="default",  # OKX 暂不支持多账号
+                            order_data=order,
+                        )
+                    except Exception as metric_error:
+                        logger.debug(f"Failed to update order metrics: {metric_error}")
+                        
             except IntegrityError:
                 # 订单已存在（重复推送），跳过
                 duplicate_count += 1

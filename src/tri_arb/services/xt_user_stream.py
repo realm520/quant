@@ -35,6 +35,7 @@ from tri_arb.storage.xt_websocket_models import (
 )
 from tri_arb.exchanges.xt_perp import XTPerpExchange
 from tri_arb.exchanges.xt_spot import XTSpotExchange
+from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -607,11 +608,33 @@ class XTUserStreamService:
             # 保存到数据库
             await self._save_order_update(order_data)
             
+            # 更新 Prometheus metrics
+            if self.account_id:
+                account_id = self.account_id
+            else:
+                account_id = "default"
+            
+            # 订阅服务使用端口 9601
+            ensure_metrics_server(9601)
+            try:
+                # 添加详细日志以便调试
+                order_id = order_data.get('orderId') or order_data.get('order_id', 'unknown')
+                logger.info(f"Updating order metrics for order {order_id}: symbol={order_data.get('symbol')}, side={order_data.get('orderSide')}, state={order_data.get('state')}")
+                update_order_metrics(
+                    exchange="xt",
+                    exchange_type="perp",
+                    account_id=account_id,
+                    order_data=order_data,
+                )
+                logger.info(f"Order metrics updated successfully for order {order_id}")
+            except Exception as metric_error:
+                logger.error(f"Failed to update order metrics: {metric_error}", exc_info=True)
+            
             # 更新统计
             await self._update_order_stats()
             
         except Exception as e:
-            logger.error(f"Error handling order update: {e}")
+            logger.error(f"Error handling order update: {e}", exc_info=True)
     
     async def _handle_trade_update(self, data: Dict[str, Any]) -> None:
         """处理成交更新消息."""
@@ -855,6 +878,7 @@ class XTUserStreamService:
             table.add_column("订单ID", style="cyan")
             table.add_column("交易对", style="green")
             table.add_column("方向", style="yellow")
+            table.add_column("多空", style="bright_cyan")
             table.add_column("类型", style="blue")
             table.add_column("数量", style="magenta")
             table.add_column("价格", style="red")
@@ -868,6 +892,8 @@ class XTUserStreamService:
                 symbol = data.get("symbol", "")
                 # XT API uses orderSide, fallback to side
                 side = data.get("orderSide") or data.get("side", "")
+                # 持仓方向（多空）
+                position_side = data.get("positionSide") or data.get("position_side") or "NET"
                 # XT API uses orderType, fallback to type
                 order_type = data.get("orderType") or data.get("type", "")
                 # XT API uses origQty, fallback to quantity
@@ -876,10 +902,14 @@ class XTUserStreamService:
                 # XT API uses state, fallback to status
                 status = data.get("state") or data.get("status", "")
                 
+                # 多空方向颜色
+                position_color = "bright_green" if position_side.upper() in ["LONG", "多"] else "bright_red" if position_side.upper() in ["SHORT", "空"] else "white"
+                
                 table.add_row(
                     str(order_id),
                     symbol,
                     side,
+                    f"[{position_color}]{position_side}[/{position_color}]",
                     order_type,
                     f"{quantity}",
                     f"{price}",
@@ -893,6 +923,8 @@ class XTUserStreamService:
                     symbol = order.get("symbol", "")
                     # XT API uses orderSide, fallback to side
                     side = order.get("orderSide") or order.get("side", "")
+                    # 持仓方向（多空）
+                    position_side = order.get("positionSide") or order.get("position_side") or "NET"
                     # XT API uses orderType, fallback to order_type or type
                     order_type = order.get("orderType") or order.get("order_type") or order.get("type", "")
                     # XT API uses origQty, fallback to quantity
@@ -901,10 +933,14 @@ class XTUserStreamService:
                     # XT API uses state, fallback to status
                     status = order.get("state") or order.get("status", "")
                     
+                    # 多空方向颜色
+                    position_color = "bright_green" if position_side.upper() in ["LONG", "多"] else "bright_red" if position_side.upper() in ["SHORT", "空"] else "white"
+                    
                     table.add_row(
                         str(order_id),
                         symbol,
                         side,
+                        f"[{position_color}]{position_side}[/{position_color}]",
                         order_type,
                         f"{quantity}",
                         f"{price}",
@@ -1939,8 +1975,21 @@ class XTUserStreamService:
         """检查订单数据是否有变化."""
         # 订单数据通常每次都是新的或更新的，所以总是返回True
         # 除非订单ID和状态都相同
-        order_id = order_data.get("order_id") or order_data.get("orders", [{}])[0].get("order_id") if order_data.get("orders") else None
-        status = order_data.get("status") or order_data.get("orders", [{}])[0].get("status") if order_data.get("orders") else None
+        # 支持多种字段名（XT, Binance, OKX, Gate）
+        order_id = (
+            order_data.get("order_id")
+            or order_data.get("orderId")  # XT
+            or order_data.get("i")  # Binance
+            or order_data.get("ordId")  # OKX
+            or order_data.get("id")  # Gate
+            or (order_data.get("orders", [{}])[0].get("order_id") if order_data.get("orders") else None)
+        )
+        status = (
+            order_data.get("status")
+            or order_data.get("state")  # XT, OKX
+            or order_data.get("X")  # Binance
+            or (order_data.get("orders", [{}])[0].get("status") if order_data.get("orders") else None)
+        )
 
         if not order_id:
             return True  # 无法识别订单，视为新数据

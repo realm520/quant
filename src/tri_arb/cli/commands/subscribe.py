@@ -16,6 +16,7 @@ from tri_arb.services.gate_user_stream import GateUserStreamService
 from tri_arb.services.xt_user_stream import XTUserStreamService
 from tri_arb.services.xt_multi_account_stream import XTMultiAccountStreamService
 from tri_arb.storage.database import DatabaseManager
+from tri_arb.metrics.prometheus import ensure_metrics_server
 
 app = typer.Typer(help="WebSocket订阅命令")
 console = Console()
@@ -246,6 +247,10 @@ def user_stream(
         console.print(f"[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
         
         async def run_service():
+            # 启动 Prometheus metrics 服务器
+            # 订阅服务使用端口 9601，避免与 watch-balance 冲突
+            ensure_metrics_server(9601)
+            
             # 初始化数据库管理器
             db_manager = DatabaseManager(database_url=db_url)
             
@@ -551,6 +556,10 @@ def multi_account(
             await db_manager.close()
 
     async def run_multi_account_service():
+        # 启动 Prometheus metrics 服务器
+        # 订阅服务使用端口 9601，避免与 watch-balance 冲突
+        ensure_metrics_server(9601)
+        
         await prepare_tables_if_needed()
         tasks = []
         for acc in enabled_accounts:

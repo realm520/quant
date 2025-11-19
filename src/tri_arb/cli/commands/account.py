@@ -35,6 +35,12 @@ from tri_arb.config.metrics_loader import (
     MetricDefinition,
     load_metrics_config,
 )
+from tri_arb.metrics.prometheus import (
+    ensure_metrics_server,
+    update_balance_metrics,
+    record_balance_query_status,
+    update_position_metrics,
+)
 
 
 async def _run_xt_watch_positions_async(
@@ -57,6 +63,11 @@ async def _run_xt_watch_positions_async(
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的仓位监控")
     console.print(f"[cyan]启动账号 {account_label} 的仓位监控[/cyan]")
+
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    exchange_type_label = ExchangeType.PERP.value
+    ensure_metrics_server()
 
     db_manager = DatabaseManager(database_url=database_url)
     perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
@@ -189,6 +200,13 @@ async def _run_xt_watch_positions_async(
         )
         console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据已保存到数据库\n")
 
+        update_position_metrics(
+            exchange_label,
+            exchange_type_label,
+            metrics_account,
+            positions_payload,
+        )
+
         if lark_webhook:
             await _send_lark_alert(
                 webhook_url=lark_webhook,
@@ -264,6 +282,11 @@ def _run_xt_watch_positions(
     if account_id:
         console.print(f"[cyan]账号ID: {account_id}[/cyan]")
     console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+    metrics_account = account_id or "default"
+    exchange_label = ExchangeName.XT.value
+    exchange_type_label = ExchangeType.PERP.value
+    ensure_metrics_server()
 
     db_manager = DatabaseManager()
     perp_exchange = XTPerpExchange(api_key=api_key, api_secret=api_secret)
@@ -397,6 +420,13 @@ def _run_xt_watch_positions(
             query_type="scheduled",
         )
         console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
+
+        update_position_metrics(
+            exchange_label,
+            exchange_type_label,
+            metrics_account,
+            positions_payload,
+        )
 
         if lark_webhook:
             await _send_lark_alert(
@@ -1685,9 +1715,21 @@ async def _run_xt_watch_balance_async(
 
     exchange_instance = create_exchange(exchange_type, api_key, api_secret, ExchangeName.XT)
     db_manager = DatabaseManager(database_url=database_url)
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    exchange_type_label = exchange_type.value
+    ensure_metrics_server()
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    exchange_type_label = exchange_type.value
+    ensure_metrics_server()
 
     async def watch_loop():
         iteration = 0
+        metrics_account = account_id or (account_name or "default")
+        exchange_label = ExchangeName.XT.value
+        exchange_type_label = exchange_type.value
+        ensure_metrics_server()
         try:
             await exchange_instance.connect()
             # 确保所需表存在
@@ -1716,7 +1758,18 @@ async def _run_xt_watch_balance_async(
 
                 try:
                     balance_data = await exchange_instance.get_balance()
-
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=True,
+                    )
+                    update_balance_metrics(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        balance_data,
+                    )
                     if not balance_data:
                         console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
                     else:
@@ -1763,6 +1816,12 @@ async def _run_xt_watch_balance_async(
                         console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
 
                 except Exception as e:
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=False,
+                    )
                     console.print(f"[red][账号 {account_label}] 查询失败:[/red] {e}")
                     if debug:
                         console.print_exception()
@@ -1884,6 +1943,10 @@ async def _run_generic_watch_balance_async(
     exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange_name, passphrase=passphrase)
     db_manager = DatabaseManager(database_url=database_url)
     rest_data_service = RestDataService(db_manager)
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = exchange_name.value
+    exchange_type_label = exchange_type.value
+    ensure_metrics_server()
     
     async def watch_loop():
         iteration = 0
@@ -1903,6 +1966,18 @@ async def _run_generic_watch_balance_async(
                 
                 try:
                     balance_data = await exchange_instance.get_balance()
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=True,
+                    )
+                    update_balance_metrics(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        balance_data,
+                    )
                     
                     if not balance_data:
                         console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
@@ -1991,6 +2066,10 @@ async def _run_binance_watch_account_async(
 
     db_manager = DatabaseManager(database_url=database_url)
     rest_data_service = RestDataService(db_manager)
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = "binance"
+    exchange_type_label = "perp"  # Binance watch-account 主要监控 perp
+    ensure_metrics_server()
     spot_exchange = BinanceSpotExchange(api_key=api_key, api_secret=api_secret)
     perp_exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
 
@@ -2824,6 +2903,16 @@ async def _run_binance_watch_positions_async(
     logger.info("启动账号 %s 的 Binance 仓位监控", account_label)
     console.print(f"[cyan]启动账号 {account_label} 的 Binance 仓位监控[/cyan]")
 
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.BINANCE.value
+    exchange_type_label = ExchangeType.PERP.value
+    ensure_metrics_server()
+
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.BINANCE.value
+    exchange_type_label = ExchangeType.PERP.value
+    ensure_metrics_server()
+
     db_manager = DatabaseManager(database_url=database_url)
     rest_data_service = RestDataService(db_manager)
     perp_exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
@@ -2899,6 +2988,20 @@ async def _run_binance_watch_positions_async(
             logger.error("账号 %s Binance 仓位保存失败: %s", account_label, save_exc)
             if debug:
                 console.print_exception()
+
+        update_position_metrics(
+            exchange_label,
+            exchange_type_label,
+            metrics_account,
+            positions,
+        )
+
+        update_position_metrics(
+            exchange_label,
+            exchange_type_label,
+            metrics_account,
+            positions,
+        )
 
     async def watch_loop():
         iteration = 0
@@ -3670,6 +3773,10 @@ async def _run_xt_watch_balance_async(
 
     exchange_instance = create_exchange(exchange_type, api_key, api_secret, ExchangeName.XT)
     db_manager = DatabaseManager(database_url=database_url)
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    exchange_type_label = exchange_type.value
+    ensure_metrics_server()
 
     async def watch_loop():
         iteration = 0
@@ -3701,6 +3808,18 @@ async def _run_xt_watch_balance_async(
 
                 try:
                     balance_data = await exchange_instance.get_balance()
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=True,
+                    )
+                    update_balance_metrics(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        balance_data,
+                    )
 
                     if not balance_data:
                         console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
@@ -3748,6 +3867,12 @@ async def _run_xt_watch_balance_async(
                         console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
 
                 except Exception as e:
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=False,
+                    )
                     console.print(f"[red][账号 {account_label}] 查询失败:[/red] {e}")
                     if debug:
                         console.print_exception()
@@ -3869,6 +3994,10 @@ async def _run_generic_watch_balance_async(
     exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange_name, passphrase=passphrase)
     db_manager = DatabaseManager(database_url=database_url)
     rest_data_service = RestDataService(db_manager)
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = exchange_name.value
+    exchange_type_label = exchange_type.value
+    ensure_metrics_server()
     
     async def watch_loop():
         iteration = 0
@@ -3888,6 +4017,18 @@ async def _run_generic_watch_balance_async(
                 
                 try:
                     balance_data = await exchange_instance.get_balance()
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=True,
+                    )
+                    update_balance_metrics(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        balance_data,
+                    )
                     
                     if not balance_data:
                         console.print(f"[yellow][账号 {account_label}] 账户余额为空或所有币种余额为0[/yellow]")
@@ -3921,6 +4062,12 @@ async def _run_generic_watch_balance_async(
                         console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
                 
                 except Exception as e:
+                    record_balance_query_status(
+                        exchange_label,
+                        exchange_type_label,
+                        metrics_account,
+                        success=False,
+                    )
                     console.print(f"[red][账号 {account_label}] 查询失败:[/red] {e}")
                     logger.error("账号 %s watch-balance query error: %s", account_label, e)
                     if debug:

@@ -27,6 +27,7 @@ from tri_arb.storage.gate_models import GateAccountBalance, GatePosition, GateOr
 from tri_arb.storage.models import ConnectionStatus
 from tri_arb.exchanges.gate_perp import GatePerpExchange
 from tri_arb.services.gate_reconciliation import GateReconciliationService
+from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 
 logger = get_logger(__name__)
 console = Console()
@@ -591,6 +592,12 @@ class GateUserStreamService:
             table.add_row("订单ID", str(order_id))
             table.add_row("合约", contract)
             table.add_row("方向", f"[{side_style}]{side}[/{side_style}]")
+            
+            # Gate.io 通过 size 正负表示多空：正数=多，负数=空
+            position_side = "LONG" if size > 0 else "SHORT" if size < 0 else "NET"
+            position_color = "bright_green" if position_side == "LONG" else "bright_red" if position_side == "SHORT" else "white"
+            table.add_row("持仓方向（多空）", f"[{position_color}]{position_side}[/{position_color}]")
+            
             table.add_row("类型", order_type)
             
             # 价格显示逻辑
@@ -758,6 +765,23 @@ class GateUserStreamService:
                     )
                     await session.execute(stmt)
                     await session.commit()
+                    
+                    # 更新 Prometheus metrics
+                    try:
+                        # 订阅服务使用端口 9601
+                        ensure_metrics_server(9601)
+                        # Gate.io 通过 size 正负表示多空
+                        order_with_position = order.copy()
+                        order_with_position["positionSide"] = "LONG" if _safe_float(order.get("size"), 0) > 0 else "SHORT" if _safe_float(order.get("size"), 0) < 0 else "NET"
+                        order_with_position["side"] = "BUY" if _safe_float(order.get("size"), 0) > 0 else "SELL"
+                        update_order_metrics(
+                            exchange="gate",
+                            exchange_type="perp",
+                            account_id="default",  # Gate.io 暂不支持多账号
+                            order_data=order_with_position,
+                        )
+                    except Exception as metric_error:
+                        logger.debug(f"Failed to update order metrics: {metric_error}")
                     
             logger.info("Gate order update saved", count=len(result))
         except Exception as e:

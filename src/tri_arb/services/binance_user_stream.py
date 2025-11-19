@@ -20,6 +20,7 @@ from tri_arb.exchanges.binance_perp import BinancePerpExchange
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.models import AccountUpdate, OrderUpdate, TradeUpdate, ConnectionStatus
 from tri_arb.services.binance_reconciliation import BinanceReconciliationService
+from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -798,7 +799,11 @@ class BinanceUserStreamService:
         side_color = "green" if side == "BUY" else "red"
         table.add_row("方向", f"[{side_color}]{side}[/{side_color}]")
         table.add_row("类型", order.get("o", ""))
-        table.add_row("持仓方向", order.get("ps", ""))
+        
+        # 持仓方向（多空）- 高亮显示
+        position_side = order.get("ps", "NET")
+        position_color = "bright_green" if position_side == "LONG" else "bright_red" if position_side == "SHORT" else "white"
+        table.add_row("持仓方向（多空）", f"[{position_color}]{position_side}[/{position_color}]")
         
         # 价格和数量
         table.add_row("价格", f"{float(order.get('p', 0)):.4f}")
@@ -985,6 +990,16 @@ class BinanceUserStreamService:
                     )
                 except IntegrityError:
                     logger.debug(f"Trade duplicate detected (trade_id={trade_id}), skipping")
+
+            # 更新 Prometheus metrics
+            # 订阅服务使用端口 9601
+            ensure_metrics_server(9601)
+            update_order_metrics(
+                exchange="binance",
+                exchange_type="perp",
+                account_id="default",  # Binance 暂不支持多账号
+                order_data=order,
+            )
 
             # 更新连接状态时间戳
             await self.update_connection_status(

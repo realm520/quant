@@ -30,6 +30,14 @@
     "account_004": {
       "name": "账号4",
       "exchange": "xt",
+      "api_key": "48e87084-4cb8-4134-958d-1ff294ee3796",
+      "api_secret": "e98ebc0389dd9ca6d404a10cb472a306e3ce3229",
+      "enabled": false,
+      "channels": ["order"]
+    },
+    "account_005": {
+      "name": "账号5",
+      "exchange": "xt",
       "api_key": "840dfa00-6cfa-43d8-af92-5fde9e6f7f49",
       "api_secret": "0fd61a99adf218bd4be79767f086195b15caab55",
       "enabled": false,

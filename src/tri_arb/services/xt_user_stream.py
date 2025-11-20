@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional, Set
 
@@ -1356,27 +1356,63 @@ class XTUserStreamService:
     async def _sync_missing_data(self) -> None:
         """补充断线期间缺失的数据.
 
-        仅在重连后调用，固定回补1小时内的订单和成交数据。
+        仅在重连后调用，从断开时间往前回补1小时内的订单和成交数据。
         账户和持仓数据直接获取最新状态。
         """
-        if not self.enable_data_sync or not self.rest_client:
-            logger.debug("Data sync is disabled or REST client not available")
+        if not self.enable_data_sync:
+            logger.info("Data sync is disabled, skipping missing data sync")
+            return
+        
+        if not self.rest_client:
+            logger.warning("REST client not available, cannot sync missing data")
             return
 
         try:
             # 固定回补时间为1小时
             lookback_hours = 1
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(hours=lookback_hours)
             
-            logger.debug(
-                "Syncing missing data for fixed 1-hour lookback period",
-                extra={
-                    "lookback_hours": lookback_hours,
-                    "start_time": start_time.isoformat(),
-                    "end_time": end_time.isoformat()
-                }
-            )
+            # 如果记录了断开时间，使用断开时间作为结束时间，往前推1小时
+            # 如果只有重连时间，使用重连时间作为结束时间，往前推1小时
+            # 否则使用当前时间往前推1小时
+            if self.disconnect_time:
+                end_time = self.disconnect_time
+                start_time = end_time - timedelta(hours=lookback_hours)
+                logger.info(
+                    "Syncing missing data from disconnect time (1-hour lookback)",
+                    extra={
+                        "disconnect_time": self.disconnect_time.isoformat(),
+                        "reconnect_time": self.reconnect_time.isoformat() if self.reconnect_time else None,
+                        "lookback_hours": lookback_hours,
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat()
+                    }
+                )
+            elif self.reconnect_time:
+                # 如果没有断开时间但有重连时间，使用重连时间作为结束时间，往前推1小时
+                # 这样可以确保重连时也会回补数据，即使没有检测到断线
+                end_time = self.reconnect_time
+                start_time = end_time - timedelta(hours=lookback_hours)
+                logger.info(
+                    "Syncing missing data from reconnect time (1-hour lookback, no disconnect time recorded)",
+                    extra={
+                        "reconnect_time": self.reconnect_time.isoformat(),
+                        "lookback_hours": lookback_hours,
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat()
+                    }
+                )
+            else:
+                # 如果既没有断开时间也没有重连时间，使用当前时间往前推1小时（兼容旧逻辑）
+                end_time = datetime.utcnow()
+                start_time = end_time - timedelta(hours=lookback_hours)
+                logger.info(
+                    "Syncing missing data for fixed 1-hour lookback period (no disconnect/reconnect time recorded)",
+                    extra={
+                        "lookback_hours": lookback_hours,
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat()
+                    }
+                )
 
             # 同步账户余额（总是同步最新状态）
             if "account" in self.enabled_channels:
@@ -1386,11 +1422,11 @@ class XTUserStreamService:
             if "position" in self.enabled_channels:
                 await self._sync_position_data()
 
-            # 同步订单数据（固定1小时回补）
+            # 同步订单数据（从断开时间往前回补1小时）
             if "order" in self.enabled_channels:
                 await self._sync_order_data_fixed_lookback(start_time, end_time)
 
-            # 同步成交数据（固定1小时回补）
+            # 同步成交数据（从断开时间往前回补1小时）
             if "trade" in self.enabled_channels:
                 await self._sync_trade_data_fixed_lookback(start_time, end_time)
 
@@ -1558,11 +1594,12 @@ class XTUserStreamService:
                             continue
 
                         OrderUpdateModel = self._get_model('XTOrderUpdate')
+                        client_order_id = order.order_id if order.order_id else ""
                         record = OrderUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             order_id=order_id,
-                            client_order_id="",
+                            client_order_id=client_order_id,
                             side=order.side.value,
                             order_type=order.order_type.value,
                             position_side=order.position_side or "LONG",
@@ -1571,8 +1608,8 @@ class XTUserStreamService:
                             filled_quantity=Decimal("0"),  # 填充数量需要从详细信息获取
                             status=order.status.value,
                             time_in_force="GTC",
-                            create_time=order.timestamp,
-                            update_time_order=order.timestamp,
+                            create_time=order.created_at,
+                            update_time_order=order.updated_at,
                             raw_data=json.dumps({
                                 "source": "rest_sync",
                                 "order_id": order.exchange_order_id,
@@ -1746,12 +1783,23 @@ class XTUserStreamService:
                             skipped_count += 1
                             continue
 
+                        create_time = (
+                            order.created_at.astimezone(timezone.utc).replace(tzinfo=None)
+                            if order.created_at
+                            else None
+                        )
+                        update_time_order = (
+                            order.updated_at.astimezone(timezone.utc).replace(tzinfo=None)
+                            if order.updated_at
+                            else create_time
+                        )
+
                         OrderUpdateModel = self._get_model('XTOrderUpdate')
                         record = OrderUpdateModel(
                             update_time=update_time,
                             symbol=symbol,
                             order_id=order_id,
-                            client_order_id="",
+                            client_order_id=order.order_id or "",
                             side=order.side.value,
                             order_type=order.order_type.value,
                             position_side=order.position_side or "LONG",
@@ -1760,8 +1808,8 @@ class XTUserStreamService:
                             filled_quantity=Decimal("0"),  # 填充数量需要从详细信息获取
                             status=order.status.value,
                             time_in_force="GTC",
-                            create_time=order.timestamp,
-                            update_time_order=order.timestamp,
+                            create_time=create_time,
+                            update_time_order=update_time_order,
                             raw_data=json.dumps({
                                 "source": "rest_sync_fixed_lookback",
                                 "order_id": order.exchange_order_id,

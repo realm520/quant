@@ -1406,7 +1406,17 @@ class XTPerpExchange(BaseExchange):
                 symbol_str = order_data.get("symbol", "")
                 if "_" in symbol_str:
                     base, quote = symbol_str.split("_", 1)
-                    trading_pair = TradingPair(base_currency=base.upper(), quote_currency=quote.upper())
+                    # Create minimal TradingPair with required fields for batch queries
+                    # Real trading constraints should be fetched from exchange info API for actual trading
+                    trading_pair = TradingPair(
+                        base_currency=base.upper(),
+                        quote_currency=quote.upper(),
+                        exchange="xt",
+                        min_order_size=Decimal("0.001"),
+                        max_order_size=Decimal("1000000"),
+                        price_precision=8,
+                        quantity_precision=8,
+                    )
                 else:
                     logger.warning("Invalid symbol format", symbol=symbol_str)
                     continue
@@ -1415,18 +1425,58 @@ class XTPerpExchange(BaseExchange):
                 # Note: XT API uses "createdTime" (with 'd') according to official docs
                 # https://doc.xt.com/zh-Hans/docs/futures/Order/see-order-history
                 created_time = order_data.get("createdTime") or order_data.get("createTime")
+                updated_time = order_data.get("updatedTime") or created_time
+                
+                # Parse order side (XT API returns "BUY" or "SELL" as strings)
+                order_side_str = order_data.get("orderSide", "BUY")
+                order_side = OrderSide.BUY if order_side_str == "BUY" else OrderSide.SELL
+                
+                # Parse order type (XT API returns "LIMIT", "MARKET", etc. as strings)
+                order_type_str = order_data.get("orderType", "LIMIT")
+                order_type = OrderType.LIMIT if order_type_str == "LIMIT" else OrderType.MARKET
+                
+                # Parse order status (XT API uses "state" field)
+                xt_status = order_data.get("state", "")
+                if xt_status == "NEW":
+                    order_status = OrderStatus.OPEN
+                elif xt_status == "FILLED":
+                    order_status = OrderStatus.FILLED
+                elif xt_status == "PARTIALLY_FILLED":
+                    order_status = OrderStatus.PARTIALLY_FILLED
+                elif xt_status in ["CANCELED", "PARTIALLY_CANCELED"]:
+                    order_status = OrderStatus.CANCELLED
+                else:
+                    order_status = OrderStatus.PENDING
+                
+                created_at = (
+                    datetime.fromtimestamp(created_time / 1000, tz=timezone.utc)
+                    if created_time
+                    else datetime.utcnow().replace(tzinfo=timezone.utc)
+                )
+                updated_at = (
+                    datetime.fromtimestamp(updated_time / 1000, tz=timezone.utc)
+                    if updated_time
+                    else created_at
+                )
+                exchange_order_id = str(order_data.get("orderId", ""))
+                internal_order_id = str(
+                    order_data.get("clientOrderId") or order_data.get("orderId") or exchange_order_id
+                )
+                
                 order = Order(
-                    exchange_order_id=str(order_data.get("orderId", "")),
+                    order_id=internal_order_id,
+                    exchange_order_id=exchange_order_id,
                     trading_pair=trading_pair,
-                    side=OrderSide(order_data.get("orderSide", "BUY")),
-                    order_type=OrderType(order_data.get("orderType", "LIMIT")),
+                    side=order_side,
+                    order_type=order_type,
                     quantity=Decimal(str(order_data.get("origQty", "0"))),
                     price=Decimal(str(order_data.get("price", "0"))) if order_data.get("price") else None,
-                    status=self._parse_order_status(order_data.get("state", "")),
-                    timestamp=datetime.fromtimestamp(
-                        created_time / 1000, tz=timezone.utc
-                    ) if created_time else None,
+                    status=order_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    exchange="xt",
                     position_side=order_data.get("positionSide", "LONG"),
+                    time_in_force=order_data.get("timeInForce", "GTC"),
                 )
                 orders.append(order)
 

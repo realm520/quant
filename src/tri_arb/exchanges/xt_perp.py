@@ -1395,7 +1395,10 @@ class XTPerpExchange(BaseExchange):
         data = await self._request("GET", path, params=params, body=None, require_auth=True)
 
         orders = []
-        order_list = data.get("result", {}).get("items", [])
+        # _request 方法已经提取了 result 字段，所以 data 已经是 result 的内容
+        # 对于订单历史 API，result 的结构是: {"hasPrev": bool, "hasNext": bool, "items": [...]}
+        # 所以应该直接从 data 中获取 items
+        order_list = data.get("items", []) if isinstance(data, dict) else []
 
         for order_data in order_list:
             try:
@@ -1409,6 +1412,9 @@ class XTPerpExchange(BaseExchange):
                     continue
 
                 # Parse order data
+                # Note: XT API uses "createdTime" (with 'd') according to official docs
+                # https://doc.xt.com/zh-Hans/docs/futures/Order/see-order-history
+                created_time = order_data.get("createdTime") or order_data.get("createTime")
                 order = Order(
                     exchange_order_id=str(order_data.get("orderId", "")),
                     trading_pair=trading_pair,
@@ -1418,8 +1424,8 @@ class XTPerpExchange(BaseExchange):
                     price=Decimal(str(order_data.get("price", "0"))) if order_data.get("price") else None,
                     status=self._parse_order_status(order_data.get("state", "")),
                     timestamp=datetime.fromtimestamp(
-                        order_data.get("createTime", 0) / 1000, tz=timezone.utc
-                    ) if order_data.get("createTime") else None,
+                        created_time / 1000, tz=timezone.utc
+                    ) if created_time else None,
                     position_side=order_data.get("positionSide", "LONG"),
                 )
                 orders.append(order)

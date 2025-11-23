@@ -112,6 +112,11 @@ sum(exchange_order_count{status=~"NEW|LIVE|PARTIALLY_FILLED"}) by (position_side
 sum(exchange_order_notional) by (account_id, symbol, position_side)
 ```
 
+#### 查看持仓价值（按币种分组）
+```promql
+sum(exchange_position_quantity * exchange_position_mark_price) by (symbol, account_id, exchange)
+```
+
 ## 在 Grafana 仪表板中添加订单面板
 
 ### 面板 1: 活跃订单数量（按多空分组）
@@ -129,7 +134,7 @@ sum(exchange_order_notional) by (account_id, symbol, position_side)
 - **Panel type**: Time series
 - **Query**:
   ```promql
-  rate(exchange_order_update_total[5m])
+  rate(exchange_order_update_total[1m])
   ```
 - **Legend**: `{{account_id}} - {{order_status}} - {{position_side}}`
 - **Unit**: Ops/sec

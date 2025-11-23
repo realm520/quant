@@ -28,6 +28,8 @@ class AccountConfig:
     lark_webhook: Optional[str] = None
     lark_secret: Optional[str] = None
     passphrase: Optional[str] = None  # OKX 交易所需要
+    watch_tasks: Optional[Dict[str, Any]] = None  # watch-balance, watch-account, watch-positions 配置
+    enable_lark: bool = False  # 是否启用 Lark 告警
     
     def __post_init__(self):
         if self.channels is None:
@@ -81,6 +83,8 @@ class AccountManager:
                     lark_webhook=account_data.get("lark_webhook"),
                     lark_secret=account_data.get("lark_secret"),
                     passphrase=account_data.get("passphrase"),  # OKX 交易所需要
+                    watch_tasks=account_data.get("watch_tasks"),  # watch-all 任务配置
+                    enable_lark=account_data.get("enable_lark", False),  # 是否启用 Lark 告警
                 )
                 
                 # 验证交易所名称（支持: xt, binance, okx, gate）

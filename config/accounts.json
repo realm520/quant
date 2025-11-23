@@ -17,7 +17,22 @@
       "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
       "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
       "enabled": true,
-      "channels": ["order"]
+      "channels": ["order"],
+      "watch_tasks": {
+        "balance": {
+          "enabled": true,
+          "exchange_type": "perp",
+          "interval": 5
+        },
+        "account": {
+          "enabled": true,
+          "interval": 10
+        },
+        "positions": {
+          "enabled": true,
+          "interval": 1
+        }
+      }
     },
     "account_003": {
       "name": "账号3",
@@ -32,7 +47,7 @@
       "exchange": "xt",
       "api_key": "48e87084-4cb8-4134-958d-1ff294ee3796",
       "api_secret": "e98ebc0389dd9ca6d404a10cb472a306e3ce3229",
-      "enabled": false,
+      "enabled": true,
       "channels": ["order"]
     },
     "account_005": {

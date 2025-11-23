@@ -835,7 +835,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(exchange_order_update_total[5m])",
+          "expr": "rate(exchange_order_update_total[1m])",
           "legendFormat": "{{account_id}} - {{order_status}} - {{position_side}}",
           "refId": "A"
         }
@@ -938,6 +938,93 @@
       "fieldConfig": {
         "defaults": {
           "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(exchange_position_quantity * exchange_position_mark_price) by (symbol, account_id, exchange)",
+          "legendFormat": "{{account_id}} - {{symbol}} ({{exchange}})",
+          "refId": "A"
+        }
+      ],
+      "title": "持仓价值（按币种分组）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
             "mode": "thresholds"
           },
           "mappings": [],
@@ -965,8 +1052,8 @@
       "gridPos": {
         "h": 6,
         "w": 6,
-        "x": 12,
-        "y": 36
+        "x": 0,
+        "y": 44
       },
       "id": 13,
       "options": {
@@ -1033,7 +1120,7 @@
         "h": 6,
         "w": 6,
         "x": 18,
-        "y": 36
+        "y": 44
       },
       "id": 14,
       "options": {

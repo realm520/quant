@@ -5800,5 +5800,317 @@ def watch_orders(
         raise typer.Exit(code=1)
 
 
+@app.command("watch-all")
+def watch_all(
+    config_path: str = typer.Option(
+        "config/accounts.json",
+        "--config",
+        "-c",
+        help="账号配置文件路径（JSON格式）"
+    ),
+    accounts: Optional[str] = typer.Option(
+        None,
+        "--accounts",
+        "-a",
+        help="要监控的账号ID列表，用逗号分隔。留空则监控所有启用的账号"
+    ),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="数据库连接URL（覆盖配置文件和环境变量）"
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="启用调试模式"
+    ),
+):
+    """同时运行 watch-balance、watch-account 和 watch-positions 命令.
+    
+    从配置文件读取账号信息，为每个账号同时启动三个监控任务：
+    - watch-balance: 余额监控
+    - watch-account: 账户监控（余额、持仓）
+    - watch-positions: 持仓监控
+    
+    可以在配置文件中为每个账号指定要运行的 watch 任务：
+    ```json
+    {
+      "accounts": {
+        "account_001": {
+          "name": "账号1",
+          "exchange": "xt",
+          "api_key": "...",
+          "api_secret": "...",
+          "enabled": true,
+          "watch_tasks": {
+            "balance": {"enabled": true, "exchange_type": "perp", "interval": 5},
+            "account": {"enabled": true, "interval": 10},
+            "positions": {"enabled": true, "interval": 1}
+          }
+        }
+      }
+    }
+    ```
+    
+    如果配置文件中没有 watch_tasks，则默认启用所有任务。
+    """
+    import asyncio
+    from tri_arb.config.account_manager import AccountManager
+    
+    try:
+        # 加载账号配置
+        account_manager = AccountManager(config_path)
+    except FileNotFoundError:
+        console.print(f"[red]错误:[/red] 配置文件不存在: {config_path}")
+        console.print("请创建配置文件，参考: config/accounts.json")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]错误:[/red] 加载配置文件失败: {exc}")
+        if debug:
+            console.print_exception()
+        raise typer.Exit(code=1)
+
+    # 获取数据库URL
+    db_url = database_url or account_manager.global_settings.get("database_url") or os.getenv("DATABASE_URL")
+    if not db_url:
+        console.print("[red]错误:[/red] 未指定数据库URL")
+        console.print("请通过 --database-url 参数、配置文件 global_settings 或 DATABASE_URL 环境变量指定")
+        raise typer.Exit(code=1)
+
+    # 解析账号ID列表
+    requested_ids = None
+    if accounts:
+        requested_ids = [acc_id.strip() for acc_id in accounts.split(",") if acc_id.strip()]
+        if not requested_ids:
+            console.print("[red]错误:[/red] --accounts 参数为空")
+            raise typer.Exit(code=1)
+
+    # 过滤启用的账号
+    enabled_accounts = account_manager.get_enabled_accounts()
+    if requested_ids is not None:
+        enabled_accounts = [acc for acc in enabled_accounts if acc.account_id in requested_ids]
+        missing = set(requested_ids) - {acc.account_id for acc in enabled_accounts}
+        if missing:
+            console.print(f"[yellow]警告:[/yellow] 下列账号未启用或不存在: {', '.join(sorted(missing))}")
+    
+    if not enabled_accounts:
+        console.print("[red]错误:[/red] 没有可用的启用账号")
+        raise typer.Exit(code=1)
+
+    console.print("[cyan]多任务监控服务[/cyan]")
+    console.print(f"[cyan]配置文件: {config_path}[/cyan]")
+    console.print(f"[cyan]数据库: {db_url.split('@')[-1] if '@' in db_url else db_url}[/cyan]")
+    console.print(f"[cyan]监控账号: {len(enabled_accounts)}[/cyan]")
+    
+    # 显示每个账号的监控任务配置
+    for acc in enabled_accounts:
+        watch_tasks = getattr(acc, 'watch_tasks', None) or {}
+        if watch_tasks:
+            tasks_str = []
+            balance_config = watch_tasks.get('balance', {})
+            account_config = watch_tasks.get('account', {})
+            positions_config = watch_tasks.get('positions', {})
+            if balance_config.get('enabled', True):
+                tasks_str.append("balance")
+            if account_config.get('enabled', True):
+                tasks_str.append("account")
+            if positions_config.get('enabled', True):
+                tasks_str.append("positions")
+            console.print(f"  - {acc.account_id}: {acc.name} [{acc.exchange.upper()}] 任务: {', '.join(tasks_str) if tasks_str else '无'}")
+        else:
+            console.print(f"  - {acc.account_id}: {acc.name} [{acc.exchange.upper()}] 任务: balance, account, positions (默认)")
+    
+    console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
+
+    async def run_all_watch_tasks():
+        all_tasks = []
+        
+        for acc in enabled_accounts:
+            try:
+                acc_exchange = ExchangeName(acc.exchange.lower())
+            except ValueError:
+                console.print(f"[yellow]警告:[/yellow] 账号 {acc.account_id} 使用未支持的交易所 {acc.exchange}，跳过")
+                continue
+
+            # 获取账号的 watch_tasks 配置，如果没有则使用默认值
+            watch_tasks = getattr(acc, 'watch_tasks', None) or {}
+            
+            # 默认启用所有任务
+            balance_config = watch_tasks.get('balance', {})
+            if not balance_config:
+                balance_config = {'enabled': True, 'exchange_type': 'perp', 'interval': 5}
+            else:
+                # 确保有默认值
+                balance_config.setdefault('enabled', True)
+                balance_config.setdefault('exchange_type', 'perp')
+                balance_config.setdefault('interval', 5)
+            
+            account_config = watch_tasks.get('account', {})
+            if not account_config:
+                account_config = {'enabled': True, 'interval': 10}
+            else:
+                account_config.setdefault('enabled', True)
+                account_config.setdefault('interval', 10)
+            
+            positions_config = watch_tasks.get('positions', {})
+            if not positions_config:
+                positions_config = {'enabled': True, 'interval': 1}
+            else:
+                positions_config.setdefault('enabled', True)
+                positions_config.setdefault('interval', 1)
+            
+            account_label = f"{acc.account_id} ({acc.name})"
+            
+            # 启动 watch-balance 任务
+            if balance_config.get('enabled', True):
+                try:
+                    exchange_type_str = balance_config.get('exchange_type', 'perp')
+                    exchange_type_enum = ExchangeType.PERP if exchange_type_str.lower() == 'perp' else ExchangeType.SPOT
+                    interval = balance_config.get('interval', 5)
+                    
+                    task = asyncio.create_task(
+                        _run_watch_balance_async(
+                            exchange=acc_exchange.value,
+                            interval=interval,
+                            api_key=acc.api_key,
+                            api_secret=acc.api_secret,
+                            exchange_type=exchange_type_enum,
+                            output="table",
+                            debug=debug,
+                            account_id=acc.account_id,
+                            account_name=acc.name,
+                            database_url=db_url,
+                            passphrase=getattr(acc, 'passphrase', None),
+                        )
+                    )
+                    all_tasks.append(task)
+                    await asyncio.sleep(0.2)  # 稍微延迟，避免同时连接过多
+                except Exception as e:
+                    console.print(f"[red]账号 {account_label} watch-balance 启动失败:[/red] {e}")
+                    if debug:
+                        console.print_exception()
+            
+            # 启动 watch-account 任务
+            if account_config.get('enabled', True):
+                try:
+                    interval = account_config.get('interval', 10)
+                    
+                    if acc_exchange == ExchangeName.XT:
+                        task = asyncio.create_task(
+                            _run_xt_watch_account_async(
+                                interval_minutes=interval,
+                                api_key=acc.api_key,
+                                api_secret=acc.api_secret,
+                                debug=debug,
+                                account_id=acc.account_id,
+                                account_name=acc.name,
+                                database_url=db_url,
+                                enable_lark=getattr(acc, 'enable_lark', False),
+                                lark_webhook=getattr(acc, 'lark_webhook', None),
+                                lark_secret=getattr(acc, 'lark_secret', None),
+                                metrics_config=None,
+                                enable_metrics=True,
+                            )
+                        )
+                    elif acc_exchange == ExchangeName.BINANCE:
+                        task = asyncio.create_task(
+                            _run_binance_watch_account_async(
+                                interval_minutes=interval,
+                                api_key=acc.api_key,
+                                api_secret=acc.api_secret,
+                                debug=debug,
+                                account_id=acc.account_id,
+                                account_name=acc.name,
+                                database_url=db_url,
+                                enable_lark=getattr(acc, 'enable_lark', False),
+                                lark_webhook=getattr(acc, 'lark_webhook', None),
+                                lark_secret=getattr(acc, 'lark_secret', None),
+                                metrics_config=None,
+                                enable_metrics=True,
+                            )
+                        )
+                    else:
+                        console.print(f"[yellow]警告:[/yellow] 账号 {account_label} 的交易所 {acc_exchange.value} 暂不支持 watch-account，跳过")
+                        continue
+                    
+                    all_tasks.append(task)
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    console.print(f"[red]账号 {account_label} watch-account 启动失败:[/red] {e}")
+                    if debug:
+                        console.print_exception()
+            
+            # 启动 watch-positions 任务
+            if positions_config.get('enabled', True):
+                try:
+                    interval = positions_config.get('interval', 1)
+                    symbol = positions_config.get('symbol', None)
+                    
+                    if acc_exchange == ExchangeName.XT:
+                        task = asyncio.create_task(
+                            _run_xt_watch_positions_async(
+                                interval=interval,
+                                api_key=acc.api_key,
+                                api_secret=acc.api_secret,
+                                symbol=symbol,
+                                debug=debug,
+                                account_id=acc.account_id,
+                                account_name=acc.name,
+                                database_url=db_url,
+                                lark_webhook=None,
+                                lark_secret=None,
+                            )
+                        )
+                    elif acc_exchange == ExchangeName.BINANCE:
+                        task = asyncio.create_task(
+                            _run_binance_watch_positions_async(
+                                interval=interval,
+                                api_key=acc.api_key,
+                                api_secret=acc.api_secret,
+                                symbol=symbol,
+                                debug=debug,
+                                account_id=acc.account_id,
+                                account_name=acc.name,
+                                database_url=db_url,
+                            )
+                        )
+                    else:
+                        console.print(f"[yellow]警告:[/yellow] 账号 {account_label} 的交易所 {acc_exchange.value} 暂不支持 watch-positions，跳过")
+                        continue
+                    
+                    all_tasks.append(task)
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    console.print(f"[red]账号 {account_label} watch-positions 启动失败:[/red] {e}")
+                    if debug:
+                        console.print_exception()
+        
+        if not all_tasks:
+            console.print("[red]错误:[/red] 没有可启动的监控任务")
+            return
+        
+        console.print(f"[green]已启动 {len(all_tasks)} 个监控任务[/green]\n")
+        
+        try:
+            await asyncio.gather(*all_tasks, return_exceptions=True)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]监控已停止[/yellow]")
+        except Exception as exc:
+            console.print(f"[red]监控异常:[/red] {exc}")
+            logger.error("watch-all 异常: %s", exc)
+            if debug:
+                console.print_exception()
+
+    try:
+        asyncio.run(run_all_watch_tasks())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]监控已停止[/yellow]")
+    except Exception as exc:
+        console.print(f"[red]启动失败:[/red] {exc}")
+        if debug:
+            console.print_exception()
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

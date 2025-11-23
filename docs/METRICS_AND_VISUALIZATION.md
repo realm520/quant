@@ -290,7 +290,7 @@ sum(exchange_position_unrealized_pnl) by (account_id)
 sum(exchange_order_count{status="NEW"}) by (account_id, symbol)
 
 # 查看订单更新频率
-rate(exchange_order_update_total[5m])
+rate(exchange_order_update_total[1m])
 ```
 
 ### 系统 Metrics
@@ -462,7 +462,7 @@ sudo systemctl enable grafana-server
 - **Panel type**：Time series
 - **Query**：
   ```promql
-  rate(exchange_order_update_total[5m])
+  rate(exchange_order_update_total[1m])
   ```
 - **Legend**：`{{account_id}} - {{symbol}} - {{order_status}}`
 
@@ -525,6 +525,12 @@ sum(exchange_position_unrealized_pnl) by (account_id)
 sum(abs(exchange_position_quantity)) by (symbol, position_side)
 ```
 
+#### 查看持仓价值（按币种分组）
+
+```promql
+sum(exchange_position_quantity * exchange_position_mark_price) by (symbol, account_id, exchange)
+```
+
 #### 查看持仓收益率
 
 ```promql
@@ -542,7 +548,7 @@ sum(exchange_order_count{status="NEW"}) by (account_id, symbol)
 #### 查看订单更新频率
 
 ```promql
-rate(exchange_order_update_total[5m])
+rate(exchange_order_update_total[1m])
 ```
 
 #### 查看订单成交率

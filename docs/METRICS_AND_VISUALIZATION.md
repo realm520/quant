@@ -284,6 +284,11 @@ sum(exchange_position_unrealized_pnl) by (account_id)
 - **标签**：`exchange`, `exchange_type`, `account_id`, `order_status`, `side`, `position_side`
 - **说明**：订单更新次数（按状态分类）
 
+#### `exchange_trade_update_total`
+- **类型**：Counter
+- **标签**：`exchange`, `exchange_type`, `account_id`, `symbol`, `side`, `position_side`
+- **说明**：成交更新次数（按交易对、方向和持仓方向分类）
+
 **示例查询：**
 ```promql
 # 查看活跃订单数
@@ -291,6 +296,12 @@ sum(exchange_order_count{status="NEW"}) by (account_id, symbol)
 
 # 查看订单更新频率
 rate(exchange_order_update_total[1m])
+
+# 查看成交频率
+rate(exchange_trade_update_total[1m])
+
+# 查看特定交易对的成交频率
+rate(exchange_trade_update_total{symbol="BTC/USDT"}[1m])
 ```
 
 ### 系统 Metrics
@@ -465,8 +476,19 @@ sudo systemctl enable grafana-server
   rate(exchange_order_update_total[1m])
   ```
 - **Legend**：`{{account_id}} - {{symbol}} - {{order_status}}`
+- **Unit**：Ops/sec
 
-##### 面板 5：查询成功率
+##### 面板 5：成交频率
+
+- **Panel type**：Time series
+- **Query**：
+  ```promql
+  rate(exchange_trade_update_total[1m])
+  ```
+- **Legend**：`{{account_id}} - {{symbol}} - {{side}} ({{position_side}})`
+- **Unit**：Ops/sec
+
+##### 面板 6：查询成功率
 
 - **Panel type**：Stat
 - **Query**：
@@ -549,6 +571,18 @@ sum(exchange_order_count{status="NEW"}) by (account_id, symbol)
 
 ```promql
 rate(exchange_order_update_total[1m])
+```
+
+#### 查看成交频率
+
+```promql
+rate(exchange_trade_update_total[1m])
+```
+
+#### 查看特定交易对的成交频率
+
+```promql
+rate(exchange_trade_update_total{symbol="BTC/USDT"}[1m])
 ```
 
 #### 查看订单成交率
@@ -854,6 +888,7 @@ rule_files:
 - `exchange_order_count`
 - `exchange_order_notional`
 - `exchange_order_update_total`
+- `exchange_trade_update_total`
 
 #### 系统 Metrics
 - `tri_arb_requests_total`

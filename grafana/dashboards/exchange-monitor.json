@@ -7,6 +7,8 @@
   "graphTooltip": 0,
   "links": [],
   "liveNow": false,
+  "refresh": "10s",
+  "uid": "exchange-monitor-v2",
   "panels": [
     {
       "datasource": {
@@ -504,6 +506,101 @@
             "mode": "absolute",
             "steps": [
               {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "exchange_position_unrealized_pnl",
+          "legendFormat": "{{account_id}} - {{symbol}} ({{position_side}})",
+          "refId": "A"
+        }
+      ],
+      "title": "持仓未实现盈亏",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
                 "color": "green",
                 "value": null
               }
@@ -725,7 +822,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 30
       },
       "id": 10,
       "options": {
@@ -813,7 +910,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 38
       },
       "id": 11,
       "options": {
@@ -893,6 +990,93 @@
               }
             ]
           },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(exchange_trade_update_total[1m])",
+          "legendFormat": "{{account_id}} - {{symbol}} - {{side}} ({{position_side}})",
+          "refId": "A"
+        }
+      ],
+      "title": "成交频率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "unit": "contract"
         },
         "overrides": []
@@ -901,7 +1085,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 46
       },
       "id": 12,
       "options": {
@@ -988,7 +1172,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 46
       },
       "id": 15,
       "options": {
@@ -1053,7 +1237,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 44
+        "y": 54
       },
       "id": 13,
       "options": {
@@ -1120,7 +1304,7 @@
         "h": 6,
         "w": 6,
         "x": 18,
-        "y": 44
+        "y": 54
       },
       "id": 14,
       "options": {
@@ -1152,15 +1336,18 @@
       "type": "stat"
     }
   ],
-  "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["exchange", "trading", "monitor"],
+  "tags": [
+    "exchange",
+    "trading",
+    "monitor"
+  ],
   "templating": {
     "list": []
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-6h",
     "to": "now"
   },
   "timepicker": {

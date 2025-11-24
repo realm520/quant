@@ -58,6 +58,13 @@ _order_update_total = Counter(
     ["exchange", "exchange_type", "account_id", "order_status", "side", "position_side"],
 )
 
+# 成交相关指标
+_trade_update_total = Counter(
+    "exchange_trade_update_total",
+    "Total number of trade updates received.",
+    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side"],
+)
+
 _position_quantity = Gauge(
     "exchange_position_quantity",
     "Current position size (signed) per account, symbol, and side.",
@@ -290,6 +297,61 @@ def update_order_metrics(
     _order_update_total.labels(exchange, exchange_type, account_id, status, side, position_side).inc()
 
 
+def update_trade_metrics(
+    exchange: str,
+    exchange_type: str,
+    account_id: str,
+    trade_data: Mapping[str, Any],
+) -> None:
+    """Update Prometheus metrics for trade updates.
+    
+    Args:
+        exchange: Exchange name (e.g., "binance", "xt")
+        exchange_type: Exchange type (e.g., "perp", "spot")
+        account_id: Account ID
+        trade_data: Trade data dictionary (may be single trade or dict with 'trades' list)
+    """
+    # 支持两种格式：
+    # 1. trades 列表格式: {"trades": [...]}
+    # 2. 单个成交对象格式: {"trade_id": "...", "symbol": "...", ...}
+    trades = []
+    if "trades" in trade_data and isinstance(trade_data.get("trades"), list):
+        trades = trade_data.get("trades", [])
+    elif "trade_id" in trade_data or "tradeId" in trade_data:
+        # 单个成交对象，转换为列表
+        trades = [trade_data]
+    
+    for trade in trades:
+        # 提取成交信息（支持不同交易所格式）
+        symbol = (
+            trade.get("symbol") 
+            or trade.get("s")  # Binance
+            or trade.get("instId")  # OKX
+            or ""
+        ).upper()
+        
+        if not symbol:
+            continue  # 跳过没有交易对的成交
+        
+        side = (
+            trade.get("side") 
+            or trade.get("S")  # Binance
+            or ""
+        ).upper()
+        
+        # 持仓方向（多空）
+        position_side = (
+            trade.get("positionSide")
+            or trade.get("ps")  # Binance
+            or trade.get("posSide")  # OKX
+            or trade.get("position_side")
+            or "NET"  # 默认
+        ).upper()
+        
+        # 记录成交更新计数
+        _trade_update_total.labels(exchange, exchange_type, account_id, symbol, side, position_side).inc()
+
+
 def update_position_metrics(
     exchange: str,
     exchange_type: str,
@@ -368,6 +430,7 @@ __all__ = [
     "update_balance_metrics",
     "record_balance_query_status",
     "update_order_metrics",
+    "update_trade_metrics",
     "update_position_metrics",
 ]
 

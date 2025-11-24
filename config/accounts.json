@@ -40,7 +40,22 @@
       "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
       "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
       "enabled": true,
-      "channels": ["order"]
+      "channels": ["order","trade"],
+      "watch_tasks": {
+        "balance": {
+          "enabled": true,
+          "exchange_type": "perp",
+          "interval": 5
+        },
+        "account": {
+          "enabled": true,
+          "interval": 10
+        },
+        "positions": {
+          "enabled": true,
+          "interval": 1
+        }
+      }
     },
     "account_004": {
       "name": "账号4",

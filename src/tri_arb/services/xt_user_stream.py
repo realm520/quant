@@ -656,7 +656,11 @@ class XTUserStreamService:
         trade_data = data.get("data", {})
         if not trade_data:
             logger.warning("No trade data in message")
+            logger.debug(f"Raw trade message: {json.dumps(data, cls=DecimalEncoder)[:500]}")
             return
+        
+        # 调试：记录收到的成交数据格式
+        logger.debug(f"Received trade data: {json.dumps(trade_data, cls=DecimalEncoder)[:500]}")
         
         # 检查数据是否有变化
         if not self._has_trade_changed(trade_data):
@@ -672,11 +676,30 @@ class XTUserStreamService:
             # 保存到数据库
             await self._save_trade_update(trade_data)
             
+            # 更新 Prometheus metrics
+            if self.account_id:
+                account_id = self.account_id
+            else:
+                account_id = "default"
+            
+            # 订阅服务使用端口 9601
+            ensure_metrics_server(9601)
+            try:
+                from tri_arb.metrics.prometheus import update_trade_metrics
+                update_trade_metrics(
+                    exchange="xt",
+                    exchange_type="perp",
+                    account_id=account_id,
+                    trade_data=trade_data,
+                )
+            except Exception as metric_error:
+                logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
+            
             # 更新统计
             await self._update_trade_stats()
             
         except Exception as e:
-            logger.error(f"Error handling trade update: {e}")
+            logger.error(f"Error handling trade update: {e}", exc_info=True)
     
     async def _display_account_update(self, data: Dict[str, Any]) -> None:
         """显示账户更新."""
@@ -980,26 +1003,49 @@ class XTUserStreamService:
             table.add_column("数量", style="red")
             table.add_column("金额", style="dim")
             
-            # 解析成交数据
-            trades = data.get("trades", [])
+            # 解析成交数据 - 支持两种格式：
+            # 1. trades 列表格式: {"trades": [...]}
+            # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
+            trades = []
+            if "trades" in data and isinstance(data.get("trades"), list):
+                trades = data.get("trades", [])
+            elif "trade_id" in data or "tradeId" in data:
+                # 单个成交对象，转换为列表
+                trades = [data]
+            
+            # 处理成交数据
             for trade in trades:
-                trade_id = trade.get("trade_id", "")
-                order_id = trade.get("order_id", "")
-                symbol = trade.get("symbol", "")
-                side = trade.get("side", "")
-                price = trade.get("price", "0")
-                quantity = trade.get("quantity", "0")
-                quote_quantity = trade.get("quote_quantity", "0")
+                # 支持不同的字段名（trade_id/tradeId, order_id/orderId等）
+                trade_id = trade.get("trade_id") or trade.get("tradeId") or ""
+                order_id = trade.get("order_id") or trade.get("orderId") or ""
+                symbol = trade.get("symbol") or ""
+                side = trade.get("side") or ""
+                price = trade.get("price") or "0"
+                quantity = trade.get("quantity") or trade.get("qty") or "0"
+                quote_quantity = trade.get("quote_quantity") or trade.get("quoteQuantity") or trade.get("amount") or "0"
+                
+                # 如果没有 quote_quantity，计算它
+                if quote_quantity == "0" or quote_quantity == 0:
+                    try:
+                        price_val = float(price) if price else 0
+                        qty_val = float(quantity) if quantity else 0
+                        quote_quantity = str(price_val * qty_val)
+                    except (ValueError, TypeError):
+                        quote_quantity = "0"
                 
                 table.add_row(
-                    trade_id,
-                    order_id,
-                    symbol,
-                    side,
-                    f"{price}",
-                    f"{quantity}",
-                    f"{quote_quantity}",
+                    str(trade_id),
+                    str(order_id),
+                    str(symbol),
+                    str(side),
+                    str(price),
+                    str(quantity),
+                    str(quote_quantity),
                 )
+            
+            if len(trades) == 0:
+                # 如果没有成交数据，显示警告
+                table.add_row("无成交数据", "", "", "", "", "", "")
             
             console.print(table)
     
@@ -1314,44 +1360,64 @@ class XTUserStreamService:
         """保存成交更新到数据库."""
         try:
             async with self.db_manager.session() as session:
-                trades = data.get("trades", [])
+                # 支持两种格式：
+                # 1. trades 列表格式: {"trades": [...]}
+                # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
+                trades = []
+                if "trades" in data and isinstance(data.get("trades"), list):
+                    trades = data.get("trades", [])
+                elif "trade_id" in data or "tradeId" in data:
+                    # 单个成交对象，转换为列表
+                    trades = [data]
+                
+                if not trades:
+                    logger.debug("No trades data to save")
+                    return
+                
                 update_time = datetime.utcnow()
                 
                 for trade in trades:
-                    trade_id = trade.get("trade_id", "")
+                    # 支持不同的字段名
+                    trade_id = trade.get("trade_id") or trade.get("tradeId") or ""
                     if not trade_id:
+                        logger.debug("Trade missing trade_id, skipping")
                         continue
                     
-                    order_id = trade.get("order_id", "")
-                    symbol = trade.get("symbol", "")
-                    side = trade.get("side", "")
-                    price = self._safe_decimal(trade.get("price", "0"))
-                    quantity = self._safe_decimal(trade.get("quantity", "0"))
-                    quote_quantity = price * quantity
+                    order_id = trade.get("order_id") or trade.get("orderId") or ""
+                    symbol = trade.get("symbol") or ""
+                    side = trade.get("side") or ""
+                    price = self._safe_decimal(trade.get("price") or "0")
+                    quantity = self._safe_decimal(trade.get("quantity") or trade.get("qty") or "0")
+                    quote_quantity = self._safe_decimal(
+                        trade.get("quote_quantity") or 
+                        trade.get("quoteQuantity") or 
+                        trade.get("amount") or 
+                        str(price * quantity)  # 如果没有提供，计算它
+                    )
                     
                     TradeUpdateModel = self._get_model('XTTradeUpdate')
                     record = TradeUpdateModel(
                         update_time=update_time,
                         symbol=symbol,
-                        order_id=order_id,
-                        trade_id=trade_id,
+                        order_id=str(order_id),
+                        trade_id=str(trade_id),
                         side=side,
                         price=price,
                         quantity=quantity,
                         quote_quantity=quote_quantity,
-                        commission=self._safe_decimal(trade.get("commission", "0")),
-                        commission_asset=trade.get("commission_asset", ""),
-                        is_maker=trade.get("is_maker", False),
-                        position_side=trade.get("position_side", ""),
+                        commission=self._safe_decimal(trade.get("commission") or trade.get("fee") or "0"),
+                        commission_asset=trade.get("commission_asset") or trade.get("feeCurrency") or "",
+                        is_maker=trade.get("is_maker") or trade.get("isMaker") or False,
+                        position_side=trade.get("position_side") or trade.get("positionSide") or "",
                         raw_data=json.dumps(trade, cls=DecimalEncoder),
                     )
                     session.add(record)
                 
                 await session.commit()
-                logger.debug("Saved trade update to database")
+                logger.debug(f"Saved {len(trades)} trade update(s) to database")
                 
         except Exception as e:
-            logger.error(f"Failed to save trade update: {e}")
+            logger.error(f"Failed to save trade update: {e}", exc_info=True)
     
     async def _sync_missing_data(self) -> None:
         """补充断线期间缺失的数据.

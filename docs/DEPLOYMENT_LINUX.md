@@ -21,6 +21,36 @@ exec $SHELL -l
 PEP 668 外部托管环境提示（externally-managed-environment）：
 - 避免系统 Python 直接 pip 安装，使用 `python -m venv` 或 `uv venv`。
 
+### 2.1 Amazon Linux 2023.9.20251110 专用步骤
+> 该版本基于 Fedora/DNF 生态，默认提供 Python 3.11 与 PostgreSQL 15。以下命令需在 root 或具备 sudo 权限的账户运行。
+
+```bash
+# 更新基础系统
+sudo dnf update -y
+
+# 安装 Python/编译链/数据库客户端
+sudo dnf install -y python3.11 python3.11-devel python3.11-pip \
+    gcc gcc-c++ make openssl-devel git \
+    postgresql15 postgresql15-server postgresql15-devel
+
+# 初始化并启动 PostgreSQL（若尚未配置）
+sudo /usr/pgsql-15/bin/postgresql-15-setup initdb || true
+sudo systemctl enable --now postgresql-15
+
+# Amazon Linux 2023 默认未自带 uv，可选安装
+curl -LsSf https://astral.sh/uv/install.sh | sh
+exec $SHELL -l
+
+# 使用 uvx 直接运行（可选）
+uvx --from git+https://github.com/realm520/quant.git cextools --help
+```
+
+常见问题排查：
+- `python` 指向 3.9：使用 `python3.11` 或通过 `alternatives` 切换。
+- PostgreSQL 无法连接：确认 `pg_hba.conf` 允许本地用户、端口 5432 未被防火墙阻拦。
+- SELinux 拒绝访问：可暂时 `sudo setenforce 0` 验证，生产建议写入策略。
+- `uvx` 缓存旧版本：执行 `uv cache purge --all` 后重新运行。
+
 ## 3. 创建数据库
 ```bash
 sudo -u postgres createdb trading || true
@@ -66,6 +96,98 @@ export DATABASE_URL="postgresql+asyncpg://$USER@localhost:5432/trading"
 # 或从 .env 读取
 source load_env.sh
 ```
+
+## 6. 常用部署命令（全账号批量运行）
+
+以下示例默认在仓库根目录执行，且依赖已安装（本地虚拟环境或 `uv run` 环境）。如果是远程执行、仅需一次性运行，可把 `python -m ...` 换成 `uvx --from git+https://github.com/realm520/quant.git ...`。
+
+```bash
+# 统一订阅所有启用账号（自动识别交易所）
+python -m tri_arb.cli.main subscribe multi-account --config config/accounts.json
+
+# 定时账户全量巡检（余额/权益等）
+python -m tri_arb.cli.main account watch-account --config config/accounts.json --all-accounts
+
+# 定时余额巡检（合约/现货自动按配置路由）
+python -m tri_arb.cli.main account watch-balance --config config/accounts.json --all-accounts -e perp
+
+# 定时持仓巡检（多交易所混合）
+python -m tri_arb.cli.main account watch-positions --config config/accounts.json --all-accounts
+
+# 需要以系统服务方式运行，可在 systemd 或 tmux 中引用上述命令
+
+# 直接从 Git 拉取运行（不进入仓库）
+uvx --from git+https://github.com/realm520/quant.git cextools subscribe multi-account --config config/accounts.json
+uvx --from git+https://github.com/realm520/quant.git cextools account watch-account --config config/accounts.json --all-accounts
+```
+
+## 7. Prometheus + Grafana 监控
+
+### 7.1 启动 Metrics Exporter
+
+```bash
+# 本地代码
+python -m tri_arb.cli.main metrics exporter --config config/accounts.json --listen 0.0.0.0 --port 9100
+
+# 或使用 uv
+uv run -m tri_arb.cli.main metrics exporter --config config/accounts.json --listen 0.0.0.0 --port 9100
+```
+
+Exporter 会根据数据库内容输出余额、仓位、委托等指标，默认路径 `http://<host>:9100/metrics`，需要保持常驻运行（可放 tmux/systemd）。
+
+### 7.2 安装并启动 Prometheus
+
+```bash
+sudo useradd --no-create-home --shell /sbin/nologin prometheus || true
+cd /opt
+sudo curl -LO https://github.com/prometheus/prometheus/releases/download/v2.53.0/prometheus-2.53.0.linux-amd64.tar.gz
+sudo tar -xzf prometheus-2.53.0.linux-amd64.tar.gz
+sudo mv prometheus-2.53.0.linux-amd64 prometheus
+sudo chown -R prometheus:prometheus /opt/prometheus
+sudo tee /opt/prometheus/prometheus.yml <<'EOF'
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'cextools'
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+EOF
+sudo tee /etc/systemd/system/prometheus.service <<'EOF'
+[Unit]
+Description=Prometheus
+After=network-online.target
+[Service]
+User=prometheus
+Group=prometheus
+ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/opt/prometheus/data
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now prometheus
+```
+
+访问 `http://<host>:9090/targets`，确认 `cextools` job 状态为 `UP`。
+
+### 7.3 安装并配置 Grafana
+
+```bash
+sudo tee /etc/yum.repos.d/grafana.repo <<'EOF'
+[grafana]
+name=Grafana
+baseurl=https://rpm.grafana.com
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://rpm.grafana.com/gpg.key
+EOF
+sudo dnf install -y grafana
+sudo systemctl enable --now grafana-server
+```
+
+浏览器访问 `http://<host>:3000`（账号/密码 `admin/admin` 首次登录需修改），在 **Connections → Data sources** 中添加 Prometheus，URL 填 `http://127.0.0.1:9090`，Test 通过后即可在 **Dashboards/Explore** 中查看指标或导入自定义面板。
+
 
 ## 6. 快速启动 WebSocket 订阅
 ```bash

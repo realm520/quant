@@ -420,6 +420,18 @@ def history(
 
 app.add_typer(account_app, name="account")
 
+# 添加subscribe命令组
+try:
+    from tri_arb.cli.commands import subscribe
+    app.add_typer(subscribe.app, name="subscribe")
+except ImportError as e:
+    # 如果subscribe模块不可用，跳过
+    import sys
+    print(f"Warning: subscribe command not available: {e}", file=sys.stderr)
+except Exception as e:
+    import sys
+    print(f"Error loading subscribe command: {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     app()

@@ -1,8 +1,128 @@
-# tri-arb - Triangle Arbitrage Trading System
+# tri-arb - Multi-Exchange Trading System
 
-**MVP Scaffold v0.1.0** - Python-based triangle arbitrage trading system with async architecture and production-ready infrastructure.
+**Version 2.0** - 全功能多交易所量化交易系统，支持XT、Binance、OKX、Gate.io。
 
-> ⚠️ **PLACEHOLDER MODE**: This is an MVP scaffold implementation. All trading logic returns placeholder data. No actual trading occurs.
+## 🎉 新功能亮点
+
+### ⚡ WebSocket实时订阅 (NEW!)
+- ✅ 实时账户更新推送
+- ✅ 实时订单状态推送
+- ✅ 实时成交记录推送
+- ✅ PostgreSQL数据持久化
+- ✅ 自动重连机制
+- ✅ XT资金划转分析（仅比较永续合约 ↔ 现货账户，当前只支持 USDT）
+
+### 🔄 定时监控 (NEW!)
+- ✅ 定时查询余额 (`watch-balance`)
+- ✅ 定时查询订单 (`watch-orders`)
+- ✅ XT账户定时监控 (`watch-account`) - 现货余额、合约余额、合约仓位
+- ✅ XT仓位定时监控 (`watch-positions`) - 周期性保存永续仓位到独立表
+- ✅ 可配置时间间隔
+
+### 📊 多交易所支持
+- ✅ **XT** - 完整支持
+- ✅ **Binance** - 完整支持 + WebSocket
+- ✅ **OKX** - 完整支持 + WebSocket
+- ✅ **Gate.io** - 完整支持 + WebSocket
+
+## ⚡ 快速开始
+
+### 1. REST API查询（基础功能）
+
+```bash
+# 配置API凭证
+export BINANCE_API_KEY="..."
+export BINANCE_API_SECRET="..."
+export OKX_API_KEY="..."
+export OKX_API_SECRET="..."
+export OKX_PASSPHRASE="..."
+export XT_API_KEY="..."  # XT现货和永续合约共用
+export XT_API_SECRET="..."  # XT现货和永续合约共用
+
+# 查询余额
+cextools account balance -x binance -e perp
+cextools account balance -x okx -e perp
+cextools account balance -x xt -e perp  # XT永续合约
+cextools account balance -x xt -e spot  # XT现货
+
+# 查询持仓
+cextools account positions -x binance -e perp --symbol BTC/USDT
+cextools account positions -x xt -e perp --symbol BTC/USDT
+
+# XT账户定时监控（每10分钟自动获取现货余额、合约余额、合约仓位）
+cextools account watch-account
+
+# 定时查询余额（支持所有交易所）
+cextools account watch-balance -x xt -e spot --interval 5
+cextools account watch-balance -x xt -e perp --interval 5
+
+# 定时查询XT永续仓位（写入 xt_rest_position_updates，同时支持Lark告警）
+cextools account watch-positions -x xt --interval 5 \
+  --enable-lark \
+  --lark-webhook "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx" \
+  --lark-secret "your_sign_secret"   # 可选
+
+# 也可以通过环境变量提供 Lark 配置
+export LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/xxxx"
+export LARK_WEBHOOK_SECRET="your_sign_secret"
+cextools account watch-positions -x xt --interval 5 --enable-lark
+
+# 下单
+cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 50000 --position-side LONG
+```
+
+### 2. XT账户定时监控（推荐）
+
+```bash
+# 配置XT API密钥（现货和合约共用）
+export XT_API_KEY="your_api_key"
+export XT_API_SECRET="your_api_secret"
+
+# 启动XT账户定时监控
+# 每10分钟自动获取：现货余额、合约余额、合约仓位
+# 数据自动保存到PostgreSQL数据库
+cextools account watch-account
+
+# 使用命令行参数提供API密钥
+cextools account watch-account --api-key YOUR_KEY --api-secret YOUR_SECRET
+
+# 启用调试模式
+cextools account watch-account --debug
+```
+
+**功能特性**：
+- ✅ 自动获取XT现货账户余额
+- ✅ 自动获取XT合约账户余额
+- ✅ 自动获取XT合约账户仓位
+- ✅ 数据自动保存到PostgreSQL（`rest_balances`和`rest_positions`表）
+- ✅ 实时表格显示（三个独立表格）
+- ✅ 固定10分钟间隔（无需配置）
+
+📚 **详细文档**：查看 [docs/XT_ACCOUNT_SCHEDULER.md](docs/XT_ACCOUNT_SCHEDULER.md)
+
+### 3. WebSocket实时订阅（推荐）
+
+```bash
+# 1. 安装依赖
+pip install -r requirements-db.txt
+
+# 2. 配置PostgreSQL
+bash scripts/configure_postgres_trust.sh
+
+# 3. 启动订阅（首次运行会自动建表）
+export DATABASE_URL="postgresql+asyncpg://postgres@localhost:5432/trading"
+cextools subscribe user-stream -x binance        # Binance永续合约
+cextools subscribe user-stream -x okx            # OKX永续合约
+cextools subscribe user-stream -x xt              # XT永续合约（默认）
+cextools subscribe user-stream -x okx -c order   # OKX只订阅订单
+```
+
+📚 **核心文档**：
+1. **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** ⭐ - 所有命令（5分钟）
+2. **[docs/CEXTOOLS_COMPLETE_GUIDE.md](docs/CEXTOOLS_COMPLETE_GUIDE.md)** ⭐ - 完整使用指南（20分钟）
+3. **[FEATURES.md](FEATURES.md)** ⭐ - 功能总览
+4. **[docs/WEBSOCKET_COMPLETE_GUIDE.md](docs/WEBSOCKET_COMPLETE_GUIDE.md)** - WebSocket指南
+5. **[docs/README.md](docs/README.md)** - 文档中心
 
 ## 📋 Table of Contents
 

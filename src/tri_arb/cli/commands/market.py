@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.live import Live
 
-from tri_arb.cli.utils.exchange_factory import ExchangeType, create_exchange
+from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
 from tri_arb.cli.formatters.table import (
     format_ticker_table,
     format_orderbook_table,
@@ -23,10 +23,16 @@ console = Console()
 @app.command("ticker")
 def ticker(
     exchange_type: ExchangeType = typer.Option(
-        ExchangeType.SPOT,
+        ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 spot)"
+        help="交易类型 (spot 或 perp，默认 perp)"
+    ),
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt 或 binance)，默认 xt"
     ),
     symbol: Optional[str] = typer.Option(
         None,
@@ -62,6 +68,7 @@ def ticker(
         cextools market ticker
         cextools market ticker --symbol BTC/USDT
         cextools market ticker -e perp -s ETH/USDT -o json
+        cextools market ticker --exchange binance -s BTC/USDT
     """
     try:
         # 验证 symbol 格式（如果提供）
@@ -69,22 +76,22 @@ def ticker(
             symbol = validate_symbol(symbol)
 
         # 创建 exchange 实例
-        exchange = create_exchange(exchange_type, api_key, api_secret)
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
 
         # 异步获取行情
         async def get_ticker_data():
-            await exchange.connect()
+            await exchange_instance.connect()
             try:
                 if symbol:
                     # Single symbol query
-                    ticker_data = await exchange.get_ticker_by_symbol(symbol)
+                    ticker_data = await exchange_instance.get_ticker_by_symbol(symbol)
                     return [ticker_data] if ticker_data else []
                 else:
                     # Batch query (all symbols)
-                    tickers_data = await exchange.get_ticker(None)
+                    tickers_data = await exchange_instance.get_ticker(None)
                     return tickers_data
             finally:
-                await exchange.disconnect()
+                await exchange_instance.disconnect()
 
         tickers = asyncio.run(get_ticker_data())
 
@@ -142,10 +149,10 @@ def depth(
         help="交易对（例如 BTC/USDT）"
     ),
     exchange_type: ExchangeType = typer.Option(
-        ExchangeType.SPOT,
+        ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 spot)"
+        help="交易类型 (spot 或 perp，默认 perp)"
     ),
     limit: int = typer.Option(
         10,
@@ -344,10 +351,10 @@ def watch(
         help="交易对（例如 BTC/USDT）"
     ),
     exchange_type: ExchangeType = typer.Option(
-        ExchangeType.SPOT,
+        ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 spot)"
+        help="交易类型 (spot 或 perp，默认 perp)"
     ),
     interval: int = typer.Option(
         5,

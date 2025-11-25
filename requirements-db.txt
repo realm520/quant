@@ -1,0 +1,13 @@
+# Database dependencies for WebSocket subscription and storage
+
+# PostgreSQL async driver
+asyncpg>=0.29.0
+
+# SQLAlchemy ORM
+sqlalchemy[asyncio]>=2.0.0
+
+# WebSocket client
+websockets>=12.0,<15
+
+# Database migrations (optional)
+alembic>=1.13.0

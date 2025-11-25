@@ -9,9 +9,11 @@ import decimal
 import hashlib
 import hmac
 import time
+import aiohttp
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from decimal import Decimal
+from pyxt.perp import Perp
 from typing import Any
 
 import httpx
@@ -57,9 +59,15 @@ class XTPerpExchange(BaseExchange):
         self._api_key = api_key
         self._api_secret = api_secret
         self._timeout = timeout
+        self._recv_window_ms = 8000
+        self._server_time_endpoint = "https://sapi.xt.com/v4/public/time"
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
-
+        self.perp = Perp("https://fapi.xt.com", api_key, api_secret)
+    def get_name(self) -> str:
+        """Get the name of the exchange."""
+        return "xt_perp"
+    
     async def connect(self) -> None:
         """Establish connection to XT perpetual futures exchange.
 
@@ -105,8 +113,57 @@ class XTPerpExchange(BaseExchange):
         self.is_connected = False
         logger.info("Disconnected from XT perpetual futures exchange")
 
+    async def _get_server_timestamp(self) -> str:
+        """Fetch XT server time directly."""
+        try:
+            if self._server_time_endpoint.startswith("http"):
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    response = await client.get(
+                        self._server_time_endpoint,
+                        headers={"accept": "*/*", "Content-Type": "application/json"},
+                    )
+            else:
+                if self._client is None:
+                    raise RuntimeError("Exchange client not initialized")
+                response = await self._client.get(self._server_time_endpoint)
+            response.raise_for_status()
+            data = response.json()
+
+            server_time = None
+            if isinstance(data, dict):
+                container = data
+                if "result" in data and isinstance(data["result"], dict):
+                    container = data["result"]
+                for key in ("time", "serverTime", "timestamp", "ts"):
+                    value = container.get(key)
+                    if isinstance(value, (int, float)):
+                        server_time = int(value)
+                        break
+                    if isinstance(value, str) and value.isdigit():
+                        server_time = int(value)
+                        break
+            elif isinstance(data, (int, float)):
+                server_time = int(data)
+
+            if server_time is None:
+                raise ValueError(f"Server time response missing timestamp: {data}")
+
+            return str(server_time)
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch XT server time, falling back to local time",
+                error=str(exc),
+                endpoint=self._server_time_endpoint,
+            )
+            return str(int(time.time() * 1000))
+
     def _generate_signature(
-        self, method: str, path: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> dict[str, str]:
         """Generate HMAC-SHA256 signature for XT API authentication.
 
@@ -119,7 +176,7 @@ class XTPerpExchange(BaseExchange):
         Returns:
             Headers dict with signature and authentication fields
         """
-        timestamp = str(int(time.time() * 1000))
+        timestamp_value = timestamp or str(int(time.time() * 1000))
 
         # Build signature string based on content type
         if body is not None:
@@ -147,9 +204,10 @@ class XTPerpExchange(BaseExchange):
         return {
             "validate-signversion": "2",
             "xt-validate-appkey": self._api_key,
-            "xt-validate-timestamp": timestamp,
+            "xt-validate-timestamp": timestamp_value,
             "xt-validate-signature": sign,
             "xt-validate-algorithms": "HmacSHA256",
+            "xt-validate-recvwindow": str(self._recv_window_ms),
             "Content-Type": "application/json" if body is not None else "application/x-www-form-urlencoded",
         }
 
@@ -188,7 +246,12 @@ class XTPerpExchange(BaseExchange):
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
         # Generate signature headers if auth required
-        headers = self._generate_signature(method, path, params, body) if require_auth else {}
+        timestamp = await self._get_server_timestamp() if require_auth else None
+        headers = (
+            self._generate_signature(method, path, params, body, timestamp=timestamp)
+            if require_auth
+            else {}
+        )
 
         # Make request
         try:
@@ -199,7 +262,19 @@ class XTPerpExchange(BaseExchange):
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as http_err:
+                content_preview = response.text[:500] if response.text else ""
+                logger.error(
+                    "XT API HTTP error",
+                    method=method,
+                    path=path,
+                    status_code=response.status_code,
+                    response_text=content_preview,
+                )
+                raise
+
             data = response.json()
 
             # Debug: Log full response for balance endpoint
@@ -219,7 +294,15 @@ class XTPerpExchange(BaseExchange):
             # Only treat as error if rc is explicitly non-zero (not null/None)
             rc = data.get("rc")
             if rc is not None and rc != 0:
-                error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else "Unknown error"
+                error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else data.get("msg", "Unknown error")
+                logger.error(
+                    "XT API returned error code",
+                    method=method,
+                    path=path,
+                    rc=rc,
+                    message=error_msg,
+                    raw_response=data,
+                )
                 raise ValueError(f"XT API error (code {rc}): {error_msg}")
 
             # Return result field if present, otherwise return entire data
@@ -878,6 +961,78 @@ class XTPerpExchange(BaseExchange):
     # ============================================================================
     # Perpetual Futures Specific Methods
     # ============================================================================
+    async def create_user_stream_listen_key(self) -> str:
+        """创建用户数据 WebSocket 流的 listen key"""
+        try:
+            # 使用 Perp 客户端获取 listen key
+            status_code, response, headers = self.perp.get_listen_key()
+
+            # 如果返回状态码不是 200 或者没有 'result' 字段，则抛出异常
+            if status_code != 200 or 'result' not in response:
+                raise RuntimeError(f"获取 listen key 失败，意外的响应: {response}")
+
+            listen_key = response['result']
+            logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
+
+            return listen_key
+
+        except Exception as exc:
+            logger.error(f"创建 XT 用户流 listen key 失败: {str(exc)}")
+            raise RuntimeError(f"创建 XT 用户流 listen key 失败: {str(exc)}") from exc
+    # async def create_user_stream_listen_key(self) -> str:
+    #     """创建用户数据 WebSocket 流的 listen key"""
+    #     try:
+    #         async with aiohttp.ClientSession() as session:
+    #             # 构造请求头
+    #             headers = {
+    #                 'Content-Type': 'application/json',
+    #                 'X-API-KEY': self._api_key
+    #             }
+    #             # 构造请求数据
+    #             payload = {}
+
+    #             # 发送 POST 请求来获取 listen key
+    #             async with session.get(f"{self.BASE_URL}/future/v1/user/listen-key", headers=headers, json=payload) as response:
+    #                 if response.status != 200:
+    #                     raise RuntimeError(f"获取 listen key 失败，HTTP 状态码: {response.status}")
+
+    #                 result = await response.json()
+                    
+    #                 # 检查响应是否包含 "result"
+    #                 if 'result' not in result:
+    #                     raise RuntimeError(f"获取 listen key 失败，响应内容: {result}")
+                    
+    #                 listen_key = result['result']
+    #                 logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
+
+    #                 return listen_key
+
+    #     except Exception as exc:
+    #         logger.error(f"创建 XT 用户流 listen key 失败: {str(exc)}")
+    #         raise RuntimeError(f"创建 XT 用户流 listen key 失败: {str(exc)}") from exc
+
+    @staticmethod
+    def _extract_listen_key(response: Any) -> str | None:
+        """Extract listen key from XT API response."""
+        if isinstance(response, str):
+            return response
+
+        if isinstance(response, dict):
+            for key in ("listenKey", "listen_key", "result", "data"):
+                if key not in response:
+                    continue
+                extracted = XTPerpExchange._extract_listen_key(response[key])
+                if extracted:
+                    return extracted
+            return None
+
+        if isinstance(response, list):
+            for item in response:
+                extracted = XTPerpExchange._extract_listen_key(item)
+                if extracted:
+                    return extracted
+
+        return None
 
     async def get_balance(self) -> dict[str, dict[str, Decimal]]:
         """Get account balance for perpetual futures.
@@ -909,7 +1064,7 @@ class XTPerpExchange(BaseExchange):
         data = await self._request("GET", path, params=None, body=None, require_auth=True)
 
         # Debug: Log raw API response
-        logger.info(
+        logger.debug(
             "Raw balance API response (perp)",
             response_type=type(data).__name__,
             is_list=isinstance(data, list),
@@ -925,7 +1080,6 @@ class XTPerpExchange(BaseExchange):
         # Extract balance items
         if isinstance(data, list):
             items = data
-            logger.info("Using direct list format (perp)", item_count=len(items))
         elif isinstance(data, dict):
             items = data.get("data", [])
             logger.info("Extracting from dict format (perp)", item_count=len(items))
@@ -949,24 +1103,54 @@ class XTPerpExchange(BaseExchange):
             frozen = Decimal(str(item.get("openOrderMarginFrozen", "0")))
             total = available + frozen
 
+            # Debug: Log all PnL related fields
+            not_profit = item.get("notProfit")
+            profit = item.get("profit")
+            margin_balance = item.get("marginBalance")
             logger.info(
                 "Processing perp balance item",
                 currency=currency,
                 available=str(available),
                 frozen=str(frozen),
                 total=str(total),
+                not_profit=str(not_profit) if not_profit is not None else "None",
+                profit=str(profit) if profit is not None else "None",
+                margin_balance=str(margin_balance) if margin_balance is not None else "None",
                 will_include=total > 0
             )
 
+            # Extract additional fields from API response
+            # XT API balance endpoint uses:
+            # - notProfit: 未实现盈亏（负数表示亏损）
+            # - profit: 已实现盈亏
+            # - marginBalance: 保证金余额（总权益）
+            # - crossedMargin: 全仓保证金
+            # - isolatedMargin: 逐仓保证金
+            unrealized_pnl = Decimal(str(item.get("notProfit", item.get("unrealizedPnl", item.get("unrealizedProfit", "0")))))
+            realized_pnl = Decimal(str(item.get("profit", item.get("realizedPnl", item.get("realizedProfit", "0")))))
+            # marginBalance is the total equity (wallet balance + unrealized PnL)
+            equity = Decimal(str(item.get("marginBalance", item.get("equity", item.get("totalEquity", str(total + unrealized_pnl))))))
+            # Use crossedMargin + isolatedMargin as total margin
+            crossed_margin = Decimal(str(item.get("crossedMargin", "0")))
+            isolated_margin = Decimal(str(item.get("isolatedMargin", "0")))
+            margin = crossed_margin + isolated_margin
+            # Calculate margin ratio if we have marginBalance and margin
+            margin_balance = Decimal(str(item.get("marginBalance", "0")))
+            margin_ratio = (margin / margin_balance * Decimal("100")) if margin_balance > 0 else Decimal("0")
+            
             # Only include non-zero balances
             if total > 0:
                 balances[currency] = {
                     "available": available,
                     "frozen": frozen,
                     "total": total,
+                    "unrealized_pnl": unrealized_pnl,
+                    "realized_pnl": realized_pnl,
+                    "equity": equity,
+                    "margin": margin,
+                    "margin_ratio": margin_ratio,
                 }
 
-        logger.info("Perp balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
         return balances
 
     async def get_positions(self, symbol: str | None = None) -> list[Position]:
@@ -985,58 +1169,99 @@ class XTPerpExchange(BaseExchange):
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
-        path = "/future/user/v1/position/list"
+        # Use /future/user/v1/position endpoint (not /position/list)
+        path = "/future/user/v1/position"
         params = {"symbol": symbol} if symbol else None
         data = await self._request("GET", path, params=params, body=None, require_auth=True)
-
-        # Debug: Log raw API response
-        logger.info(
-            "Raw positions API response",
-            response_type=type(data).__name__,
-            is_list=isinstance(data, list),
-            item_count=len(data) if isinstance(data, list) else "N/A",
-            sample_data=str(data)[:500] if data else "empty"
-        )
+        
+        # XT API returns {result: [...]} format, extract result array
+        if isinstance(data, dict) and "result" in data:
+            data = data["result"]
+        elif isinstance(data, dict) and "data" in data:
+            data = data["data"]
 
         # Parse positions response
         # Expected format: [{"symbol": "btc_usdt", "positionSide": "LONG", "positionAmt": "0.5", ...}]
         positions: list[Position] = []
 
         if isinstance(data, list):
-            logger.info("Parsing positions list", total_items=len(data))
+            logger.debug("Parsing positions list", total_items=len(data))
 
             for item in data:
+                # Extract all fields from API response
                 symbol_str = item.get("symbol", "")
                 side = item.get("positionSide", "LONG")
-                quantity = Decimal(str(item.get("positionSize", "0")))
-
-                # Log every position item (including zero quantity)
-                logger.info(
-                    "Processing position item",
-                    symbol=symbol_str,
-                    side=side,
-                    quantity=str(quantity),
-                    entry_price=str(item.get("entryPrice", "0")),
-                    unrealized_pnl=str(item.get("unrealizedProfit", "0")),
-                    will_skip=(quantity <= 0)
+                # XT API uses positionSize (in contracts/张)
+                position_size_raw = item.get("positionSize")
+                quantity = Decimal(str(position_size_raw)) if position_size_raw is not None else Decimal("0")
+                
+                # Extract all other fields
+                entry_price_raw = item.get("entryPrice")
+                cal_mark_price_raw = item.get("calMarkPrice")
+                break_price_raw = item.get("breakPrice")
+                floating_pl_raw = item.get("floatingPL")
+                realized_profit_raw = item.get("realizedProfit")
+                leverage_raw = item.get("leverage")
+                isolated_margin_raw = item.get("isolatedMargin")
+                maint_margin_raw = (
+                    item.get("maintMargin")
+                    or item.get("maintenanceMargin")
+                    or item.get("maintMarginAmount")
                 )
 
                 # Skip closed positions (quantity = 0)
                 # API may return historical positions with zero quantity
                 if quantity <= 0:
-                    logger.info("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
+                    logger.debug("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
                     continue
 
-                entry_price = Decimal(str(item.get("entryPrice", "0")))
-                mark_price = Decimal(str(item.get("markPrice", "0")))
-                liquidation_price = Decimal(str(item.get("liquidationPrice", "0")))
-                unrealized_pnl = Decimal(str(item.get("unrealizedProfit", "0")))
-                leverage_val = int(item.get("leverage", 1))
-                margin = Decimal(str(item.get("isolatedMargin", "0")))
+                # Convert all fields to Decimal with proper handling
+                entry_price = Decimal(str(entry_price_raw)) if entry_price_raw is not None else Decimal("0")
+                # XT API uses calMarkPrice for mark price (计算标记价格)
+                mark_price = Decimal(str(cal_mark_price_raw)) if cal_mark_price_raw is not None else Decimal("0")
+                # XT API uses breakPrice for liquidation price (强平价格)
+                liquidation_price = Decimal(str(break_price_raw)) if break_price_raw is not None else Decimal("0")
+                
+                # XT API uses floatingPL for unrealized PnL (未实现盈亏)
+                if floating_pl_raw is not None:
+                    unrealized_pnl = Decimal(str(floating_pl_raw))
+                else:
+                    logger.warning(
+                        "floatingPL field not found",
+                        symbol=symbol_str
+                    )
+                    unrealized_pnl = Decimal("0")
+                
+                # XT API uses realizedProfit for realized PnL (已实现盈亏)
+                if realized_profit_raw is not None:
+                    realized_pnl = Decimal(str(realized_profit_raw))
+                else:
+                    realized_pnl = Decimal("0")
+                
+                # XT API uses leverage (杠杆倍数)
+                leverage_val = int(leverage_raw) if leverage_raw is not None else 1
+                
+                # XT API uses isolatedMargin for margin (仓位保证金)
+                # For CROSSED position type, margin might be 0, use crossedMargin from balance instead
+                if isolated_margin_raw is not None:
+                    margin = Decimal(str(isolated_margin_raw))
+                else:
+                    margin = Decimal("0")
+                
+                # Log position summary (only key fields)
+                logger.debug(
+                    "Position parsed",
+                    symbol=symbol_str,
+                    quantity=str(quantity),
+                    unrealized_pnl=str(unrealized_pnl),
+                    realized_pnl=str(realized_pnl),
+                )
 
                 # Calculate ROE (Return on Equity)
                 roe = (unrealized_pnl / margin * Decimal("100")) if margin > 0 else Decimal("0")
 
+                # Create position with all fields including realized_pnl
+                # Note: Position model may not have realized_pnl, so we'll store it separately
                 position = Position(
                     symbol=symbol_str,
                     side=side,
@@ -1049,6 +1274,15 @@ class XTPerpExchange(BaseExchange):
                     margin=margin,
                     roe=roe,
                 )
+                # Store realized_pnl as an attribute for later use
+                position.realized_pnl = realized_pnl
+                if maint_margin_raw is not None:
+                    try:
+                        position.maintenance_margin = Decimal(str(maint_margin_raw))
+                    except Exception:
+                        position.maintenance_margin = Decimal("0")
+                else:
+                    position.maintenance_margin = Decimal("0")
                 positions.append(position)
         else:
             logger.warning(
@@ -1121,5 +1355,175 @@ class XTPerpExchange(BaseExchange):
         path = "/future/user/v1/position/leverage"
         body = {"symbol": symbol, "leverage": leverage}
         await self._request("POST", path, params=None, body=body, require_auth=True)
-        
+
         logger.info("Leverage set successfully", symbol=symbol, leverage=leverage)
+
+    async def get_order_list(
+        self,
+        symbol: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[Order]:
+        """Query order history.
+
+        Args:
+            symbol: Trading pair symbol (optional, None for all symbols)
+            start_time: Start timestamp in milliseconds (optional)
+            end_time: End timestamp in milliseconds (optional)
+            limit: Maximum number of orders to return (default: 100, max: 500)
+
+        Returns:
+            List of orders
+
+        Raises:
+            RuntimeError: If exchange is not connected
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        path = "/future/trade/v1/order/list-history"
+        params = {"limit": min(limit, 500)}
+
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+
+        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+
+        orders = []
+        # _request 方法已经提取了 result 字段，所以 data 已经是 result 的内容
+        # 对于订单历史 API，result 的结构是: {"hasPrev": bool, "hasNext": bool, "items": [...]}
+        # 所以应该直接从 data 中获取 items
+        order_list = data.get("items", []) if isinstance(data, dict) else []
+
+        for order_data in order_list:
+            try:
+                # Parse trading pair from symbol
+                symbol_str = order_data.get("symbol", "")
+                if "_" in symbol_str:
+                    base, quote = symbol_str.split("_", 1)
+                    # Create minimal TradingPair with required fields for batch queries
+                    # Real trading constraints should be fetched from exchange info API for actual trading
+                    trading_pair = TradingPair(
+                        base_currency=base.upper(),
+                        quote_currency=quote.upper(),
+                        exchange="xt",
+                        min_order_size=Decimal("0.001"),
+                        max_order_size=Decimal("1000000"),
+                        price_precision=8,
+                        quantity_precision=8,
+                    )
+                else:
+                    logger.warning("Invalid symbol format", symbol=symbol_str)
+                    continue
+
+                # Parse order data
+                # Note: XT API uses "createdTime" (with 'd') according to official docs
+                # https://doc.xt.com/zh-Hans/docs/futures/Order/see-order-history
+                created_time = order_data.get("createdTime") or order_data.get("createTime")
+                updated_time = order_data.get("updatedTime") or created_time
+                
+                # Parse order side (XT API returns "BUY" or "SELL" as strings)
+                order_side_str = order_data.get("orderSide", "BUY")
+                order_side = OrderSide.BUY if order_side_str == "BUY" else OrderSide.SELL
+                
+                # Parse order type (XT API returns "LIMIT", "MARKET", etc. as strings)
+                order_type_str = order_data.get("orderType", "LIMIT")
+                order_type = OrderType.LIMIT if order_type_str == "LIMIT" else OrderType.MARKET
+                
+                # Parse order status (XT API uses "state" field)
+                xt_status = order_data.get("state", "")
+                if xt_status == "NEW":
+                    order_status = OrderStatus.OPEN
+                elif xt_status == "FILLED":
+                    order_status = OrderStatus.FILLED
+                elif xt_status == "PARTIALLY_FILLED":
+                    order_status = OrderStatus.PARTIALLY_FILLED
+                elif xt_status in ["CANCELED", "PARTIALLY_CANCELED"]:
+                    order_status = OrderStatus.CANCELLED
+                else:
+                    order_status = OrderStatus.PENDING
+                
+                created_at = (
+                    datetime.fromtimestamp(created_time / 1000, tz=timezone.utc)
+                    if created_time
+                    else datetime.utcnow().replace(tzinfo=timezone.utc)
+                )
+                updated_at = (
+                    datetime.fromtimestamp(updated_time / 1000, tz=timezone.utc)
+                    if updated_time
+                    else created_at
+                )
+                exchange_order_id = str(order_data.get("orderId", ""))
+                internal_order_id = str(
+                    order_data.get("clientOrderId") or order_data.get("orderId") or exchange_order_id
+                )
+                
+                order = Order(
+                    order_id=internal_order_id,
+                    exchange_order_id=exchange_order_id,
+                    trading_pair=trading_pair,
+                    side=order_side,
+                    order_type=order_type,
+                    quantity=Decimal(str(order_data.get("origQty", "0"))),
+                    price=Decimal(str(order_data.get("price", "0"))) if order_data.get("price") else None,
+                    status=order_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    exchange="xt",
+                    position_side=order_data.get("positionSide", "LONG"),
+                    time_in_force=order_data.get("timeInForce", "GTC"),
+                )
+                orders.append(order)
+
+            except (ValueError, KeyError, decimal.InvalidOperation) as e:
+                logger.warning("Failed to parse order data", error=str(e), order_data=order_data)
+                continue
+
+        logger.info("Retrieved order list", count=len(orders), symbol=symbol)
+        return orders
+
+    async def get_user_trades(
+        self,
+        symbol: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query user trade history.
+
+        Args:
+            symbol: Trading pair symbol (optional, None for all symbols)
+            start_time: Start timestamp in milliseconds (optional)
+            end_time: End timestamp in milliseconds (optional)
+            limit: Maximum number of trades to return (default: 100, max: 500)
+
+        Returns:
+            List of trade records
+
+        Raises:
+            RuntimeError: If exchange is not connected
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        path = "/future/trade/v1/order/trade-list"
+        params = {"limit": min(limit, 500)}
+
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+
+        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+
+        trades = data.get("result", {}).get("items", [])
+
+        logger.info("Retrieved user trades", count=len(trades), symbol=symbol)
+        return trades

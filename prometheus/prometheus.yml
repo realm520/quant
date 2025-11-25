@@ -1,0 +1,22 @@
+# Prometheus 配置文件
+global:
+  scrape_interval: 15s      # 每15秒抓取一次
+  evaluation_interval: 15s   # 每15秒评估一次规则
+  external_labels:
+    cluster: 'trading-monitor'
+    environment: 'production'
+
+# 抓取配置
+scrape_configs:
+  # 抓取 cextools 监控服务的 metrics
+  - job_name: 'cextools-monitor'
+    static_configs:
+      - targets: 
+          - 'localhost:9600'  # watch-balance, watch-account
+          - 'localhost:9601'  # subscribe multi-account
+        labels:
+          service: 'cextools'
+          component: 'exchange-monitor'
+    scrape_interval: 10s  # 更频繁的抓取以获得实时数据
+    metrics_path: '/metrics'
+

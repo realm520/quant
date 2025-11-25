@@ -7,7 +7,7 @@ from decimal import Decimal
 import typer
 from rich.console import Console
 
-from tri_arb.cli.utils.exchange_factory import ExchangeType, create_exchange
+from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
 from tri_arb.cli.formatters.table import format_order_summary
 from tri_arb.cli.formatters.json import print_json
 from tri_arb.cli.formatters.csv import print_csv
@@ -59,6 +59,12 @@ def place(
         "--position-side",
         help="持仓方向（仅 perp，LONG 或 SHORT）"
     ),
+    exchange: ExchangeName = typer.Option(
+        ExchangeName.XT,
+        "--exchange",
+        "-x",
+        help="交易所 (xt, binance, okx)，默认 xt"
+    ),
     api_key: Optional[str] = typer.Option(
         None,
         "--api-key",
@@ -84,14 +90,17 @@ def place(
     """提交订单.
     
     示例:
-        # 现货限价买单
-        cextools order place -s BTC/USDT --side buy -q 0.001 -e spot -p 50000
+        # Binance 永续合约限价开多单
+        cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 -p 30000 --position-side LONG
         
-        # 现货市价卖单
-        cextools order place -s BTC/USDT --side sell -q 0.001 -e spot --type market
+        # OKX 永续合约限价开空单
+        cextools order place -x okx -e perp -s BTC/USDT --side sell -q 0.001 -p 70000 --position-side SHORT
         
-        # 永续合约做多限价单
-        cextools order place -s BTC/USDT --side buy -q 0.01 -e perp -p 50000 --position-side LONG
+        # Binance 市价单（会立即成交！）
+        cextools order place -x binance -e perp -s BTC/USDT --side buy -q 0.001 --type market --position-side LONG
+        
+        # OKX Post-only订单（只做Maker）
+        cextools order place -x okx -e perp -s ETH/USDT --side buy -q 0.01 -p 2000 --type post_only --position-side LONG
     """
     try:
         # 验证参数
@@ -122,29 +131,43 @@ def place(
                 raise ValueError(f"持仓方向必须是 LONG 或 SHORT，收到: {position_side}")
 
         # 创建 exchange 实例
-        exchange = create_exchange(exchange_type, api_key, api_secret)
+        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
 
         # 异步提交订单
         async def submit_order():
-            await exchange.connect()
+            await exchange_instance.connect()
             try:
-                order_params = {
-                    "symbol": symbol,
-                    "side": side,
-                    "order_type": order_type,
-                    "quantity": Decimal(str(quantity))
-                }
-
-                if price is not None:
-                    order_params["price"] = Decimal(str(price))
-
-                if position_side:
-                    order_params["position_side"] = position_side
-
-                order_result = await exchange.place_order(**order_params)
+                # 根据交易所类型调整参数
+                if exchange == ExchangeName.OKX:
+                    # OKX格式转换
+                    okx_symbol = symbol.replace("/", "-") + "-SWAP" if exchange_type == ExchangeType.PERP else symbol.replace("/", "-")
+                    order_result = await exchange_instance.place_order(
+                        symbol=okx_symbol,
+                        side=side.lower(),  # OKX使用小写
+                        order_type=order_type.lower(),
+                        quantity=str(quantity),
+                        price=str(price) if price else None,
+                        position_side=position_side.lower() if position_side else None,
+                    )
+                elif exchange == ExchangeName.BINANCE:
+                    # Binance格式转换
+                    binance_symbol = symbol.replace("/", "")
+                    order_result = await exchange_instance.place_order(
+                        symbol=binance_symbol,
+                        side=side.upper(),  # Binance使用大写
+                        order_type=order_type.upper(),
+                        quantity=str(quantity),
+                        price=str(price) if price else None,
+                        position_side=position_side.upper() if position_side else None,
+                    )
+                else:
+                    # XT 使用原有方法（Order对象）
+                    # 这里保持原有逻辑
+                    raise NotImplementedError(f"XT下单功能暂未适配新接口")
+                
                 return order_result
             finally:
-                await exchange.disconnect()
+                await exchange_instance.disconnect()
 
         order_info = asyncio.run(submit_order())
 
@@ -158,18 +181,53 @@ def place(
         if output == "json":
             print_json(order_info)
         elif output == "csv":
-            csv_data = [{
-                "order_id": order_info.get("order_id", ""),
-                "symbol": order_info.get("symbol", ""),
-                "side": order_info.get("side", ""),
-                "type": order_info.get("type", ""),
-                "quantity": str(order_info.get("quantity", 0)),
-                "price": str(order_info.get("price", 0)),
-                "status": order_info.get("status", "")
-            }]
+            # 适配不同交易所的返回格式
+            if exchange == ExchangeName.OKX:
+                csv_data = [{
+                    "order_id": order_info.get("ordId", ""),
+                    "client_order_id": order_info.get("clOrdId", ""),
+                    "result_code": order_info.get("sCode", ""),
+                    "result_msg": order_info.get("sMsg", ""),
+                }]
+            elif exchange == ExchangeName.BINANCE:
+                csv_data = [{
+                    "order_id": str(order_info.get("orderId", "")),
+                    "symbol": order_info.get("symbol", ""),
+                    "side": order_info.get("side", ""),
+                    "type": order_info.get("type", ""),
+                    "quantity": str(order_info.get("origQty", 0)),
+                    "price": str(order_info.get("price", 0)),
+                    "status": order_info.get("status", "")
+                }]
+            else:
+                csv_data = [{
+                    "order_id": order_info.get("order_id", ""),
+                    "symbol": order_info.get("symbol", ""),
+                    "side": order_info.get("side", ""),
+                    "type": order_info.get("type", ""),
+                    "quantity": str(order_info.get("quantity", 0)),
+                    "price": str(order_info.get("price", 0)),
+                    "status": order_info.get("status", "")
+                }]
             print_csv(csv_data)
         else:  # table (default)
-            format_order_summary(order_info)
+            # 格式化显示订单信息
+            if exchange == ExchangeName.OKX:
+                console.print("订单详情:")
+                console.print(f"  订单ID: [cyan]{order_info.get('ordId', '')}[/cyan]")
+                console.print(f"  客户订单ID: {order_info.get('clOrdId', 'N/A')}")
+                console.print(f"  执行结果: {order_info.get('sMsg', 'Success') if order_info.get('sCode') == '0' else order_info.get('sMsg', 'Failed')}")
+            elif exchange == ExchangeName.BINANCE:
+                console.print("订单详情:")
+                console.print(f"  订单ID: [cyan]{order_info.get('orderId', '')}[/cyan]")
+                console.print(f"  交易对: {order_info.get('symbol', '')}")
+                console.print(f"  方向: {order_info.get('side', '')}")
+                console.print(f"  类型: {order_info.get('type', '')}")
+                console.print(f"  价格: {order_info.get('price', 'MARKET')}")
+                console.print(f"  数量: {order_info.get('origQty', '')}")
+                console.print(f"  状态: [yellow]{order_info.get('status', '')}[/yellow]")
+            else:
+                format_order_summary(order_info)
 
     except ValueError as e:
         console.print(f"[red]参数错误:[/red] {e}")

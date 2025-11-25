@@ -82,6 +82,10 @@ def configure_logging() -> None:
         level=getattr(logging, settings.log_level),
     )
 
+    # Disable httpx verbose logging (HTTP request details)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Setup file handlers for persistent logging
     setup_file_handlers()
 

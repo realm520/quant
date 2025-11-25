@@ -1,0 +1,1942 @@
+"""XT WebSocket user data stream service.
+
+Handles XT WebSocket connections for real-time account updates, position updates,
+order updates, and trade updates with automatic reconnection and data synchronization.
+"""
+
+import asyncio
+import json
+import logging
+import uuid
+import threading
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Any, Dict, Optional, Set
+
+import websockets
+from websockets.exceptions import ConnectionClosed, WebSocketException
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """自定义JSON编码器，处理Decimal类型"""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super(DecimalEncoder, self).default(obj)
+
+from tri_arb.storage.database import DatabaseManager
+from tri_arb.storage.xt_websocket_models import (
+    XTAccountUpdate,
+    XTOrderUpdate,
+    XTPositionUpdate,
+    XTTradeUpdate,
+    XTWebSocketConnection,
+)
+
+try:
+    import pyxt
+    from pyxt.websocket.perp import PerpWebsocketStreamClient
+    PYXT_AVAILABLE = True
+except ImportError:
+    PYXT_AVAILABLE = False
+    pyxt = None
+    PerpWebsocketStreamClient = None
+
+logger = logging.getLogger(__name__)
+
+
+class XTUserStreamService:
+    """XT WebSocket用户数据流服务.
+    
+    处理XT WebSocket连接，提供实时账户、持仓、订单和成交更新，
+    支持自动重连和数据同步机制。
+    """
+    
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        db_manager: DatabaseManager,
+        auto_reconnect: bool = True,
+        display_format: str = "table",
+        enabled_channels: Optional[Set[str]] = None,
+        enable_data_sync: bool = True,
+    ):
+        """初始化XT WebSocket服务.
+        
+        Args:
+            api_key: XT API密钥
+            api_secret: XT API密钥
+            db_manager: 数据库管理器
+            auto_reconnect: 是否自动重连
+            display_format: 显示格式 (table, json)
+            enabled_channels: 启用的频道 (account, position, order, trade)
+            enable_data_sync: 是否启用数据同步（默认True，防止数据丢失）
+        """
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.db_manager = db_manager
+        self.auto_reconnect = auto_reconnect
+        self.display_format = display_format
+        self.enable_data_sync = enable_data_sync
+
+        # 默认启用所有频道（包括成交记录）
+        self.enabled_channels = enabled_channels or {"account", "position", "order", "trade"}
+        
+        # WebSocket连接状态
+        self.websocket = None
+        self.connection_id = None
+        self.is_connected = False
+        self.is_running = False
+        
+        # 重连配置
+        self.reconnect_delay = 5  # 重连延迟（秒）
+        self.max_reconnect_attempts = 10
+        self.reconnect_attempts = 0
+
+        # 断线时间记录（用于补充断线期间的数据）
+        self.disconnect_time = None
+        self.reconnect_time = None
+
+        # XT REST API客户端（用于获取listen_key和数据同步）
+        # 优先使用 pyxt，如果不可用则抛出错误
+        if not PYXT_AVAILABLE:
+            raise RuntimeError("pyxt package is required but not installed. Please install it with: pip install pyxt")
+
+        # 初始化 pyxt REST 客户端
+        self.pyxt_client = None
+        self._init_pyxt_client()
+
+        # 初始化 pyxt WebSocket 客户端
+        self.ws_client = None
+
+        # XT WebSocket认证
+        self.listen_key = None
+
+        # 数据缓存（用于检测变化）
+        self._last_account_data = {}
+        self._last_position_data = {}
+        self._last_order_data = {}
+        self._last_trade_data = {}
+        
+        logger.debug("XT WebSocket service initialized",
+                    extra={
+                        "enabled_channels": list(self.enabled_channels),
+                        "data_sync_enabled": self.enable_data_sync,
+                        "fixed_lookback_hours": 1,
+                        "using_pyxt": PYXT_AVAILABLE
+                    })
+
+    def _init_pyxt_client(self) -> None:
+        """初始化 pyxt 客户端."""
+        # XT API 主机地址
+        host = "https://sapi.xt.com"
+
+        try:
+            # 尝试从 pyxt.perp 导入 Perp 类
+            from pyxt.perp import Perp
+            self.pyxt_client = Perp(host, self.api_key, self.api_secret)
+            logger.info("Initialized pyxt.perp.Perp client")
+            return
+        except ImportError:
+            logger.error("Failed to import pyxt.perp.Perp")
+        except Exception as e:
+            logger.error(f"Failed to initialize pyxt.perp.Perp: {e}")
+
+        # 如果上述方法失败，尝试其他可能的客户端类
+        candidates = [
+            ("spot", "Spot"),
+        ]
+
+        for module_name, class_name in candidates:
+            try:
+                module = __import__(f"pyxt.{module_name}", fromlist=[class_name])
+                if hasattr(module, class_name):
+                    cls = getattr(module, class_name)
+                    self.pyxt_client = cls(host, self.api_key, self.api_secret)
+                    logger.info(f"Initialized pyxt.{module_name}.{class_name} client")
+                    return
+            except Exception as e:
+                logger.debug(f"Failed to initialize pyxt.{module_name}.{class_name}: {e}")
+                continue
+
+        raise RuntimeError("Failed to initialize any pyxt client class")
+    
+    async def start(self) -> None:
+        """启动WebSocket服务."""
+        if self.is_running:
+            logger.warning("XT WebSocket service is already running")
+            return
+
+        self.is_running = True
+        self.connection_id = str(uuid.uuid4())
+
+        logger.debug("pyxt client ready")
+
+        # 记录连接开始
+        await self._record_connection_start()
+
+        logger.debug("Starting XT WebSocket service")
+        
+        # 启动WebSocket连接循环
+        while self.is_running:
+            try:
+                await self._connect_and_listen()
+            except Exception as e:
+                logger.error(f"WebSocket connection error: {e}")
+                
+                if self.auto_reconnect and self.reconnect_attempts < self.max_reconnect_attempts:
+                    self.reconnect_attempts += 1
+                    logger.info(
+                        f"Attempting to reconnect ({self.reconnect_attempts}/{self.max_reconnect_attempts})",
+                        delay=self.reconnect_delay,
+                    )
+                    await asyncio.sleep(self.reconnect_delay)
+                else:
+                    logger.error("Max reconnection attempts reached, stopping service")
+                    break
+        
+        # 记录连接结束
+        await self._record_connection_end()
+
+        logger.info("XT WebSocket service stopped")
+    
+    async def stop(self) -> None:
+        """停止WebSocket服务."""
+        logger.info("Stopping XT WebSocket service")
+        self.is_running = False
+        
+        if self.websocket:
+            await self.websocket.close()
+            self.websocket = None
+        
+        self.is_connected = False
+    
+    async def _connect_and_listen(self) -> None:
+        """使用 pyxt WebSocket 客户端建立连接并监听消息."""
+        try:
+            logger.debug("Initializing pyxt WebSocket client")
+
+            # 创建消息队列用于线程间通信
+            self.message_queue = asyncio.Queue()
+
+            # 获取事件循环供回调使用
+            loop = asyncio.get_event_loop()
+
+            # 创建 pyxt WebSocket 客户端（在单独的线程中运行）
+            def on_message(ws_app, message):
+                """WebSocket 消息回调."""
+                try:
+                    # 将消息放入队列
+                    asyncio.run_coroutine_threadsafe(
+                        self.message_queue.put(message),
+                        loop
+                    )
+                except Exception as e:
+                    logger.error(f"Error queueing message: {e}")
+
+            def on_open(ws_app):
+                """WebSocket 连接打开回调."""
+                self.is_connected = True
+                self.reconnect_attempts = 0
+                logger.info("pyxt WebSocket connected")
+
+                # 记录重连时间
+                if self.disconnect_time:
+                    self.reconnect_time = datetime.utcnow()
+                    logger.info("Reconnected", extra={"reconnect_time": self.reconnect_time.isoformat()})
+
+                    # 补充断线期间缺失的数据（使用固定1小时回补）
+                    if self.enable_data_sync:
+                        asyncio.run_coroutine_threadsafe(
+                            self._sync_missing_data(),
+                            loop
+                        )
+
+            def on_close(ws_app, close_status_code, close_msg):
+                """WebSocket 连接关闭回调."""
+                self.is_connected = False
+                self.disconnect_time = datetime.utcnow()
+                logger.warning(f"pyxt WebSocket closed: {close_status_code} - {close_msg}")
+
+            def on_error(ws_app, error):
+                """WebSocket 错误回调."""
+                logger.error(f"pyxt WebSocket error: {error}")
+                self.is_connected = False
+
+            # 创建 pyxt WebSocket 客户端
+            # pyxt 会自动处理认证和获取 listen_key
+            self.ws_client = PerpWebsocketStreamClient(
+                stream_url="wss://fstream.xt.com",
+                on_message=on_message,
+                on_open=on_open,
+                on_close=on_close,
+                on_error=on_error,
+                is_auth=True  # 使用认证WebSocket
+            )
+
+            # 在单独的线程中启动WebSocket客户端并订阅
+            def run_ws_client():
+                try:
+                    logger.debug("Starting pyxt WebSocket client in thread")
+
+                    # 首先需要获取 listen_key 并订阅
+                    # 使用 pyxt REST 客户端获取 listen_key
+                    listen_key_result = self.pyxt_client.get_listen_key()
+
+                    # 解析 listen_key
+                    listen_key = None
+                    if isinstance(listen_key_result, tuple) and len(listen_key_result) >= 2:
+                        code, success, error = listen_key_result
+                        if code == 200 and success:
+                            if isinstance(success, dict):
+                                listen_key = success.get("listenKey") or success.get("result", {}).get("listenKey")
+                            elif isinstance(success, str):
+                                listen_key = success
+
+                    if not listen_key:
+                        logger.error(f"Failed to get listen key: {listen_key_result}")
+                        return
+
+                    logger.info(f"Obtained listen key for WebSocket subscription")
+                    self.listen_key = listen_key
+
+                    # 订阅用户数据流
+                    if "account" in self.enabled_channels:
+                        self.ws_client.user_balance(listen_key, action="sub")
+                        logger.info("Subscribed to account/balance channel")
+
+                    if "position" in self.enabled_channels:
+                        self.ws_client.user_position(listen_key, action="sub")
+                        logger.info("Subscribed to position channel")
+
+                    if "order" in self.enabled_channels:
+                        self.ws_client.user_order(listen_key, action="sub")
+                        logger.info("Subscribed to order channel")
+
+                    if "trade" in self.enabled_channels:
+                        self.ws_client.user_trade(listen_key, action="sub")
+                        logger.info("Subscribed to trade channel")
+
+                    # 启动 pyxt WebSocket 客户端（阻塞调用）
+                    self.ws_client.run()
+                except Exception as e:
+                    logger.error(f"Error in WebSocket thread: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+            ws_thread = threading.Thread(target=run_ws_client, daemon=True)
+            ws_thread.start()
+
+            # 处理消息队列
+            while self.is_running:
+                try:
+                    # 从队列中获取消息
+                    message = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
+                    await self._handle_message(message)
+                except asyncio.TimeoutError:
+                    # 超时是正常的，继续等待
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+
+        except Exception as e:
+            logger.error(f"WebSocket connection error: {e}")
+            self.is_connected = False
+            self.disconnect_time = datetime.utcnow()
+
+
+    async def _handle_message(self, message: str) -> None:
+        """处理WebSocket消息."""
+        try:
+            # 检查消息是否为空或只包含空白字符
+            if not message or not message.strip():
+                logger.debug("Received empty WebSocket message")
+                return
+            
+            data = json.loads(message)
+            
+            # 更新消息统计
+            await self._update_message_stats()
+
+            # XT WebSocket消息格式处理
+            # 检查是否是订阅确认消息
+            if "result" in data and data.get("id") == 1:
+                logger.info("Subscription confirmed", extra={"result": data.get("result")})
+                return
+
+            # 检查是否是错误消息
+            if "error" in data:
+                error_code = data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else data.get("error")
+                error_msg = data.get("error", {}).get("message", "") if isinstance(data.get("error"), dict) else str(data.get("error"))
+
+                if "invalid_listen_key" in str(error_code) or "invalid_listen_key" in str(error_msg):
+                    logger.error("Listen key expired or invalid, need to reconnect", extra={"error": error_msg})
+                    # listen_key过期，需要重新连接
+                    self.is_connected = False
+                    return
+                else:
+                    logger.error("WebSocket error", extra={"error_code": error_code, "error_msg": error_msg})
+                    return
+
+            # 处理数据推送消息
+            stream = data.get("stream", "")
+            if "@" in stream:
+                channel = stream.split("@")[0]
+                listen_key = stream.split("@")[1]
+                
+                logger.info("Received WebSocket message", extra={"channel": channel, "stream": stream})
+                
+                # 根据频道类型处理数据
+                if channel == "balance" and "account" in self.enabled_channels:
+                    await self._handle_account_update(data)
+                elif channel == "position" and "position" in self.enabled_channels:
+                    await self._handle_position_update(data)
+                elif channel == "order" and "order" in self.enabled_channels:
+                    await self._handle_order_update(data)
+                elif channel == "trade" and "trade" in self.enabled_channels:
+                    await self._handle_trade_update(data)
+                else:
+                    logger.debug("Unknown channel or channel disabled", extra={"channel": channel})
+            else:
+                logger.debug("Unknown message format", extra={"data_sample": str(data)[:200]})
+                
+        except json.JSONDecodeError as e:
+            logger.debug(f"Failed to parse WebSocket message: {e}")
+            # 记录原始消息内容以便调试
+            logger.debug(f"Raw message content: {repr(message[:200])}")
+        except Exception as e:
+            logger.error(f"Error handling WebSocket message: {e}")
+    
+    async def _handle_account_update(self, data: Dict[str, Any]) -> None:
+        """处理账户更新消息."""
+        if "account" not in self.enabled_channels:
+            return
+        
+        # 提取XT账户数据
+        account_data = data.get("data", {})
+        logger.debug("Account update data", extra={"account_data": account_data})
+        if not account_data:
+            logger.warning("No account data in message")
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_account_changed(account_data):
+            return
+        
+        try:
+            # 显示账户更新
+            await self._display_account_update(account_data)
+            
+            # 保存到数据库
+            await self._save_account_update(account_data)
+            
+            # 更新统计
+            await self._update_account_stats()
+            
+        except Exception as e:
+            logger.error(f"Error handling account update: {e}")
+    
+    async def _handle_position_update(self, data: Dict[str, Any]) -> None:
+        """处理持仓更新消息."""
+        if "position" not in self.enabled_channels:
+            return
+        
+        # 提取XT持仓数据
+        position_data = data.get("data", {})
+        if not position_data:
+            logger.warning("No position data in message")
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_position_changed(position_data):
+            return
+        
+        try:
+            # 显示持仓更新
+            await self._display_position_update(position_data)
+            
+            # 保存到数据库
+            await self._save_position_update(position_data)
+            
+            # 更新统计
+            await self._update_position_stats()
+            
+        except Exception as e:
+            logger.error(f"Error handling position update: {e}")
+    
+    async def _handle_order_update(self, data: Dict[str, Any]) -> None:
+        """处理订单更新消息."""
+        if "order" not in self.enabled_channels:
+            return
+        
+        # 提取XT订单数据
+        order_data = data.get("data", {})
+        if not order_data:
+            logger.warning("No order data in message")
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_order_changed(order_data):
+            return
+        
+        try:
+            # 显示订单更新
+            await self._display_order_update(order_data)
+            
+            # 保存到数据库
+            await self._save_order_update(order_data)
+            
+            # 更新统计
+            await self._update_order_stats()
+            
+        except Exception as e:
+            logger.error(f"Error handling order update: {e}")
+    
+    async def _handle_trade_update(self, data: Dict[str, Any]) -> None:
+        """处理成交更新消息."""
+        if "trade" not in self.enabled_channels:
+            return
+        
+        # 提取XT成交数据
+        trade_data = data.get("data", {})
+        if not trade_data:
+            logger.warning("No trade data in message")
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_trade_changed(trade_data):
+            return
+        
+        try:
+            # 显示成交更新
+            await self._display_trade_update(trade_data)
+            
+            # 保存到数据库
+            await self._save_trade_update(trade_data)
+            
+            # 更新统计
+            await self._update_trade_stats()
+            
+        except Exception as e:
+            logger.error(f"Error handling trade update: {e}")
+    
+    async def _display_account_update(self, data: Dict[str, Any]) -> None:
+        """显示账户更新."""
+        if self.display_format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
+        else:
+            # 表格格式显示
+            from rich.console import Console
+            from rich.table import Table
+            
+            console = Console()
+            table = Table(title="XT账户更新")
+            
+            table.add_column("币种", style="cyan")
+            table.add_column("可用余额", style="green")
+            table.add_column("冻结余额", style="yellow")
+            table.add_column("总余额", style="blue")
+            table.add_column("更新时间", style="dim")
+            
+            # 解析账户数据
+            balances = data.get("balances", [])
+            for balance in balances:
+                currency = balance.get("currency", "")
+                available = balance.get("available", "0")
+                frozen = balance.get("frozen", "0")
+                total = balance.get("total", "0")
+                update_time = datetime.now().strftime("%H:%M:%S")
+                
+                table.add_row(
+                    currency,
+                    f"{available}",
+                    f"{frozen}",
+                    f"{total}",
+                    update_time,
+                )
+            
+            console.print(table)
+    
+    async def _display_position_update(self, data: Dict[str, Any]) -> None:
+        """显示持仓更新."""
+        if self.display_format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
+        else:
+            # 表格格式显示
+            from rich.console import Console
+            from rich.table import Table
+            
+            console = Console()
+            table = Table(title="XT持仓更新")
+            
+            table.add_column("交易对", style="cyan")
+            table.add_column("方向", style="green")
+            table.add_column("数量", style="yellow")
+            table.add_column("开仓价", style="blue")
+            table.add_column("标记价", style="magenta")
+            table.add_column("未实现盈亏", style="red")
+            table.add_column("杠杆", style="dim")
+            
+            # 解析持仓数据
+            positions = data.get("positions", [])
+            for position in positions:
+                symbol = position.get("symbol", "")
+                side = position.get("side", "")
+                quantity = position.get("quantity", "0")
+                entry_price = position.get("entry_price", "0")
+                mark_price = position.get("mark_price", "0")
+                unrealized_pnl = position.get("unrealized_pnl", "0")
+                leverage = position.get("leverage", "1")
+                
+                table.add_row(
+                    symbol,
+                    side,
+                    f"{quantity}",
+                    f"{entry_price}",
+                    f"{mark_price}",
+                    f"{unrealized_pnl}",
+                    f"{leverage}x",
+                )
+            
+            console.print(table)
+    
+    async def _display_order_update(self, data: Dict[str, Any]) -> None:
+        """显示订单更新."""
+        if self.display_format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
+        else:
+            # 表格格式显示
+            from rich.console import Console
+            from rich.table import Table
+            
+            console = Console()
+            table = Table(title="XT订单更新")
+            
+            table.add_column("订单ID", style="cyan")
+            table.add_column("交易对", style="green")
+            table.add_column("方向", style="yellow")
+            table.add_column("类型", style="blue")
+            table.add_column("数量", style="magenta")
+            table.add_column("价格", style="red")
+            table.add_column("状态", style="dim")
+            
+            # 解析订单数据
+            orders = data.get("orders", [])
+            for order in orders:
+                order_id = order.get("order_id", "")
+                symbol = order.get("symbol", "")
+                side = order.get("side", "")
+                order_type = order.get("order_type", "")
+                quantity = order.get("quantity", "0")
+                price = order.get("price", "0")
+                status = order.get("status", "")
+                
+                table.add_row(
+                    order_id,
+                    symbol,
+                    side,
+                    order_type,
+                    f"{quantity}",
+                    f"{price}",
+                    status,
+                )
+            
+            console.print(table)
+    
+    async def _display_trade_update(self, data: Dict[str, Any]) -> None:
+        """显示成交更新."""
+        if self.display_format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False, cls=DecimalEncoder))
+        else:
+            # 表格格式显示
+            from rich.console import Console
+            from rich.table import Table
+            
+            console = Console()
+            table = Table(title="XT成交更新")
+            
+            table.add_column("成交ID", style="cyan")
+            table.add_column("订单ID", style="green")
+            table.add_column("交易对", style="yellow")
+            table.add_column("方向", style="blue")
+            table.add_column("价格", style="magenta")
+            table.add_column("数量", style="red")
+            table.add_column("金额", style="dim")
+            
+            # 解析成交数据
+            trades = data.get("trades", [])
+            for trade in trades:
+                trade_id = trade.get("trade_id", "")
+                order_id = trade.get("order_id", "")
+                symbol = trade.get("symbol", "")
+                side = trade.get("side", "")
+                price = trade.get("price", "0")
+                quantity = trade.get("quantity", "0")
+                quote_quantity = trade.get("quote_quantity", "0")
+                
+                table.add_row(
+                    trade_id,
+                    order_id,
+                    symbol,
+                    side,
+                    f"{price}",
+                    f"{quantity}",
+                    f"{quote_quantity}",
+                )
+            
+            console.print(table)
+    
+    async def _save_account_update(self, data: Dict[str, Any]) -> None:
+        """保存账户更新到数据库."""
+        try:
+            async with self.db_manager.session() as session:
+                balances = data.get("balances", [])
+                update_time = datetime.utcnow()
+                
+                for balance in balances:
+                    currency = balance.get("currency", "")
+                    if not currency:
+                        continue
+                    
+                    available = self._safe_decimal(balance.get("available", "0"))
+                    frozen = self._safe_decimal(balance.get("frozen", "0"))
+                    total = available + frozen
+                    
+                    record = XTAccountUpdate(
+                        update_time=update_time,
+                        currency=currency,
+                        available=available,
+                        frozen=frozen,
+                        total=total,
+                        raw_data=json.dumps(balance, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                
+                await session.commit()
+                logger.debug("Saved account update to database")
+                
+        except Exception as e:
+            logger.error(f"Failed to save account update: {e}")
+    
+    async def _save_position_update(self, data: Dict[str, Any]) -> None:
+        """保存持仓更新到数据库."""
+        try:
+            async with self.db_manager.session() as session:
+                positions = data.get("positions", [])
+                update_time = datetime.utcnow()
+                
+                for position in positions:
+                    symbol = position.get("symbol", "")
+                    if not symbol:
+                        continue
+                    
+                    side = position.get("side", "")
+                    quantity = self._safe_decimal(position.get("quantity", "0"))
+                    
+                    # 跳过持仓量为0的记录
+                    if quantity == 0:
+                        continue
+                    
+                    record = XTPositionUpdate(
+                        update_time=update_time,
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=self._safe_decimal(position.get("entry_price", "0")),
+                        mark_price=self._safe_decimal(position.get("mark_price", "0")),
+                        liquidation_price=self._safe_decimal(position.get("liquidation_price", "0")),
+                        unrealized_pnl=self._safe_decimal(position.get("unrealized_pnl", "0")),
+                        leverage=self._safe_int(position.get("leverage", "1")),
+                        margin=self._safe_decimal(position.get("margin", "0")),
+                        roe=self._safe_decimal(position.get("roe", "0")),
+                        raw_data=json.dumps(position, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                
+                await session.commit()
+                logger.debug("Saved position update to database")
+                
+        except Exception as e:
+            logger.error(f"Failed to save position update: {e}")
+    
+    async def _save_order_update(self, data: Dict[str, Any]) -> None:
+        """保存订单更新到数据库."""
+        try:
+            async with self.db_manager.session() as session:
+                orders = data.get("orders", [])
+                update_time = datetime.utcnow()
+                
+                for order in orders:
+                    order_id = order.get("order_id", "")
+                    if not order_id:
+                        continue
+                    
+                    symbol = order.get("symbol", "")
+                    side = order.get("side", "")
+                    order_type = order.get("order_type", "")
+                    quantity = self._safe_decimal(order.get("quantity", "0"))
+                    price = self._safe_decimal(order.get("price", "0"))
+                    filled_quantity = self._safe_decimal(order.get("filled_quantity", "0"))
+                    status = order.get("status", "")
+                    
+                    record = XTOrderUpdate(
+                        update_time=update_time,
+                        symbol=symbol,
+                        order_id=order_id,
+                        client_order_id=order.get("client_order_id", ""),
+                        side=side,
+                        order_type=order_type,
+                        position_side=order.get("position_side", ""),
+                        quantity=quantity,
+                        price=price,
+                        filled_quantity=filled_quantity,
+                        status=status,
+                        time_in_force=order.get("time_in_force", ""),
+                        create_time=self._parse_timestamp(order.get("create_time")),
+                        update_time_order=self._parse_timestamp(order.get("update_time")),
+                        raw_data=json.dumps(order, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                
+                await session.commit()
+                logger.debug("Saved order update to database")
+                
+        except Exception as e:
+            logger.error(f"Failed to save order update: {e}")
+    
+    async def _save_trade_update(self, data: Dict[str, Any]) -> None:
+        """保存成交更新到数据库."""
+        try:
+            async with self.db_manager.session() as session:
+                trades = data.get("trades", [])
+                update_time = datetime.utcnow()
+                
+                for trade in trades:
+                    trade_id = trade.get("trade_id", "")
+                    if not trade_id:
+                        continue
+                    
+                    order_id = trade.get("order_id", "")
+                    symbol = trade.get("symbol", "")
+                    side = trade.get("side", "")
+                    price = self._safe_decimal(trade.get("price", "0"))
+                    quantity = self._safe_decimal(trade.get("quantity", "0"))
+                    quote_quantity = price * quantity
+                    
+                    record = XTTradeUpdate(
+                        update_time=update_time,
+                        symbol=symbol,
+                        order_id=order_id,
+                        trade_id=trade_id,
+                        side=side,
+                        price=price,
+                        quantity=quantity,
+                        quote_quantity=quote_quantity,
+                        commission=self._safe_decimal(trade.get("commission", "0")),
+                        commission_asset=trade.get("commission_asset", ""),
+                        is_maker=trade.get("is_maker", False),
+                        position_side=trade.get("position_side", ""),
+                        raw_data=json.dumps(trade, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                
+                await session.commit()
+                logger.debug("Saved trade update to database")
+                
+        except Exception as e:
+            logger.error(f"Failed to save trade update: {e}")
+    
+    async def _sync_missing_data(self) -> None:
+        """补充断线期间缺失的数据.
+
+        仅在重连后调用，固定回补1小时内的订单和成交数据。
+        账户和持仓数据直接获取最新状态。
+        """
+        if not self.enable_data_sync or not self.pyxt_client:
+            logger.debug("Data sync is disabled or pyxt client not available")
+            return
+
+        try:
+            # 固定回补时间为1小时
+            lookback_hours = 1
+            end_time = datetime.utcnow()
+            start_time = end_time - timedelta(hours=lookback_hours)
+
+            logger.debug(
+                "Syncing missing data for fixed 1-hour lookback period",
+                extra={
+                    "lookback_hours": lookback_hours,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat()
+                }
+            )
+
+            # 同步账户余额（总是同步最新状态）
+            if "account" in self.enabled_channels:
+                await self._sync_account_data()
+
+            # 同步持仓数据（总是同步最新状态）
+            if "position" in self.enabled_channels:
+                await self._sync_position_data()
+
+            # 同步订单数据（固定1小时回补）
+            if "order" in self.enabled_channels:
+                await self._sync_order_data_fixed_lookback(start_time, end_time)
+
+            # 同步成交数据（固定1小时回补）
+            if "trade" in self.enabled_channels:
+                await self._sync_trade_data_fixed_lookback(start_time, end_time)
+
+            # 清除断线时间记录
+            if self.disconnect_time:
+                logger.debug("Clearing disconnect time after sync")
+                self.disconnect_time = None
+
+            # 更新同步统计（记录重连补充数据的次数）
+            await self._update_sync_stats()
+
+            logger.info("Missing data sync completed successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to sync missing data: {e}")
+    
+    async def _sync_account_data(self) -> None:
+        """使用 pyxt 同步账户数据."""
+        try:
+            # 调用 pyxt 的 get_account_capital 方法
+            result = self.pyxt_client.get_account_capital()
+
+            if not result:
+                logger.warning("No account capital data from pyxt client")
+                return
+
+            # 解析响应数据
+            # XT API 通常返回 {"returnCode": 0, "result": {...}}
+            if isinstance(result, dict):
+                # 如果有 result 字段，提取它
+                if "result" in result:
+                    result = result["result"]
+
+                # 解析余额数据
+                balances_data = {}
+
+                # 可能的字段结构
+                if "assets" in result:
+                    # assets 字段包含余额列表
+                    for asset in result["assets"]:
+                        currency = asset.get("currency") or asset.get("asset")
+                        if currency:
+                            balances_data[currency] = {
+                                "available": asset.get("available", 0) or asset.get("availableBalance", 0),
+                                "frozen": asset.get("frozen", 0) or asset.get("frozenBalance", 0),
+                            }
+                elif "balances" in result:
+                    # balances 字段
+                    for balance in result["balances"]:
+                        currency = balance.get("currency") or balance.get("asset")
+                        if currency:
+                            balances_data[currency] = {
+                                "available": balance.get("available", 0),
+                                "frozen": balance.get("frozen", 0),
+                            }
+                else:
+                    # 直接是余额字典
+                    for currency, balance_data in result.items():
+                        if isinstance(balance_data, dict):
+                            balances_data[currency] = balance_data
+
+                if not balances_data:
+                    logger.warning(f"Failed to parse balance data from response: {result}")
+                    return
+
+                # 保存到数据库
+                async with self.db_manager.session() as session:
+                    update_time = datetime.utcnow()
+
+                    for currency, balance_data in balances_data.items():
+                        available = self._safe_decimal(balance_data.get("available", 0))
+                        frozen = self._safe_decimal(balance_data.get("frozen", 0))
+                        total = available + frozen
+
+                        record = XTAccountUpdate(
+                            update_time=update_time,
+                            currency=currency,
+                            available=available,
+                            frozen=frozen,
+                            total=total,
+                            raw_data=json.dumps({
+                                "source": "pyxt_sync",
+                                "currency": currency,
+                                "balance_data": {
+                                    "available": str(available),
+                                    "frozen": str(frozen),
+                                    "total": str(total),
+                                },
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+
+                    await session.commit()
+                    logger.debug("Synced account data from pyxt")
+
+        except Exception as e:
+            logger.error(f"Failed to sync account data: {e}")
+    
+    async def _sync_position_data(self) -> None:
+        """使用 pyxt 同步持仓数据."""
+        try:
+            # 调用 pyxt 的 get_position 方法，传 None 获取所有持仓
+            result = self.pyxt_client.get_position(symbol=None)
+
+            if not result:
+                logger.debug("No position data from pyxt client")
+                return
+
+            # 解析响应数据
+            if isinstance(result, dict):
+                # 如果有 result 字段，提取它
+                if "result" in result:
+                    result = result["result"]
+
+            # 确保是列表格式
+            positions_data = result
+            if isinstance(result, dict):
+                # 如果是字典，可能包含 positions 字段
+                if "positions" in result:
+                    positions_data = result["positions"]
+                else:
+                    # 单个持仓
+                    positions_data = [result]
+            elif not isinstance(result, list):
+                positions_data = [result]
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                update_time = datetime.utcnow()
+
+                for position in positions_data:
+                    if not isinstance(position, dict):
+                        continue
+
+                    symbol = position.get("symbol", "")
+                    if not symbol:
+                        continue
+
+                    # 解析持仓方向和数量
+                    quantity = self._safe_decimal(position.get("positionSize", 0) or position.get("quantity", 0))
+
+                    # 跳过持仓量为0的记录
+                    if quantity == 0:
+                        continue
+
+                    # 根据持仓方向判断
+                    side = position.get("positionSide", "") or position.get("side", "")
+                    if not side:
+                        # 如果没有明确的方向，根据数量判断
+                        side = "LONG" if quantity > 0 else "SHORT"
+                        quantity = abs(quantity)
+
+                    entry_price = self._safe_decimal(position.get("avgPrice", 0) or position.get("entry_price", 0) or position.get("entryPrice", 0))
+                    mark_price = self._safe_decimal(position.get("markPrice", 0) or position.get("mark_price", 0))
+                    liquidation_price = self._safe_decimal(position.get("liquidatePrice", 0) or position.get("liquidation_price", 0) or position.get("liquidationPrice", 0))
+                    unrealized_pnl = self._safe_decimal(position.get("unrealizedProfit", 0) or position.get("unrealized_pnl", 0) or position.get("unrealizedPnl", 0))
+                    leverage = self._safe_int(position.get("leverage", 1))
+                    margin = self._safe_decimal(position.get("margin", 0) or position.get("positionMargin", 0))
+                    roe = self._safe_decimal(position.get("roe", 0))
+
+                    record = XTPositionUpdate(
+                        update_time=update_time,
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        mark_price=mark_price,
+                        liquidation_price=liquidation_price,
+                        unrealized_pnl=unrealized_pnl,
+                        leverage=leverage,
+                        margin=margin,
+                        roe=roe,
+                        raw_data=json.dumps({
+                            "source": "pyxt_sync",
+                            "position": position,
+                        }, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+
+                await session.commit()
+                logger.debug("Synced position data from pyxt")
+
+        except Exception as e:
+            logger.error(f"Failed to sync position data: {e}")
+    
+    async def _sync_order_data(self, use_disconnect_period: bool = False) -> None:
+        """使用 pyxt 同步订单数据.
+
+        Args:
+            use_disconnect_period: 是否使用断线时间区间查询
+        """
+        try:
+            # 构建查询参数
+            kwargs = {'symbol': None, 'limit': 500}
+
+            if use_disconnect_period and self.disconnect_time and self.reconnect_time:
+                kwargs['start_time'] = int(self.disconnect_time.timestamp() * 1000)
+                kwargs['end_time'] = int(self.reconnect_time.timestamp() * 1000)
+                logger.info(
+                    "Syncing orders for disconnection period",
+                    extra={
+                        "start_time": self.disconnect_time.isoformat(),
+                        "end_time": self.reconnect_time.isoformat()
+                    }
+                )
+            else:
+                logger.info("Syncing recent orders")
+
+            # 调用 pyxt 的 get_history_order 方法
+            result = self.pyxt_client.get_history_order(**kwargs)
+
+            if not result:
+                logger.debug("No order data from pyxt client")
+                return
+
+            # 解析响应数据
+            if isinstance(result, dict):
+                if "result" in result:
+                    result = result["result"]
+
+            # 确保是列表格式
+            orders_data = result
+            if isinstance(result, dict):
+                if "items" in result:
+                    orders_data = result["items"]
+                elif "orders" in result:
+                    orders_data = result["orders"]
+                else:
+                    orders_data = [result]
+            elif not isinstance(result, list):
+                orders_data = [result]
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for order in orders_data:
+                    if not isinstance(order, dict):
+                        continue
+
+                    try:
+                        symbol = order.get("symbol", "")
+                        order_id = (order.get("orderId") or
+                                  order.get("order_id") or
+                                  order.get("id") or
+                                  order.get("clientOrderId"))
+
+                        if not order_id or not symbol:
+                            continue
+
+                        # 检查订单是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTOrderUpdate).where(
+                                XTOrderUpdate.order_id == str(order_id),
+                                XTOrderUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_order = existing_result.scalar_one_or_none()
+
+                        if existing_order:
+                            logger.debug(f"Order {order_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        side = order.get("side", "")
+                        order_type = order.get("orderType", "") or order.get("type", "")
+                        quantity = self._safe_decimal(order.get("origQty", 0) or order.get("quantity", 0) or order.get("qty", 0))
+                        price = self._safe_decimal(order.get("price", 0))
+                        filled_qty = self._safe_decimal(order.get("executedQty", 0) or order.get("filled_quantity", 0))
+                        status = order.get("state", "") or order.get("status", "")
+                        create_time = self._parse_timestamp(order.get("createTime") or order.get("time") or order.get("timestamp"))
+
+                        record = XTOrderUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=str(order_id),
+                            client_order_id=str(order.get("clientOrderId", "")),
+                            side=side,
+                            order_type=order_type,
+                            position_side=order.get("positionSide", "LONG"),
+                            quantity=quantity,
+                            price=price,
+                            filled_quantity=filled_qty,
+                            status=status,
+                            time_in_force=order.get("timeInForce", "GTC"),
+                            create_time=create_time,
+                            update_time_order=create_time,
+                            raw_data=json.dumps({
+                                "source": "pyxt_sync",
+                                "order_id": str(order_id),
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save order: {e}")
+                        continue
+
+                await session.commit()
+                logger.debug("Synced order data from pyxt", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync order data: {e}")
+    
+    async def _sync_trade_data(self, use_disconnect_period: bool = False) -> None:
+        """使用 pyxt 同步成交数据.
+
+        Args:
+            use_disconnect_period: 是否使用断线时间区间查询
+        """
+        try:
+            # 构建查询参数
+            kwargs = {}
+
+            if use_disconnect_period and self.disconnect_time and self.reconnect_time:
+                kwargs['start_time'] = int(self.disconnect_time.timestamp() * 1000)
+                kwargs['end_time'] = int(self.reconnect_time.timestamp() * 1000)
+                logger.info(
+                    "Syncing trades for disconnection period",
+                    extra={
+                        "start_time": self.disconnect_time.isoformat(),
+                        "end_time": self.reconnect_time.isoformat(),
+                    }
+                )
+            else:
+                logger.info("Syncing recent trades")
+
+            # 尝试多个可能的方法名
+            method_names = ["get_user_trades", "get_trades", "trade_list", "query_trades", "my_trades"]
+
+            trades_data = None
+            for method_name in method_names:
+                if hasattr(self.pyxt_client, method_name):
+                    try:
+                        method = getattr(self.pyxt_client, method_name)
+                        trades_data = method(**kwargs)
+                        if trades_data:
+                            break
+                    except Exception as e:
+                        logger.debug(f"Failed to call {method_name}: {e}")
+                        continue
+
+            if not trades_data:
+                logger.debug("No trade data from pyxt client")
+                return
+
+            # 确保是列表格式
+            if not isinstance(trades_data, list):
+                trades_data = [trades_data]
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for trade in trades_data:
+                    try:
+                        # 处理不同的数据格式
+                        if isinstance(trade, dict):
+                            symbol = trade.get("symbol", "")
+                            trade_id = trade.get("id") or trade.get("tradeId") or trade.get("trade_id")
+                            order_id = trade.get("orderId") or trade.get("order_id")
+                            side = trade.get("side", "")
+                            price = self._safe_decimal(trade.get("price", 0))
+                            quantity = self._safe_decimal(trade.get("qty", 0) or trade.get("quantity", 0))
+                            quote_qty = self._safe_decimal(trade.get("quoteQty", 0) or trade.get("quote_quantity", 0))
+                            commission = self._safe_decimal(trade.get("commission", 0))
+                            commission_asset = trade.get("commissionAsset", "") or trade.get("commission_asset", "")
+                            is_maker = trade.get("isMaker", False) or trade.get("is_maker", False)
+                            position_side = trade.get("positionSide", "") or trade.get("position_side", "")
+                        else:
+                            symbol = getattr(trade, "symbol", "")
+                            trade_id = getattr(trade, "trade_id", "") or getattr(trade, "id", "")
+                            order_id = getattr(trade, "order_id", "")
+                            side = getattr(trade, "side", "")
+                            price = self._safe_decimal(getattr(trade, "price", 0))
+                            quantity = self._safe_decimal(getattr(trade, "quantity", 0))
+                            quote_qty = self._safe_decimal(getattr(trade, "quote_quantity", 0))
+                            commission = self._safe_decimal(getattr(trade, "commission", 0))
+                            commission_asset = getattr(trade, "commission_asset", "")
+                            is_maker = getattr(trade, "is_maker", False)
+                            position_side = getattr(trade, "position_side", "")
+
+                        if not trade_id:
+                            continue
+
+                        # 检查成交是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTTradeUpdate).where(
+                                XTTradeUpdate.trade_id == str(trade_id),
+                                XTTradeUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_trade = existing_result.scalar_one_or_none()
+
+                        if existing_trade:
+                            logger.debug(f"Trade {trade_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        record = XTTradeUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=str(order_id),
+                            trade_id=str(trade_id),
+                            side=side,
+                            price=price,
+                            quantity=quantity,
+                            quote_quantity=quote_qty,
+                            commission=commission,
+                            commission_asset=commission_asset,
+                            is_maker=is_maker,
+                            position_side=position_side,
+                            raw_data=json.dumps({
+                                "source": "pyxt_sync",
+                                "trade": str(trade),
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save trade: {e}")
+                        continue
+
+                await session.commit()
+                logger.debug("Synced trade data from pyxt", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync trade data: {e}")
+    
+    async def _sync_order_data_fixed_lookback(self, start_time: datetime, end_time: datetime) -> None:
+        """使用 pyxt 同步订单数据（固定回补时间）.
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+        """
+        try:
+            # 转换为毫秒时间戳
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(end_time.timestamp() * 1000)
+
+            logger.info(
+                "Syncing orders for fixed lookback period",
+                extra={
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "start_timestamp": start_timestamp,
+                    "end_timestamp": end_timestamp
+                }
+            )
+
+            # 尝试多个可能的方法名
+            method_names = ["get_order_list", "get_orders", "order_list", "query_orders"]
+
+            orders_data = None
+            for method_name in method_names:
+                if hasattr(self.pyxt_client, method_name):
+                    try:
+                        method = getattr(self.pyxt_client, method_name)
+                        orders_data = method(
+                            start_time=start_timestamp,
+                            end_time=end_timestamp,
+                            limit=1000
+                        )
+                        if orders_data:
+                            break
+                    except Exception as e:
+                        logger.debug(f"Failed to call {method_name}: {e}")
+                        continue
+
+            if not orders_data:
+                logger.debug("No order data from pyxt client")
+                return
+
+            # 确保是列表格式
+            if not isinstance(orders_data, list):
+                orders_data = [orders_data]
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for order in orders_data:
+                    try:
+                        # 处理不同的数据格式
+                        if isinstance(order, dict):
+                            symbol = order.get("symbol", "")
+                            order_id = order.get("orderId") or order.get("order_id") or order.get("id")
+                            side = order.get("side", "")
+                            order_type = order.get("type") or order.get("order_type", "")
+                            quantity = self._safe_decimal(order.get("quantity", 0) or order.get("qty", 0))
+                            price = self._safe_decimal(order.get("price", 0))
+                            filled_qty = self._safe_decimal(order.get("executedQty", 0) or order.get("filled_quantity", 0))
+                            status = order.get("status", "")
+                            create_time = self._parse_timestamp(order.get("time") or order.get("createTime"))
+                        else:
+                            symbol = getattr(order, "symbol", "")
+                            order_id = getattr(order, "exchange_order_id", "") or getattr(order, "order_id", "")
+                            side = getattr(order, "side", "")
+                            if hasattr(side, "value"):
+                                side = side.value
+                            order_type = getattr(order, "order_type", "")
+                            if hasattr(order_type, "value"):
+                                order_type = order_type.value
+                            quantity = self._safe_decimal(getattr(order, "quantity", 0))
+                            price = self._safe_decimal(getattr(order, "price", 0))
+                            filled_qty = self._safe_decimal(getattr(order, "filled_quantity", 0))
+                            status = getattr(order, "status", "")
+                            if hasattr(status, "value"):
+                                status = status.value
+                            create_time = getattr(order, "timestamp", None)
+
+                        if not order_id or not symbol:
+                            continue
+
+                        # 检查订单是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTOrderUpdate).where(
+                                XTOrderUpdate.order_id == str(order_id),
+                                XTOrderUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_order = existing_result.scalar_one_or_none()
+
+                        if existing_order:
+                            logger.debug(f"Order {order_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        record = XTOrderUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=str(order_id),
+                            client_order_id="",
+                            side=side,
+                            order_type=order_type,
+                            position_side="LONG",
+                            quantity=quantity,
+                            price=price,
+                            filled_quantity=filled_qty,
+                            status=status,
+                            time_in_force="GTC",
+                            create_time=create_time,
+                            update_time_order=create_time,
+                            raw_data=json.dumps({
+                                "source": "pyxt_sync_fixed_lookback",
+                                "order_id": str(order_id),
+                                "lookback_hours": 1,
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save order: {e}")
+                        continue
+
+                await session.commit()
+                logger.info("Synced order data from pyxt (fixed lookback)", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync order data (fixed lookback): {e}")
+    
+    async def _sync_trade_data_fixed_lookback(self, start_time: datetime, end_time: datetime) -> None:
+        """使用 pyxt 同步成交数据（固定回补时间）.
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+        """
+        try:
+            # 转换为毫秒时间戳
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(end_time.timestamp() * 1000)
+
+            logger.info(
+                "Syncing trades for fixed lookback period",
+                extra={
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "start_timestamp": start_timestamp,
+                    "end_timestamp": end_timestamp
+                }
+            )
+
+            # 尝试多个可能的方法名
+            method_names = ["get_user_trades", "get_trades", "trade_list", "query_trades", "my_trades"]
+
+            trades_data = None
+            for method_name in method_names:
+                if hasattr(self.pyxt_client, method_name):
+                    try:
+                        method = getattr(self.pyxt_client, method_name)
+                        trades_data = method(
+                            start_time=start_timestamp,
+                            end_time=end_timestamp,
+                            limit=1000
+                        )
+                        if trades_data:
+                            break
+                    except Exception as e:
+                        logger.debug(f"Failed to call {method_name}: {e}")
+                        continue
+
+            if not trades_data:
+                logger.debug("No trade data from pyxt client")
+                return
+
+            # 确保是列表格式
+            if not isinstance(trades_data, list):
+                trades_data = [trades_data]
+
+            # 保存到数据库
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                update_time = datetime.utcnow()
+                saved_count = 0
+                skipped_count = 0
+
+                for trade in trades_data:
+                    try:
+                        # 处理不同的数据格式
+                        if isinstance(trade, dict):
+                            symbol = trade.get("symbol", "")
+                            trade_id = trade.get("id") or trade.get("tradeId") or trade.get("trade_id")
+                            order_id = trade.get("orderId") or trade.get("order_id")
+                            side = trade.get("side", "")
+                            price = self._safe_decimal(trade.get("price", 0))
+                            quantity = self._safe_decimal(trade.get("qty", 0) or trade.get("quantity", 0))
+                            quote_qty = self._safe_decimal(trade.get("quoteQty", 0) or trade.get("quote_quantity", 0))
+                            commission = self._safe_decimal(trade.get("commission", 0))
+                            commission_asset = trade.get("commissionAsset", "") or trade.get("commission_asset", "")
+                            is_maker = trade.get("isMaker", False) or trade.get("is_maker", False)
+                            position_side = trade.get("positionSide", "") or trade.get("position_side", "")
+                        else:
+                            symbol = getattr(trade, "symbol", "")
+                            trade_id = getattr(trade, "trade_id", "") or getattr(trade, "id", "")
+                            order_id = getattr(trade, "order_id", "")
+                            side = getattr(trade, "side", "")
+                            price = self._safe_decimal(getattr(trade, "price", 0))
+                            quantity = self._safe_decimal(getattr(trade, "quantity", 0))
+                            quote_qty = self._safe_decimal(getattr(trade, "quote_quantity", 0))
+                            commission = self._safe_decimal(getattr(trade, "commission", 0))
+                            commission_asset = getattr(trade, "commission_asset", "")
+                            is_maker = getattr(trade, "is_maker", False)
+                            position_side = getattr(trade, "position_side", "")
+
+                        if not trade_id:
+                            continue
+
+                        # 检查成交是否已存在（去重）
+                        existing_result = await session.execute(
+                            select(XTTradeUpdate).where(
+                                XTTradeUpdate.trade_id == str(trade_id),
+                                XTTradeUpdate.symbol == symbol
+                            ).limit(1)
+                        )
+                        existing_trade = existing_result.scalar_one_or_none()
+
+                        if existing_trade:
+                            logger.debug(f"Trade {trade_id} already exists, skipping")
+                            skipped_count += 1
+                            continue
+
+                        record = XTTradeUpdate(
+                            update_time=update_time,
+                            symbol=symbol,
+                            order_id=str(order_id),
+                            trade_id=str(trade_id),
+                            side=side,
+                            price=price,
+                            quantity=quantity,
+                            quote_quantity=quote_qty,
+                            commission=commission,
+                            commission_asset=commission_asset,
+                            is_maker=is_maker,
+                            position_side=position_side,
+                            raw_data=json.dumps({
+                                "source": "pyxt_sync_fixed_lookback",
+                                "trade": str(trade),
+                                "lookback_hours": 1,
+                            }, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to save trade: {e}")
+                        continue
+
+                await session.commit()
+                logger.info("Synced trade data from pyxt (fixed lookback)", extra={"saved": saved_count, "skipped": skipped_count})
+
+        except Exception as e:
+            logger.error(f"Failed to sync trade data (fixed lookback): {e}")
+    
+    async def _display_test_data(self) -> None:
+        """显示测试数据以验证表格功能."""
+        logger.debug("Displaying test data to verify table functionality")
+        
+        # 测试账户数据
+        test_account_data = {
+            "balances": [
+                {
+                    "currency": "USDT",
+                    "available": "9.99",
+                    "frozen": "0.00",
+                    "total": "9.99"
+                },
+                {
+                    "currency": "BTC",
+                    "available": "0.0001",
+                    "frozen": "0.0000",
+                    "total": "0.0001"
+                }
+            ]
+        }
+        await self._display_account_update(test_account_data)
+        
+        # 测试持仓数据
+        test_position_data = {
+            "positions": [
+                {
+                    "symbol": "BTC_USDT",
+                    "side": "LONG",
+                    "quantity": "0.001",
+                    "entry_price": "45000.00",
+                    "mark_price": "45100.00",
+                    "unrealized_pnl": "0.10"
+                }
+            ]
+        }
+        await self._display_position_update(test_position_data)
+        
+        # 测试订单数据
+        test_order_data = {
+            "orders": [
+                {
+                    "order_id": "123456789",
+                    "symbol": "BTC_USDT",
+                    "side": "BUY",
+                    "quantity": "0.001",
+                    "price": "45000.00",
+                    "status": "NEW"
+                }
+            ]
+        }
+        await self._display_order_update(test_order_data)
+        
+        # 测试成交数据
+        test_trade_data = {
+            "trades": [
+                {
+                    "trade_id": "987654321",
+                    "order_id": "123456789",
+                    "symbol": "BTC_USDT",
+                    "side": "BUY",
+                    "price": "45000.00",
+                    "quantity": "0.001",
+                    "quote_quantity": "45.00"
+                }
+            ]
+        }
+        await self._display_trade_update(test_trade_data)
+
+    # 数据变化检查方法
+
+    def _has_account_changed(self, account_data: Dict[str, Any]) -> bool:
+        """检查账户数据是否有变化."""
+        # 将数据转换为可比较的格式，处理Decimal类型
+        try:
+            data_key = json.dumps(account_data, sort_keys=True, cls=DecimalEncoder)
+        except (TypeError, ValueError):
+            # 如果JSON序列化失败，使用字符串表示
+            data_key = str(sorted(account_data.items()))
+
+        # 比较是否有变化
+        if data_key == self._last_account_data.get("key"):
+            logger.debug("Account data unchanged, skipping")
+            return False
+
+        # 更新缓存
+        self._last_account_data["key"] = data_key
+        return True
+
+    def _has_position_changed(self, position_data: Dict[str, Any]) -> bool:
+        """检查持仓数据是否有变化."""
+        # 将数据转换为可比较的格式，处理Decimal类型
+        try:
+            data_key = json.dumps(position_data, sort_keys=True, cls=DecimalEncoder)
+        except (TypeError, ValueError):
+            # 如果JSON序列化失败，使用字符串表示
+            data_key = str(sorted(position_data.items()))
+
+        # 比较是否有变化
+        if data_key == self._last_position_data.get("key"):
+            logger.debug("Position data unchanged, skipping")
+            return False
+
+        # 更新缓存
+        self._last_position_data["key"] = data_key
+        return True
+
+    def _has_order_changed(self, order_data: Dict[str, Any]) -> bool:
+        """检查订单数据是否有变化."""
+        # 订单数据通常每次都是新的或更新的，所以总是返回True
+        # 除非订单ID和状态都相同
+        order_id = order_data.get("order_id") or order_data.get("orders", [{}])[0].get("order_id") if order_data.get("orders") else None
+        status = order_data.get("status") or order_data.get("orders", [{}])[0].get("status") if order_data.get("orders") else None
+
+        if not order_id:
+            return True  # 无法识别订单，视为新数据
+
+        cache_key = f"{order_id}:{status}"
+
+        # 检查是否已处理过相同状态的订单
+        if cache_key == self._last_order_data.get("key"):
+            logger.debug("Order data unchanged")
+            return False
+
+        # 更新缓存
+        self._last_order_data["key"] = cache_key
+        return True
+
+    def _has_trade_changed(self, trade_data: Dict[str, Any]) -> bool:
+        """检查成交数据是否有变化."""
+        # 成交数据每次都是新的，总是返回True
+        # 除非trade_id完全相同
+        trade_id = trade_data.get("trade_id") or trade_data.get("trades", [{}])[0].get("trade_id") if trade_data.get("trades") else None
+
+        if not trade_id:
+            return True  # 无法识别成交，视为新数据
+
+        cache_key = str(trade_id)
+
+        # 检查是否已处理过相同的成交
+        if cache_key == self._last_trade_data.get("key"):
+            logger.debug("Trade data unchanged")
+            return False
+
+        # 更新缓存
+        self._last_trade_data["key"] = cache_key
+        return True
+
+    # 辅助方法
+
+    def _generate_signature(self, message: str) -> str:
+        """生成HMAC-SHA256签名."""
+        import hmac
+        import hashlib
+        
+        return hmac.new(
+            self.api_secret.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+    
+    def _safe_decimal(self, value: Any) -> Decimal:
+        """安全转换为Decimal."""
+        if value is None or value == "":
+            return Decimal("0")
+        try:
+            return Decimal(str(value))
+        except (ValueError, TypeError):
+            return Decimal("0")
+    
+    def _safe_int(self, value: Any) -> int:
+        """安全转换为int."""
+        if value is None or value == "":
+            return 0
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+    
+    def _parse_timestamp(self, timestamp: Any) -> Optional[datetime]:
+        """解析时间戳."""
+        if not timestamp:
+            return None
+        try:
+            if isinstance(timestamp, (int, float)):
+                return datetime.fromtimestamp(timestamp / 1000)
+            elif isinstance(timestamp, str):
+                return datetime.fromtimestamp(int(timestamp) / 1000)
+            else:
+                return None
+        except (ValueError, TypeError):
+            return None
+    
+    # 数据库记录方法
+    
+    async def _record_connection_start(self) -> None:
+        """记录连接开始."""
+        try:
+            async with self.db_manager.session() as session:
+                record = XTWebSocketConnection(
+                    connection_id=self.connection_id,
+                    start_time=datetime.utcnow(),
+                    is_active=True,
+                    raw_data=json.dumps({
+                        "enabled_channels": list(self.enabled_channels),
+                        "auto_reconnect": self.auto_reconnect,
+                    }, cls=DecimalEncoder),
+                )
+                session.add(record)
+                await session.commit()
+                
+        except Exception as e:
+            logger.error(f"Failed to record connection start: {e}")
+    
+    async def _record_connection_end(self) -> None:
+        """记录连接结束."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.end_time = datetime.utcnow()
+                    record.is_active = False
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to record connection end: {e}")
+    
+    async def _update_message_stats(self) -> None:
+        """更新消息统计."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.total_messages += 1
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to update message stats: {e}")
+    
+    async def _update_account_stats(self) -> None:
+        """更新账户统计."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.account_updates += 1
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to update account stats: {e}")
+    
+    async def _update_position_stats(self) -> None:
+        """更新持仓统计."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.position_updates += 1
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to update position stats: {e}")
+    
+    async def _update_order_stats(self) -> None:
+        """更新订单统计."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.order_updates += 1
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to update order stats: {e}")
+    
+    async def _update_trade_stats(self) -> None:
+        """更新成交统计."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+                
+                if record:
+                    record.trade_updates += 1
+                    await session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed to update trade stats: {e}")
+    
+    async def _update_sync_stats(self) -> None:
+        """更新数据补充统计（仅在重连补充数据时调用）."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(XTWebSocketConnection).where(
+                        XTWebSocketConnection.connection_id == self.connection_id
+                    )
+                )
+                record = result.scalar_one_or_none()
+
+                if record:
+                    record.data_sync_count += 1
+                    record.last_sync_time = datetime.utcnow()
+                    await session.commit()
+
+        except Exception as e:
+            logger.error(f"Failed to update sync stats: {e}")

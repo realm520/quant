@@ -62,6 +62,9 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self.ensure_account_tables()
+            
             # 选择使用账号特定的表模型或默认表模型
             if self._account_models:
                 BalanceModel = self._account_models['XTSpotBalance']
@@ -109,6 +112,9 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self.ensure_account_tables()
+            
             # 选择使用账号特定的表模型或默认表模型
             if self._account_models:
                 BalanceModel = self._account_models['XTPerpBalance']
@@ -161,6 +167,9 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self.ensure_account_tables()
+            
             # 选择使用账号特定的表模型或默认表模型
             if self._account_models:
                 PositionModel = self._account_models['XTPerpPosition']
@@ -233,6 +242,9 @@ class XTRestDataService:
     ):
         """保存XT永续仓位定时更新记录."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self.ensure_account_tables()
+            
             # 选择使用账号特定的表模型或默认表模型
             if self._account_models:
                 PositionUpdateModel = self._account_models['XTRestPositionUpdate']

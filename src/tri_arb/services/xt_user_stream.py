@@ -176,6 +176,45 @@ class XTUserStreamService:
             'XTTransfer': XTTransfer,
         }
         return model_map.get(model_name)
+    
+    async def _ensure_account_tables_if_needed(self):
+        """如果需要，确保账号特定的表已创建（自动创建新账号的表）."""
+        if not self.account_id or not self.account_models:
+            return
+        
+        try:
+            # 检查表是否已创建（通过尝试查询表是否存在）
+            from sqlalchemy import inspect, text
+            async with self.db_manager.async_engine.begin() as conn:
+                # 获取第一个模型的表名来检查
+                first_model = next(iter(self.account_models.values()))
+                table_name = first_model.__tablename__
+                
+                # 检查表是否存在
+                result = await conn.execute(
+                    text("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = :table_name
+                        )
+                    """),
+                    {"table_name": table_name}
+                )
+                table_exists = result.scalar()
+                
+                if not table_exists:
+                    # 表不存在，创建所有账号特定的表
+                    logger.info(f"检测到新账号 {self.account_id}，正在自动创建数据库表...")
+                    for model_class in self.account_models.values():
+                        await conn.run_sync(
+                            lambda sync_conn, m=model_class: m.metadata.create_all(
+                                sync_conn, checkfirst=True
+                            )
+                        )
+                    logger.info(f"账号 {self.account_id} 的数据库表已自动创建")
+        except Exception as e:
+            logger.warning(f"检查/创建账号 {self.account_id} 的表时出错: {e}，将在保存时重试")
     async def start(self) -> None:
         """启动WebSocket服务."""
         if self.is_running:
@@ -1052,6 +1091,9 @@ class XTUserStreamService:
     async def _save_account_update(self, data: Dict[str, Any]) -> None:
         """保存账户更新到数据库."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
                 
@@ -1111,6 +1153,9 @@ class XTUserStreamService:
     async def _save_position_update(self, data: Dict[str, Any]) -> None:
         """保存持仓更新到数据库."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
                 
@@ -1258,6 +1303,9 @@ class XTUserStreamService:
     async def _save_order_update(self, data: Dict[str, Any]) -> None:
         """保存订单更新到数据库."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
             async with self.db_manager.session() as session:
                 update_time = datetime.utcnow()
                 
@@ -1359,6 +1407,9 @@ class XTUserStreamService:
     async def _save_trade_update(self, data: Dict[str, Any]) -> None:
         """保存成交更新到数据库."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
             async with self.db_manager.session() as session:
                 # 支持两种格式：
                 # 1. trades 列表格式: {"trades": [...]}
@@ -2476,6 +2527,9 @@ class XTUserStreamService:
         if not spot_balances:
             return
         
+        # 确保账号特定的表已创建（如果是新账号）
+        await self._ensure_account_tables_if_needed()
+        
         snapshot_time = datetime.utcnow()
         normalized_balances: Dict[str, Dict[str, str]] = {}
         
@@ -3015,6 +3069,9 @@ class XTUserStreamService:
     ) -> None:
         """保存资金划转记录到数据库."""
         try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
             async with self.db_manager.session() as session:
                 TransferModel = self._get_model('XTTransfer')
                 transfer_record = TransferModel(

@@ -18,6 +18,10 @@ _DEFAULT_PORT = int(os.getenv("PROM_METRICS_PORT", "9500"))
 _SERVER_STARTED = False
 _SERVER_LOCK = threading.Lock()
 
+# 跟踪每个账户的当前仓位标签，用于清除已平仓的仓位
+_position_labels_cache: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+_position_cache_lock = threading.Lock()
+
 _balance_available = Gauge(
     "exchange_balance_available",
     "Available balance of each asset per account and exchange.",
@@ -358,71 +362,95 @@ def update_position_metrics(
     account_id: str,
     positions: Mapping[str, Any] | list[Mapping[str, Any]] | None,
 ) -> None:
-    """Update Prometheus gauges for position snapshots."""
-    if not positions:
-        return
-
-    if isinstance(positions, Mapping):
-        iterable = [positions]
-    else:
-        iterable = positions
-
-    for position in iterable:
-        symbol = (
-            position.get("symbol")
-            or position.get("instId")
-            or position.get("contract")
-            or ""
-        ).upper()
-        if not symbol:
-            continue
-
-        position_side = (
-            position.get("positionSide")
-            or position.get("posSide")
-            or position.get("side")
-            or position.get("position_side")
-            or "BOTH"
-        ).upper()
-
-        labels = (exchange, exchange_type, account_id, symbol, position_side)
-
-        quantity = _to_float(
-            position.get("positionSize")
-            or position.get("positionAmt")
-            or position.get("qty")
-            or position.get("quantity")
-            or 0
-        )
-        entry_price = _to_float(
-            position.get("entryPrice")
-            or position.get("avgEntryPrice")
-            or position.get("entry_price")
-            or 0
-        )
-        mark_price = _to_float(
-            position.get("calMarkPrice")
-            or position.get("markPrice")
-            or position.get("mark_price")
-            or 0
-        )
-        unrealized = _to_float(
-            position.get("floatingPL")
-            or position.get("unRealizedProfit")
-            or position.get("unrealizedPnl")
-            or position.get("unrealized_pnl")
-            or 0
-        )
-        leverage = _to_float(position.get("leverage") or 0)
-
-        _position_quantity.labels(*labels).set(quantity)
-        _position_entry_price.labels(*labels).set(entry_price)
-        _position_mark_price.labels(*labels).set(mark_price)
-        _position_unrealized_pnl.labels(*labels).set(unrealized)
-        if leverage:
-            _position_leverage.labels(*labels).set(leverage)
+    """Update Prometheus gauges for position snapshots.
+    
+    This function will:
+    1. Clear metrics for positions that no longer exist (closed positions)
+    2. Update metrics for current positions
+    """
+    account_key = (exchange, exchange_type, account_id)
+    current_labels: set[tuple[str, str]] = set()
+    
+    if positions:
+        if isinstance(positions, Mapping):
+            iterable = [positions]
         else:
+            iterable = positions
+
+        for position in iterable:
+            symbol = (
+                position.get("symbol")
+                or position.get("instId")
+                or position.get("contract")
+                or ""
+            ).upper()
+            if not symbol:
+                continue
+
+            position_side = (
+                position.get("positionSide")
+                or position.get("posSide")
+                or position.get("side")
+                or position.get("position_side")
+                or "BOTH"
+            ).upper()
+
+            labels = (exchange, exchange_type, account_id, symbol, position_side)
+            current_labels.add((symbol, position_side))
+
+            quantity = _to_float(
+                position.get("positionSize")
+                or position.get("positionAmt")
+                or position.get("qty")
+                or position.get("quantity")
+                or 0
+            )
+            entry_price = _to_float(
+                position.get("entryPrice")
+                or position.get("avgEntryPrice")
+                or position.get("entry_price")
+                or 0
+            )
+            mark_price = _to_float(
+                position.get("calMarkPrice")
+                or position.get("markPrice")
+                or position.get("mark_price")
+                or 0
+            )
+            unrealized = _to_float(
+                position.get("floatingPL")
+                or position.get("unRealizedProfit")
+                or position.get("unrealizedPnl")
+                or position.get("unrealized_pnl")
+                or 0
+            )
+            leverage = _to_float(position.get("leverage") or 0)
+
+            _position_quantity.labels(*labels).set(quantity)
+            _position_entry_price.labels(*labels).set(entry_price)
+            _position_mark_price.labels(*labels).set(mark_price)
+            _position_unrealized_pnl.labels(*labels).set(unrealized)
+            if leverage:
+                _position_leverage.labels(*labels).set(leverage)
+            else:
+                _position_leverage.labels(*labels).set(0)
+    
+    # 清除已平仓的仓位指标
+    with _position_cache_lock:
+        previous_labels = _position_labels_cache.get(account_key, set())
+        closed_labels = previous_labels - current_labels
+        
+        for symbol, position_side in closed_labels:
+            labels = (exchange, exchange_type, account_id, symbol, position_side)
+            # 将已平仓的仓位指标设置为 0
+            _position_quantity.labels(*labels).set(0)
+            _position_entry_price.labels(*labels).set(0)
+            _position_mark_price.labels(*labels).set(0)
+            _position_unrealized_pnl.labels(*labels).set(0)
             _position_leverage.labels(*labels).set(0)
+        
+        # 更新缓存
+        _position_labels_cache[account_key] = current_labels
 
 
 __all__ = [

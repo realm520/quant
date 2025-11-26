@@ -2114,6 +2114,13 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                # 更新 Prometheus 指标
+                update_balance_metrics(
+                    "binance",
+                    "spot",
+                    metrics_account,
+                    spot_balances,
+                )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 现货账户余额为空[/yellow]")
         except Exception as exc:
@@ -2160,6 +2167,13 @@ async def _run_binance_watch_account_async(
                     balances_data=perp_balances,
                     query_type="scheduled",
                     account_id=account_id,
+                )
+                # 更新 Prometheus 指标
+                update_balance_metrics(
+                    "binance",
+                    "perp",
+                    metrics_account,
+                    perp_balances,
                 )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 合约账户余额为空[/yellow]")
@@ -2216,6 +2230,13 @@ async def _run_binance_watch_account_async(
                     positions_data=formatted_positions,
                     query_type="scheduled",
                     account_id=account_id,
+                )
+                # 更新 Prometheus 指标
+                update_position_metrics(
+                    "binance",
+                    "perp",
+                    metrics_account,
+                    formatted_positions,
                 )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 当前无持仓[/yellow]")
@@ -2590,6 +2611,10 @@ async def _run_xt_watch_account_async(
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的账户监控")
 
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    ensure_metrics_server()
+
     db_manager = DatabaseManager(database_url=database_url)
     spot_exchange = XTSpotExchange(
         name="xt",
@@ -2627,6 +2652,12 @@ async def _run_xt_watch_account_async(
             # 1. 获取并显示现货账户余额
             try:
                 spot_balances = await spot_exchange.get_balance()
+                record_balance_query_status(
+                    exchange_label,
+                    "spot",
+                    metrics_account,
+                    success=True,
+                )
                 if spot_balances:
                     spot_table = Table(
                         title=f"XT 现货账户余额 - {account_label}",
@@ -2657,9 +2688,22 @@ async def _run_xt_watch_account_async(
                         balances_data=spot_balances,
                         query_type="scheduled",
                     )
+                    # 更新 Prometheus 指标
+                    update_balance_metrics(
+                        exchange_label,
+                        "spot",
+                        metrics_account,
+                        spot_balances,
+                    )
                 else:
                     console.print(f"[yellow][账号 {account_label}] XT 现货账户余额为空[/yellow]\n")
             except Exception as e:
+                record_balance_query_status(
+                    exchange_label,
+                    "spot",
+                    metrics_account,
+                    success=False,
+                )
                 console.print(f"[red][账号 {account_label}] 获取现货余额失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
@@ -2667,6 +2711,12 @@ async def _run_xt_watch_account_async(
             # 2. 获取并显示合约账户余额
             try:
                 perp_balances = await perp_exchange.get_balance()
+                record_balance_query_status(
+                    exchange_label,
+                    "perp",
+                    metrics_account,
+                    success=True,
+                )
                 if perp_balances:
                     balances_data: dict[str, dict[str, Any]] = {}
                     for currency, balance_info in perp_balances.items():
@@ -2725,9 +2775,22 @@ async def _run_xt_watch_account_async(
                         balances_data=balances_data,
                         query_type="scheduled",
                     )
+                    # 更新 Prometheus 指标
+                    update_balance_metrics(
+                        exchange_label,
+                        "perp",
+                        metrics_account,
+                        balances_data,
+                    )
                 else:
                     console.print(f"[yellow][账号 {account_label}] XT 合约账户余额为空[/yellow]\n")
             except Exception as e:
+                record_balance_query_status(
+                    exchange_label,
+                    "perp",
+                    metrics_account,
+                    success=False,
+                )
                 console.print(f"[red][账号 {account_label}] 获取合约余额失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
@@ -2818,6 +2881,13 @@ async def _run_xt_watch_account_async(
                         await xt_rest_service.save_perp_positions(
                             positions_data=positions_data,
                             query_type="scheduled",
+                        )
+                        # 更新 Prometheus 指标
+                        update_position_metrics(
+                            exchange_label,
+                            "perp",
+                            metrics_account,
+                            positions_data,
                         )
                     else:
                         console.print(f"[yellow][账号 {account_label}] XT 当前无持仓[/yellow]\n")
@@ -2988,13 +3058,6 @@ async def _run_binance_watch_positions_async(
             logger.error("账号 %s Binance 仓位保存失败: %s", account_label, save_exc)
             if debug:
                 console.print_exception()
-
-        update_position_metrics(
-            exchange_label,
-            exchange_type_label,
-            metrics_account,
-            positions,
-        )
 
         update_position_metrics(
             exchange_label,
@@ -4123,6 +4186,7 @@ async def _run_binance_watch_account_async(
 
     db_manager = DatabaseManager(database_url=database_url)
     rest_data_service = RestDataService(db_manager)
+    metrics_account = account_id or (account_name or "default")
     spot_exchange = BinanceSpotExchange(api_key=api_key, api_secret=api_secret)
     perp_exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
 
@@ -4166,6 +4230,13 @@ async def _run_binance_watch_account_async(
                     balances_data=spot_balances,
                     query_type="scheduled",
                     account_id=account_id,
+                )
+                # 更新 Prometheus 指标
+                update_balance_metrics(
+                    "binance",
+                    "spot",
+                    metrics_account,
+                    spot_balances,
                 )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 现货账户余额为空[/yellow]")
@@ -4213,6 +4284,13 @@ async def _run_binance_watch_account_async(
                     balances_data=perp_balances,
                     query_type="scheduled",
                     account_id=account_id,
+                )
+                # 更新 Prometheus 指标
+                update_balance_metrics(
+                    "binance",
+                    "perp",
+                    metrics_account,
+                    perp_balances,
                 )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 合约账户余额为空[/yellow]")
@@ -4269,6 +4347,13 @@ async def _run_binance_watch_account_async(
                     positions_data=formatted_positions,
                     query_type="scheduled",
                     account_id=account_id,
+                )
+                # 更新 Prometheus 指标
+                update_position_metrics(
+                    "binance",
+                    "perp",
+                    metrics_account,
+                    formatted_positions,
                 )
             else:
                 console.print(f"[yellow][账号 {account_label}] Binance 当前无持仓[/yellow]")
@@ -4725,6 +4810,10 @@ async def _run_xt_watch_account_async(
     account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
     logger.info(f"启动账号 {account_label} 的账户监控")
 
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = ExchangeName.XT.value
+    ensure_metrics_server()
+
     db_manager = DatabaseManager(database_url=database_url)
     spot_exchange = XTSpotExchange(
         name="xt",
@@ -4762,6 +4851,12 @@ async def _run_xt_watch_account_async(
             # 1. 获取并显示现货账户余额
             try:
                 spot_balances = await spot_exchange.get_balance()
+                record_balance_query_status(
+                    exchange_label,
+                    "spot",
+                    metrics_account,
+                    success=True,
+                )
                 if spot_balances:
                     spot_table = Table(
                         title=f"XT 现货账户余额 - {account_label}",
@@ -4792,9 +4887,22 @@ async def _run_xt_watch_account_async(
                         balances_data=spot_balances,
                         query_type="scheduled",
                     )
+                    # 更新 Prometheus 指标
+                    update_balance_metrics(
+                        exchange_label,
+                        "spot",
+                        metrics_account,
+                        spot_balances,
+                    )
                 else:
                     console.print(f"[yellow][账号 {account_label}] XT 现货账户余额为空[/yellow]\n")
             except Exception as e:
+                record_balance_query_status(
+                    exchange_label,
+                    "spot",
+                    metrics_account,
+                    success=False,
+                )
                 console.print(f"[red][账号 {account_label}] 获取现货余额失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
@@ -4802,6 +4910,12 @@ async def _run_xt_watch_account_async(
             # 2. 获取并显示合约账户余额
             try:
                 perp_balances = await perp_exchange.get_balance()
+                record_balance_query_status(
+                    exchange_label,
+                    "perp",
+                    metrics_account,
+                    success=True,
+                )
                 if perp_balances:
                     balances_data: dict[str, dict[str, Any]] = {}
                     for currency, balance_info in perp_balances.items():
@@ -4860,9 +4974,22 @@ async def _run_xt_watch_account_async(
                         balances_data=balances_data,
                         query_type="scheduled",
                     )
+                    # 更新 Prometheus 指标
+                    update_balance_metrics(
+                        exchange_label,
+                        "perp",
+                        metrics_account,
+                        balances_data,
+                    )
                 else:
                     console.print(f"[yellow][账号 {account_label}] XT 合约账户余额为空[/yellow]\n")
             except Exception as e:
+                record_balance_query_status(
+                    exchange_label,
+                    "perp",
+                    metrics_account,
+                    success=False,
+                )
                 console.print(f"[red][账号 {account_label}] 获取合约余额失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
@@ -4953,6 +5080,13 @@ async def _run_xt_watch_account_async(
                         await xt_rest_service.save_perp_positions(
                             positions_data=positions_data,
                             query_type="scheduled",
+                        )
+                        # 更新 Prometheus 指标
+                        update_position_metrics(
+                            exchange_label,
+                            "perp",
+                            metrics_account,
+                            positions_data,
                         )
                     else:
                         console.print(f"[yellow][账号 {account_label}] XT 当前无持仓[/yellow]\n")

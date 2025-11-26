@@ -117,23 +117,29 @@ python -m tri_arb.cli.main account watch-positions --config config/accounts.json
 # 需要以系统服务方式运行，可在 systemd 或 tmux 中引用上述命令
 
 # 直接从 Git 拉取运行（不进入仓库）
-uvx --from git+https://github.com/realm520/quant.git cextools subscribe multi-account --config config/accounts.json
+uvx --from git+https://github.com/realm520/quant.git@feat/xt_dev cextools subscribe multi-account --config config/accounts.json
 uvx --from git+https://github.com/realm520/quant.git cextools account watch-account --config config/accounts.json --all-accounts
 ```
 
 ## 7. Prometheus + Grafana 监控
 
-### 7.1 启动 Metrics Exporter
+### 7.1 Metrics 服务器（自动启动）
+
+**重要**：以下命令运行时会**自动启动** Prometheus metrics 服务器，无需单独运行 exporter：
+
+- **订阅服务**（`subscribe multi-account` 或 `subscribe user-stream`）：自动启动 metrics 服务器在端口 **9601**
+- **监控服务**（`watch-all`、`watch-account`、`watch-balance`、`watch-positions`）：自动启动 metrics 服务器在端口 **9500**（默认）
+
+Metrics 端点：
+- 订阅服务：`http://<host>:9601/metrics`（实时 WebSocket 数据：订单、成交、账户更新）
+- 监控服务：`http://<host>:9500/metrics`（定时 REST API 数据：余额、仓位快照）
+
+如果需要基于数据库快照的独立 exporter（从数据库读取历史数据），可单独运行：
 
 ```bash
-# 本地代码
+# 独立 exporter（从数据库读取，端口 9100）
 python -m tri_arb.cli.main metrics exporter --config config/accounts.json --listen 0.0.0.0 --port 9100
-
-# 或使用 uv
-uv run -m tri_arb.cli.main metrics exporter --config config/accounts.json --listen 0.0.0.0 --port 9100
 ```
-
-Exporter 会根据数据库内容输出余额、仓位、委托等指标，默认路径 `http://<host>:9100/metrics`，需要保持常驻运行（可放 tmux/systemd）。
 
 ### 7.2 安装并启动 Prometheus
 
@@ -148,7 +154,16 @@ sudo tee /opt/prometheus/prometheus.yml <<'EOF'
 global:
   scrape_interval: 15s
 scrape_configs:
-  - job_name: 'cextools'
+  # 订阅服务自动启动的 metrics（实时 WebSocket 数据：订单、成交、账户更新）
+  - job_name: 'cextools-subscribe'
+    static_configs:
+      - targets: ['127.0.0.1:9601']
+  # 监控服务自动启动的 metrics（定时 REST API 数据：余额、仓位快照）
+  - job_name: 'cextools-watch'
+    static_configs:
+      - targets: ['127.0.0.1:9500']
+  # 可选：独立 exporter（数据库历史快照数据）
+  - job_name: 'cextools-exporter'
     static_configs:
       - targets: ['127.0.0.1:9100']
 EOF
@@ -168,7 +183,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now prometheus
 ```
 
-访问 `http://<host>:9090/targets`，确认 `cextools` job 状态为 `UP`。
+访问 `http://<服务器IP>:9090/targets`，确认所有 job（`cextools-subscribe`、`cextools-watch`、`cextools-exporter`）状态为 `UP`。
 
 ### 7.3 安装并配置 Grafana
 
@@ -186,7 +201,56 @@ sudo dnf install -y grafana
 sudo systemctl enable --now grafana-server
 ```
 
-浏览器访问 `http://<host>:3000`（账号/密码 `admin/admin` 首次登录需修改），在 **Connections → Data sources** 中添加 Prometheus，URL 填 `http://127.0.0.1:9090`，Test 通过后即可在 **Dashboards/Explore** 中查看指标或导入自定义面板。
+### 7.4 访问 Grafana 面板
+
+1. **打开浏览器**，访问 `http://<服务器IP>:3000`
+   - 如果是在本地服务器，访问 `http://localhost:3000`
+   - 如果是远程服务器，访问 `http://<服务器公网IP>:3000`（确保防火墙开放 3000 端口）
+
+2. **首次登录**：
+   - 用户名：`admin`
+   - 密码：`admin`
+   - 首次登录会要求修改密码
+
+3. **配置 Prometheus 数据源**：
+   - 点击左侧菜单 **Connections**（或 **Configuration → Data sources**）
+   - 点击 **Add data source**
+   - 选择 **Prometheus**
+   - URL 填写：`http://127.0.0.1:9090`（如果 Grafana 和 Prometheus 在同一台服务器）
+   - 点击 **Save & Test**，确认显示 "Data source is working"
+
+4. **查看指标**：
+   - **方式一**：点击左侧菜单 **Explore**，在查询框输入指标名称，例如：
+     - `exchange_balance_total`（总余额）
+     - `exchange_position_quantity`（持仓数量）
+     - `exchange_order_count`（活跃订单数）
+   - **方式二**：导入或创建 Dashboard（面板），可视化展示多个指标
+
+### 7.5 验证数据流
+
+在终端运行监控命令后，可以通过以下方式验证数据是否正常：
+
+```bash
+# 检查 metrics 端点是否可访问（订阅服务，端口 9601）
+# 查看所有指标（包括自定义的交易指标）
+curl http://localhost:9601/metrics
+
+# 只查看自定义的交易指标（过滤掉 Python 默认指标）
+curl http://localhost:9601/metrics | grep -E "^exchange_|^cex_"
+
+# 检查 metrics 端点是否可访问（监控服务，端口 9500）
+curl http://localhost:9500/metrics | grep -E "^exchange_|^cex_"
+
+# 检查 Prometheus 是否成功抓取
+curl http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+```
+
+**说明**：
+- 如果看到 `python_gc_*`、`process_*` 等指标，说明 metrics 服务器正常运行
+- 如果看到 `exchange_balance_total`、`exchange_order_count`、`exchange_position_quantity` 等指标，说明有交易数据在更新
+- 如果没有自定义指标，可能是：
+  1. 订阅服务刚启动，还没有接收到数据（等待几秒后重试）
+  2. 账号没有活跃订单或持仓（这是正常的，指标会在有数据时出现）
 
 
 ## 6. 快速启动 WebSocket 订阅

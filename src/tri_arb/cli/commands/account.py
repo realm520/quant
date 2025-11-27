@@ -40,6 +40,7 @@ from tri_arb.metrics.prometheus import (
     update_balance_metrics,
     record_balance_query_status,
     update_position_metrics,
+    update_active_orders_metrics,
 )
 
 
@@ -2245,6 +2246,23 @@ async def _run_binance_watch_account_async(
             if debug:
                 console.print_exception()
 
+        # 查询活跃订单并更新 metrics（当前挂单数量）
+        try:
+            active_orders = await perp_exchange.get_open_orders(None)
+            # 更新 Prometheus metrics
+            ensure_metrics_server()
+            try:
+                update_active_orders_metrics(
+                    exchange="binance",
+                    exchange_type="perp",
+                    account_id=metrics_account,
+                    orders=active_orders if active_orders else [],
+                )
+            except Exception as metric_error:
+                logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
+        except Exception as exc:
+            logger.debug(f"获取活跃订单失败: {exc}")
+
         next_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
         console.print(f"[dim]下次查询: {next_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
         console.print(f"[dim]等待 {interval_minutes} 分钟...[/dim]\n")
@@ -2897,6 +2915,23 @@ async def _run_xt_watch_account_async(
                 console.print(f"[red][账号 {account_label}] 获取仓位失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
+
+            # 查询活跃订单并更新 metrics（当前挂单数量）
+            try:
+                active_orders = await perp_exchange.get_open_orders(None)
+                # 更新 Prometheus metrics
+                ensure_metrics_server()
+                try:
+                    update_active_orders_metrics(
+                        exchange=exchange_label if 'exchange_label' in locals() else "binance",
+                        exchange_type="perp",
+                        account_id=metrics_account,
+                        orders=active_orders if active_orders else [],
+                    )
+                except Exception as metric_error:
+                    logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
+            except Exception as e:
+                logger.debug(f"获取活跃订单失败: {e}")
 
             # 4. 评估指标（如果启用）
             if metrics_definition:
@@ -4362,6 +4397,23 @@ async def _run_binance_watch_account_async(
             if debug:
                 console.print_exception()
 
+        # 查询活跃订单并更新 metrics（当前挂单数量）
+        try:
+            active_orders = await perp_exchange.get_open_orders(None)
+            # 更新 Prometheus metrics
+            ensure_metrics_server()
+            try:
+                update_active_orders_metrics(
+                    exchange="binance",
+                    exchange_type="perp",
+                    account_id=metrics_account,
+                    orders=active_orders if active_orders else [],
+                )
+            except Exception as metric_error:
+                logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
+        except Exception as exc:
+            logger.debug(f"获取活跃订单失败: {exc}")
+
         next_time = datetime.datetime.now() + datetime.timedelta(minutes=interval_minutes)
         console.print(f"[dim]下次查询: {next_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
         console.print(f"[dim]等待 {interval_minutes} 分钟...[/dim]\n")
@@ -5096,6 +5148,23 @@ async def _run_xt_watch_account_async(
                 console.print(f"[red][账号 {account_label}] 获取仓位失败:[/red] {e}\n")
                 if debug:
                     console.print_exception()
+
+            # 查询活跃订单并更新 metrics（当前挂单数量）
+            try:
+                active_orders = await perp_exchange.get_open_orders(None)
+                # 更新 Prometheus metrics
+                ensure_metrics_server()
+                try:
+                    update_active_orders_metrics(
+                        exchange=exchange_label if 'exchange_label' in locals() else "binance",
+                        exchange_type="perp",
+                        account_id=metrics_account,
+                        orders=active_orders if active_orders else [],
+                    )
+                except Exception as metric_error:
+                    logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
+            except Exception as e:
+                logger.debug(f"获取活跃订单失败: {e}")
 
             # 4. 评估指标（如果启用）
             if metrics_definition:
@@ -5899,6 +5968,18 @@ def watch_orders(
                             buy_orders = sum(1 for o in orders_data if o.get('side', '').upper() == 'BUY' or o.get('side', '').lower() == 'buy')
                             sell_orders = total_orders - buy_orders
                             console.print(f"\n[dim]统计: 共 {total_orders} 个挂单 (买单: {buy_orders}, 卖单: {sell_orders})[/dim]")
+                        
+                        # 更新 Prometheus metrics（当前挂单数量）
+                        ensure_metrics_server()
+                        try:
+                            update_active_orders_metrics(
+                                exchange=exchange.value,
+                                exchange_type=exchange_type.value,
+                                account_id="default",  # 单账号命令使用 default
+                                orders=orders_data if orders_data else [],
+                            )
+                        except Exception as metric_error:
+                            logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
                         
                         # 显示下次查询时间
                         next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)

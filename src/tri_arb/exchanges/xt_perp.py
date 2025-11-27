@@ -1487,6 +1487,122 @@ class XTPerpExchange(BaseExchange):
         logger.info("Retrieved order list", count=len(orders), symbol=symbol)
         return orders
 
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Get current open orders for futures contracts.
+
+        Query current open orders using XT API /future/trade/v1/order/list-open-order endpoint.
+        Reference: https://doc.xt.com/zh-Hans/docs/futures/Order/ListOpenOrder
+
+        Args:
+            symbol: Optional trading pair symbol (e.g., "BTC_USDT"). 
+                   If None, returns all open orders.
+                   If provided, returns orders for specific symbol.
+
+        Returns:
+            List of open order dictionaries with the following structure:
+            [
+                {
+                    "orderId": "538511221008857280",        # 系统订单 ID
+                    "clientOrderId": "myOrder123",          # 用户自定义订单 ID
+                    "symbol": "eth_usdt",                   # 交易对
+                    "orderType": "LIMIT",                    # 订单类型：LIMIT/MARKET
+                    "orderSide": "BUY",                      # 买卖方向：BUY/SELL
+                    "positionSide": "LONG",                  # 持仓方向：LONG/SHORT
+                    "price": "4009.94",                      # 委托价格
+                    "origQty": "12",                        # 委托数量
+                    "executedQty": "0",                      # 已成交数量
+                    "state": "NEW",                          # 订单状态：NEW/PARTIALLY_FILLED
+                    "createdTime": 1758093080143,            # 创建时间戳（毫秒）
+                    "updatedTime": 1758093080371,            # 更新时间戳（毫秒）
+                    ...
+                },
+                ...
+            ]
+
+        Raises:
+            RuntimeError: If exchange is not connected
+            httpx.HTTPStatusError: If API request fails
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        if not self._api_key or not self._api_secret:
+            raise ValueError("API credentials are required for this operation")
+
+        path = "/future/trade/v1/order/list-open-order"
+        
+        # XT API requires form data for this endpoint
+        form_data: dict[str, Any] = {}
+        if symbol:
+            form_data["symbol"] = symbol
+
+        # Generate signature headers
+        timestamp = await self._get_server_timestamp()
+        headers = self._generate_signature("POST", path, None, None, timestamp=timestamp)
+
+        # Make POST request with form data
+        try:
+            response = await self._client.post(
+                path,
+                data=form_data,  # Use data instead of json for form-urlencoded
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as http_err:
+            content_preview = response.text[:500] if response.text else ""
+            logger.error(
+                "XT API HTTP error",
+                method="POST",
+                path=path,
+                status_code=response.status_code,
+                response_text=content_preview,
+            )
+            raise
+
+        data = response.json()
+
+        # Check XT API response code
+        rc = data.get("rc")
+        if rc is not None and rc != 0:
+            error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else data.get("msg", "Unknown error")
+            logger.error(
+                "XT API returned error code",
+                rc=rc,
+                error_msg=error_msg,
+                path=path,
+            )
+            raise ValueError(f"XT API error (rc={rc}): {error_msg}")
+
+        # Extract result - XT API returns data directly or in result field
+        # For list-open-order, the response structure is typically:
+        # {"rc": 0, "mc": "SUCCESS", "ma": [], "result": [...]}
+        # or directly as a list
+        if isinstance(data, list):
+            orders = data
+        elif isinstance(data, dict):
+            # Try to get from result field first
+            if "result" in data:
+                result = data["result"]
+                if isinstance(result, list):
+                    orders = result
+                elif isinstance(result, dict) and "items" in result:
+                    orders = result["items"]
+                else:
+                    orders = []
+            else:
+                # If no result field, check if data itself is the order list
+                orders = []
+        else:
+            orders = []
+
+        logger.info(
+            "Retrieved open orders",
+            count=len(orders),
+            symbol=symbol,
+        )
+
+        return orders
+
     async def get_user_trades(
         self,
         symbol: str | None = None,

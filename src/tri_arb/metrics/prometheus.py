@@ -22,6 +22,11 @@ _SERVER_LOCK = threading.Lock()
 _position_labels_cache: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
 _position_cache_lock = threading.Lock()
 
+# 跟踪每个账户的当前订单标签，用于清除已取消/成交的订单
+# 标签格式: (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
+_order_labels_cache: dict[tuple[str, str, str], set[tuple[str, str, str, str, str, str, str]]] = {}
+_order_cache_lock = threading.Lock()
+
 _balance_available = Gauge(
     "exchange_balance_available",
     "Available balance of each asset per account and exchange.",
@@ -46,14 +51,14 @@ _query_status_counter = Counter(
 # 订单相关指标
 _order_count = Gauge(
     "exchange_order_count",
-    "Number of active orders per account, exchange, symbol, side, and position side.",
-    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side", "status"],
+    "Number of active orders per account, exchange, symbol, side, position side, and order type.",
+    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side", "order_type", "status"],
 )
 
 _order_notional = Gauge(
     "exchange_order_notional",
-    "Total notional value of orders per account, exchange, symbol, side, and position side.",
-    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side"],
+    "Total notional value of orders per account, exchange, symbol, side, position side, and order type.",
+    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side", "order_type"],
 )
 
 _order_update_total = Counter(
@@ -253,6 +258,15 @@ def update_order_metrics(
         or ""
     ).upper()
     
+    # 订单类型（LIMIT, MARKET, STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET 等）
+    order_type = (
+        order_data.get("orderType")
+        or order_data.get("type")  # Binance
+        or order_data.get("ordType")  # OKX
+        or order_data.get("order_type")
+        or "LIMIT"  # 默认
+    ).upper()
+    
     # 订单数量
     quantity = _to_float(
         order_data.get("quantity")
@@ -273,8 +287,8 @@ def update_order_metrics(
     
     notional = abs(quantity) * price if price > 0 else 0
     
-    # 更新指标
-    labels = (exchange, exchange_type, account_id, symbol, side, position_side)
+    # 更新指标（包含订单类型）
+    labels = (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
     
     # 活跃订单状态列表
     active_statuses = ["NEW", "LIVE", "PARTIALLY_FILLED", "OPEN"]
@@ -299,6 +313,134 @@ def update_order_metrics(
     
     # 记录订单更新计数
     _order_update_total.labels(exchange, exchange_type, account_id, status, side, position_side).inc()
+
+
+def update_active_orders_metrics(
+    exchange: str,
+    exchange_type: str,
+    account_id: str,
+    orders: list[Mapping[str, Any]],
+) -> None:
+    """批量更新所有活跃订单的 Prometheus metrics.
+    
+    这个函数用于定期查询所有活跃订单并更新 metrics，确保 metrics 反映当前实际的挂单数量。
+    
+    Args:
+        exchange: Exchange name (e.g., "binance", "xt")
+        exchange_type: Exchange type (e.g., "perp", "spot")
+        account_id: Account ID
+        orders: List of active order dictionaries
+    """
+    # 活跃订单状态列表
+    active_statuses = ["NEW", "LIVE", "PARTIALLY_FILLED", "OPEN"]
+    
+    # 用于跟踪所有订单的标签组合（包含订单类型）
+    # 标签格式: (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
+    all_order_labels: set[tuple[str, str, str, str, str, str, str]] = set()
+    
+    # 处理每个订单
+    for order_data in orders:
+        # 提取订单信息（支持不同交易所格式）
+        symbol = (
+            order_data.get("symbol") 
+            or order_data.get("s")  # Binance
+            or order_data.get("instId")  # OKX
+            or order_data.get("contract")  # Gate
+            or ""
+        ).upper()
+        
+        if not symbol:
+            continue  # 跳过没有交易对的订单
+        
+        side = (
+            order_data.get("side") 
+            or order_data.get("S")  # Binance
+            or order_data.get("orderSide")  # XT
+            or ""
+        ).upper()
+        
+        # 持仓方向（多空）
+        position_side = (
+            order_data.get("positionSide")
+            or order_data.get("ps")  # Binance
+            or order_data.get("posSide")  # OKX
+            or order_data.get("position_side")
+            or "NET"  # 默认
+        ).upper()
+        
+        status = (
+            order_data.get("status")
+            or order_data.get("X")  # Binance
+            or order_data.get("state")  # OKX
+            or ""
+        ).upper()
+        
+        # 订单类型（LIMIT, MARKET, STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET 等）
+        order_type = (
+            order_data.get("orderType")
+            or order_data.get("type")  # Binance
+            or order_data.get("ordType")  # OKX
+            or order_data.get("order_type")
+            or "LIMIT"  # 默认
+        ).upper()
+        
+        # 订单数量
+        quantity = _to_float(
+            order_data.get("quantity")
+            or order_data.get("q")  # Binance
+            or order_data.get("sz")  # OKX
+            or order_data.get("size")  # Gate
+            or order_data.get("origQty")  # XT
+            or 0
+        )
+        
+        # 订单价格
+        price = _to_float(
+            order_data.get("price")
+            or order_data.get("p")  # Binance
+            or order_data.get("px")  # OKX
+            or 0
+        )
+        
+        notional = abs(quantity) * price if price > 0 else 0
+        
+        # 更新指标（包含订单类型）
+        labels = (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
+        all_order_labels.add(labels)
+        
+        is_active = status in active_statuses
+        
+        # 更新订单数量（活跃订单为1，非活跃为0）
+        for active_status in active_statuses:
+            _order_count.labels(*labels, active_status).set(0)
+        if is_active:
+            _order_count.labels(*labels, status).set(1)
+        else:
+            _order_count.labels(*labels, status).set(0)
+        
+        # 更新订单名义价值（仅活跃订单）
+        if is_active and notional > 0:
+            _order_notional.labels(*labels).set(notional)
+        elif not is_active:
+            _order_notional.labels(*labels).set(0)
+    
+    # 清除不再存在的订单的 metrics（设置为 0）
+    # 使用缓存机制跟踪当前活跃的订单，清除已取消/成交的订单
+    account_key = (exchange, exchange_type, account_id)
+    with _order_cache_lock:
+        # 获取之前缓存的订单标签
+        previous_labels = _order_labels_cache.get(account_key, set())
+        
+        # 清除不再存在的订单的 metrics
+        for old_labels in previous_labels:
+            if old_labels not in all_order_labels:
+                # 订单已不存在，清除所有状态的 metrics
+                for active_status in active_statuses:
+                    _order_count.labels(*old_labels, active_status).set(0)
+                _order_notional.labels(*old_labels).set(0)
+        
+        # 更新缓存
+        _order_labels_cache[account_key] = all_order_labels
 
 
 def update_trade_metrics(
@@ -464,6 +606,7 @@ __all__ = [
     "update_balance_metrics",
     "record_balance_query_status",
     "update_order_metrics",
+    "update_active_orders_metrics",
     "update_trade_metrics",
     "update_position_metrics",
 ]

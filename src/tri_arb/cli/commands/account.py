@@ -6015,6 +6015,122 @@ def watch_orders(
         raise typer.Exit(code=1)
 
 
+async def _run_watch_orders_async(
+    exchange: ExchangeName,
+    interval: int,
+    api_key: str,
+    api_secret: str,
+    symbol: Optional[str] = None,
+    debug: bool = False,
+    account_id: Optional[str] = None,
+    account_name: Optional[str] = None,
+    passphrase: Optional[str] = None,
+) -> None:
+    """异步版本的 watch-orders 函数（用于多账号并发）.
+    
+    Args:
+        exchange: 交易所名称
+        interval: 查询间隔（分钟）
+        api_key: API 密钥
+        api_secret: API 密钥
+        symbol: 交易对（可选）
+        debug: 是否启用调试模式
+        account_id: 账号ID（可选）
+        account_name: 账号名称（可选）
+        passphrase: API 密码短语（可选，用于某些交易所）
+    """
+    from tri_arb.exchanges.base import BaseExchange
+    
+    account_label = f"{account_id} ({account_name})" if account_name else account_id or "默认账号"
+    logger.info(f"启动账号 {account_label} 的挂单监控 ({exchange.value})")
+    
+    # 创建 exchange 实例（仅支持永续合约）
+    exchange_instance = create_exchange(ExchangeType.PERP, api_key, api_secret, exchange, passphrase=passphrase)
+    
+    metrics_account = account_id or (account_name or "default")
+    exchange_label = exchange.value
+    
+    iteration = 0
+    try:
+        await exchange_instance.connect()
+        
+        while True:
+            iteration += 1
+            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            console.print(f"\n[cyan][账号 {account_label}] 第 {iteration} 次查询挂单 - {current_time}[/cyan]")
+            
+            try:
+                # 获取所有挂单
+                orders_data = await exchange_instance.get_open_orders(None)
+                
+                # 如果指定了symbol，在本地筛选
+                if symbol:
+                    normalized_symbol = symbol.replace("/", "").replace("-", "").replace("_", "").upper()
+                    filtered_orders = []
+                    for order in orders_data:
+                        # OKX格式 (instId: "BTC-USDT-SWAP")
+                        if 'instId' in order:
+                            order_symbol = order.get("instId", "").replace("-", "").replace("SWAP", "").upper()
+                        # Binance格式 (symbol: "BTCUSDT")
+                        else:
+                            order_symbol = order.get("symbol", "").upper()
+                        
+                        if order_symbol == normalized_symbol:
+                            filtered_orders.append(order)
+                    
+                    orders_data = filtered_orders
+                
+                # 显示结果
+                if not orders_data:
+                    console.print(f"[yellow][账号 {account_label}] 当前无挂单[/yellow]")
+                else:
+                    format_open_orders_table(orders_data, exchange_instance)
+                    total_orders = len(orders_data)
+                    buy_orders = sum(1 for o in orders_data if o.get('side', '').upper() == 'BUY' or o.get('side', '').lower() == 'buy')
+                    sell_orders = total_orders - buy_orders
+                    console.print(f"[dim][账号 {account_label}] 统计: 共 {total_orders} 个挂单 (买单: {buy_orders}, 卖单: {sell_orders})[/dim]")
+                
+                # 更新 Prometheus metrics（当前挂单数量）
+                ensure_metrics_server()
+                try:
+                    update_active_orders_metrics(
+                        exchange=exchange_label,
+                        exchange_type="perp",
+                        account_id=metrics_account,
+                        orders=orders_data if orders_data else [],
+                    )
+                except Exception as metric_error:
+                    logger.error(f"Failed to update active orders metrics: {metric_error}", exc_info=True)
+                
+                # 显示下次查询时间
+                next_query_time = datetime.datetime.now() + datetime.timedelta(minutes=interval)
+                console.print(f"[dim][账号 {account_label}] 下次查询: {next_query_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+                
+            except Exception as e:
+                console.print(f"[red][账号 {account_label}] 查询挂单失败:[/red] {e}")
+                logger.error(f"账号 {account_label} watch-orders query error: {e}")
+                if debug:
+                    console.print_exception()
+            
+            # 等待指定分钟数
+            console.print(f"[dim][账号 {account_label}] 等待 {interval} 分钟...[/dim]\n")
+            await asyncio.sleep(interval * 60)
+            
+    except KeyboardInterrupt:
+        logger.info(f"账号 {account_label} 的挂单监控已停止")
+    except Exception as e:
+        logger.error(f"账号 {account_label} watch-orders error: {e}")
+        if debug:
+            console.print_exception()
+        raise
+    finally:
+        try:
+            await exchange_instance.disconnect()
+        except Exception:
+            pass
+
+
 @app.command("watch-all")
 def watch_all(
     config_path: str = typer.Option(
@@ -6125,12 +6241,15 @@ def watch_all(
             balance_config = watch_tasks.get('balance', {})
             account_config = watch_tasks.get('account', {})
             positions_config = watch_tasks.get('positions', {})
-            if balance_config.get('enabled', True):
+            orders_config = watch_tasks.get('orders', {})
+            if balance_config.get('enabled', True) if isinstance(balance_config, dict) else balance_config:
                 tasks_str.append("balance")
-            if account_config.get('enabled', True):
+            if account_config.get('enabled', True) if isinstance(account_config, dict) else account_config:
                 tasks_str.append("account")
-            if positions_config.get('enabled', True):
+            if positions_config.get('enabled', True) if isinstance(positions_config, dict) else positions_config:
                 tasks_str.append("positions")
+            if orders_config.get('enabled', True) if isinstance(orders_config, dict) else orders_config:
+                tasks_str.append("orders")
             console.print(f"  - {acc.account_id}: {acc.name} [{acc.exchange.upper()}] 任务: {', '.join(tasks_str) if tasks_str else '无'}")
         else:
             console.print(f"  - {acc.account_id}: {acc.name} [{acc.exchange.upper()}] 任务: balance, account, positions (默认)")
@@ -6173,6 +6292,16 @@ def watch_all(
             else:
                 positions_config.setdefault('enabled', True)
                 positions_config.setdefault('interval', 1)
+            
+            orders_config = watch_tasks.get('orders', {})
+            # 支持两种格式：{"orders": {"enabled": true, "interval": 5}} 或 {"orders": true, "interval": 5}
+            if isinstance(orders_config, bool):
+                orders_config = {'enabled': orders_config, 'interval': watch_tasks.get('interval', 5)}
+            elif not orders_config:
+                orders_config = {'enabled': False, 'interval': 5}
+            else:
+                orders_config.setdefault('enabled', True)
+                orders_config.setdefault('interval', 5)
             
             account_label = f"{acc.account_id} ({acc.name})"
             
@@ -6297,6 +6426,32 @@ def watch_all(
                     await asyncio.sleep(0.2)
                 except Exception as e:
                     console.print(f"[red]账号 {account_label} watch-positions 启动失败:[/red] {e}")
+                    if debug:
+                        console.print_exception()
+            
+            # 启动 watch-orders 任务
+            if orders_config.get('enabled', False):
+                try:
+                    interval = orders_config.get('interval', 5)
+                    symbol = orders_config.get('symbol', None)
+                    
+                    task = asyncio.create_task(
+                        _run_watch_orders_async(
+                            exchange=acc_exchange,
+                            interval=interval,
+                            api_key=acc.api_key,
+                            api_secret=acc.api_secret,
+                            symbol=symbol,
+                            debug=debug,
+                            account_id=acc.account_id,
+                            account_name=acc.name,
+                            passphrase=getattr(acc, 'passphrase', None),
+                        )
+                    )
+                    all_tasks.append(task)
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    console.print(f"[red]账号 {account_label} watch-orders 启动失败:[/red] {e}")
                     if debug:
                         console.print_exception()
         

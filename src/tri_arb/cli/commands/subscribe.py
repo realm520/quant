@@ -289,6 +289,8 @@ def user_stream(
                     display_format=output,
                     enabled_channels=channel_list,
                 )
+                if account_id:
+                    service.account_id = account_id
             elif exchange == ExchangeName.OKX:
                 service = OKXUserStreamService(
                     api_key=key,
@@ -498,6 +500,8 @@ def multi_account(
                 display_format=output,
                 enabled_channels=enabled_channels,
             )
+            service.account_id = acc_config.account_id
+            service.account_name = acc_config.name
         elif acc_exchange == ExchangeName.OKX:
             if not passphrase:
                 console.print(f"[yellow]警告:[/yellow] 账号 {acc_config.account_id} 缺少 OKX passphrase，跳过")

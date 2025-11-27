@@ -732,6 +732,7 @@ class XTUserStreamService:
                     account_id=account_id,
                     trade_data=trade_data,
                 )
+                logger.debug(f"成功更新成交 metrics (account_id={account_id})")
             except Exception as metric_error:
                 logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
             
@@ -1510,9 +1511,13 @@ class XTUserStreamService:
                         raw_data=json.dumps(trade, cls=DecimalEncoder),
                     )
                     session.add(record)
+                    logger.info(
+                        f"保存成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
+                        f"side={side}, price={price}, quantity={quantity}"
+                    )
                 
                 await session.commit()
-                logger.debug(f"Saved {len(trades)} trade update(s) to database")
+                logger.info(f"成功保存 {len(trades)} 条成交记录到数据库")
                 
         except Exception as e:
             logger.error(f"Failed to save trade update: {e}", exc_info=True)

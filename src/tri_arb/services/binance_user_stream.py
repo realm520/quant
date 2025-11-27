@@ -20,7 +20,7 @@ from tri_arb.exchanges.binance_perp import BinancePerpExchange
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.models import AccountUpdate, OrderUpdate, TradeUpdate, ConnectionStatus
 from tri_arb.services.binance_reconciliation import BinanceReconciliationService
-from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
+from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics, update_trade_metrics
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -67,6 +67,8 @@ class BinanceUserStreamService:
             self.enabled_channels = set(enabled_channels)
 
         self.exchange = BinancePerpExchange(api_key=api_key, api_secret=api_secret)
+        self.account_id: Optional[str] = None
+        self.account_name: Optional[str] = None
         self.listen_key: Optional[str] = None
         self.ws_url: Optional[str] = None
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
@@ -988,16 +990,38 @@ class BinanceUserStreamService:
                         quantity=order.get("l"),
                         price=order.get("L"),
                     )
+                    
+                    # 更新成交的 Prometheus metrics
+                    try:
+                        account_id = self.account_id or "default"
+                        update_trade_metrics(
+                            exchange="binance",
+                            exchange_type="perp",
+                            account_id=account_id,
+                            trade_data={
+                                "trade_id": trade_id,
+                                "order_id": order.get("i"),
+                                "symbol": order.get("s"),
+                                "side": order.get("S"),
+                                "price": order.get("L"),
+                                "quantity": order.get("l"),
+                                "positionSide": order.get("ps"),
+                            },
+                        )
+                        logger.debug(f"成功更新成交 metrics (account_id={account_id}, trade_id={trade_id})")
+                    except Exception as metric_error:
+                        logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
                 except IntegrityError:
                     logger.debug(f"Trade duplicate detected (trade_id={trade_id}), skipping")
 
-            # 更新 Prometheus metrics
+            # 更新订单的 Prometheus metrics
             # 订阅服务使用端口 9601
             ensure_metrics_server(9601)
+            account_id = self.account_id or "default"
             update_order_metrics(
                 exchange="binance",
                 exchange_type="perp",
-                account_id="default",  # Binance 暂不支持多账号
+                account_id=account_id,
                 order_data=order,
             )
 

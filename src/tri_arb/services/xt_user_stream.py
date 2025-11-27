@@ -138,6 +138,7 @@ class XTUserStreamService:
         
         # 账号特定的表模型（如果提供了 account_id）
         self.account_id = None
+        self.account_name = None
         self.account_models = None
         
         logger.debug("XT WebSocket service initialized",
@@ -750,7 +751,8 @@ class XTUserStreamService:
             from rich.table import Table
             
             console = Console()
-            table = Table(title="XT账户更新")
+            account_label = f"{self.account_id} ({self.account_name})" if self.account_name else (self.account_id or "默认账号")
+            table = Table(title=f"XT账户更新 - {account_label}")
             
             table.add_column("币种", style="cyan")
             table.add_column("可用余额", style="green")
@@ -804,7 +806,8 @@ class XTUserStreamService:
             from rich.table import Table
             
             console = Console()
-            table = Table(title="XT持仓更新")
+            account_label = f"{self.account_id} ({self.account_name})" if self.account_name else (self.account_id or "默认账号")
+            table = Table(title=f"XT持仓更新 - {account_label}")
             
             table.add_column("交易对", style="cyan")
             table.add_column("方向", style="green")
@@ -946,7 +949,8 @@ class XTUserStreamService:
             from rich.table import Table
             
             console = Console()
-            table = Table(title="XT订单更新")
+            account_label = f"{self.account_id} ({self.account_name})" if self.account_name else (self.account_id or "默认账号")
+            table = Table(title=f"XT订单更新 - {account_label}")
             
             table.add_column("订单ID", style="cyan")
             table.add_column("交易对", style="green")
@@ -1032,7 +1036,8 @@ class XTUserStreamService:
             from rich.table import Table
             
             console = Console()
-            table = Table(title="XT成交更新")
+            account_label = f"{self.account_id} ({self.account_name})" if self.account_name else (self.account_id or "默认账号")
+            table = Table(title=f"XT成交更新 - {account_label}")
             
             table.add_column("成交ID", style="cyan")
             table.add_column("订单ID", style="green")
@@ -3207,7 +3212,8 @@ class XTUserStreamService:
                 from rich.table import Table
                 
                 console = Console()
-                table = Table(title="💰 资金划转", show_header=True, header_style="bold magenta")
+                account_label = f"{self.account_id} ({self.account_name})" if self.account_name else (self.account_id or "默认账号")
+                table = Table(title=f"💰 资金划转 - {account_label}", show_header=True, header_style="bold magenta")
                 
                 table.add_column("币种", style="cyan")
                 table.add_column("划转金额", justify="right")

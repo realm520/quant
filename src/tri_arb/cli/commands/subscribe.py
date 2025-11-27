@@ -532,6 +532,7 @@ def multi_account(
                 enable_data_sync=enable_data_sync,
             )
             service.account_id = acc_config.account_id
+            service.account_name = acc_config.name
             from tri_arb.storage.xt_multi_account_models import create_account_table_models
             service.account_models = create_account_table_models(acc_config.account_id)
 

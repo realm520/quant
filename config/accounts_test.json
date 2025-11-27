@@ -81,16 +81,7 @@
         "enabled": true,
         "channels": ["trade"],
         "watch_tasks": {
-          "balance": {
-            "enabled": true,
-            "exchange_type": "perp",
-            "interval": 5
-          },
-          "account": {
-            "enabled": true,
-            "interval": 5
-          },
-          "positions": {
+          "orders": {
             "enabled": true,
             "interval": 5
           }
@@ -104,16 +95,7 @@
         "enabled": true,
         "channels": ["trade"],
         "watch_tasks": {
-          "balance": {
-            "enabled": true,
-            "exchange_type": "perp",
-            "interval": 5
-          },
-          "account": {
-            "enabled": true,
-            "interval": 5
-          },
-          "positions": {
+          "orders": {
             "enabled": true,
             "interval": 5
           }
@@ -127,16 +109,7 @@
         "enabled": true,
         "channels": ["trade"],
         "watch_tasks": {
-          "balance": {
-            "enabled": true,
-            "exchange_type": "perp",
-            "interval": 5
-          },
-          "account": {
-            "enabled": true,
-            "interval": 5
-          },
-          "positions": {
+          "orders": {
             "enabled": true,
             "interval": 5
           }
@@ -150,19 +123,8 @@
         "enabled": true,
         "channels": ["trade"],
         "watch_tasks": {
-          "balance": {
-            "enabled": true,
-            "exchange_type": "perp",
-            "interval": 5
-          },
-          "account": {
-            "enabled": true,
-            "interval": 5
-          },
-          "positions": {
-            "enabled": true,
-            "interval": 5
-          }
+          "orders": true,
+          "interval": 5
         }
       },
       "binance_main_002": {

@@ -87,12 +87,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "exchange_balance_available",
-          "legendFormat": "{{account_id}} - {{asset}} ({{exchange}})",
+          "expr": "exchange_balance_available{asset=\"USDT\", exchange_type=\"perp\"}",
+          "legendFormat": "{{account_id}} ({{exchange}})",
           "refId": "A"
         }
       ],
-      "title": "可用余额趋势",
+      "title": "合约账户可用余额趋势 (USDT)",
       "type": "timeseries"
     },
     {
@@ -195,12 +195,21 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "green",
+                "value": 5000
               }
             ]
           },
-          "unit": "currencyUSD"
+          "unit": "currencyUSD",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -223,7 +232,8 @@
           ],
           "fields": ""
         },
-        "textMode": "auto"
+        "textMode": "auto",
+        "wideLayout": true
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -232,12 +242,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(exchange_balance_total) by (account_id, exchange)",
+          "expr": "sum(exchange_balance_total{asset=\"USDT\", exchange_type=\"perp\"}) by (account_id, exchange)",
           "legendFormat": "{{account_id}} ({{exchange}})",
           "refId": "A"
         }
       ],
-      "title": "账户余额总览",
+      "title": "合约账户余额总览 (USDT)",
       "type": "stat"
     },
     {
@@ -317,149 +327,13 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "exchange_balance_frozen",
-          "legendFormat": "{{account_id}} - {{asset}} ({{exchange}})",
+          "expr": "exchange_balance_frozen{asset=\"USDT\", exchange_type=\"perp\"}",
+          "legendFormat": "{{account_id}} ({{exchange}})",
           "refId": "A"
         }
       ],
-      "title": "冻结余额趋势",
+      "title": "合约账户冻结余额趋势 (USDT)",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.01
-              },
-              {
-                "color": "red",
-                "value": 0.05
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 16
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(exchange_balance_query_total{status=\"success\"}[5m])) by (account_id, exchange)",
-          "legendFormat": "{{account_id}} ({{exchange}})",
-          "refId": "A"
-        }
-      ],
-      "title": "查询成功率",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 5
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 16
-      },
-      "id": 6,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(increase(exchange_balance_query_total{status=\"failure\"}[1h])) by (account_id, exchange)",
-          "legendFormat": "{{account_id}} ({{exchange}})",
-          "refId": "A"
-        }
-      ],
-      "title": "查询失败次数（1小时）",
-      "type": "stat"
     },
     {
       "datasource": {
@@ -902,7 +776,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "ops/m"
         },
         "overrides": []
       },
@@ -932,7 +806,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(exchange_order_update_total[1m])",
+          "expr": "rate(exchange_order_update_total[1m]) * 60",
           "legendFormat": "{{account_id}} - {{order_status}} - {{position_side}}",
           "refId": "A"
         }

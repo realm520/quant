@@ -1,0 +1,179 @@
+{
+    "global_settings": {
+      "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
+    },
+    "accounts": {
+      "account_001": {
+        "name": "账号1",
+        "exchange": "xt",
+        "api_key": "ad8e6d04-f871-4e38-9a7f-35991f0e09e1",
+        "api_secret": "99d6de5b456211edaa58add12693a581b7d537cc",
+        "enabled": false,
+        "channels": ["account", "position"]
+      },
+      "account_002": {
+        "name": "账号2",
+        "exchange": "xt",
+        "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
+        "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
+        "enabled": true,
+        "channels": ["order","trade","account","position"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 5
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 5
+          }
+        }
+      },
+      "account_003": {
+        "name": "账号3",
+        "exchange": "xt",
+        "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
+        "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
+        "enabled": false,
+        "channels": ["trade"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 10
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 1
+          }
+        }
+      },
+      "account_004": {
+        "name": "账号4",
+        "exchange": "xt",
+        "api_key": "48e87084-4cb8-4134-958d-1ff294ee3796",
+        "api_secret": "e98ebc0389dd9ca6d404a10cb472a306e3ce3229",
+        "enabled": false,
+        "channels": ["trade"]
+      },
+      "account_005": {
+        "name": "账号5",
+        "exchange": "xt",
+        "api_key": "840dfa00-6cfa-43d8-af92-5fde9e6f7f49",
+        "api_secret": "0fd61a99adf218bd4be79767f086195b15caab55",
+        "enabled": false,
+        "channels": ["account", "position","order"]
+      },
+      "account_006ktmm1": {
+        "name": "账号6ktmm1",
+        "exchange": "xt",
+        "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
+        "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
+        "enabled": true,
+        "channels": ["trade"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 5
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 5
+          }
+        }
+      },
+      "account_007ktmm2": {
+        "name": "账号7ktmm2",
+        "exchange": "xt",
+        "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
+        "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
+        "enabled": true,
+        "channels": ["trade"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 5
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 5
+          }
+        }
+      },
+      "account_008": {
+        "name": "账号8",
+        "exchange": "xt",
+        "api_key": "28a898c2-afe2-4823-b2ca-306433959365",
+        "api_secret": "5280f1ab4483a0a7c8ee4f63139ca3ed6e042921",
+        "enabled": true,
+        "channels": ["order","trade","account","position"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 5
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 5
+          }
+        }
+      },
+      "binance_main_001": {
+        "name": "Binance账号1",
+        "exchange": "binance",
+        "api_key": "2h6ps5jqtt8qYyx0KeOdWNvwkywQAP8nKBUlHFQQo4y7wM44kadCclJTrSoq4Lop",
+        "api_secret": "Ix7oHQdadgTTQEoT1WqQuxh7ui7g9YzEV90JGuffOTkcRAPkAJvC2KsdPaAFEDVx",
+        "enabled": true,
+        "channels": ["order"],
+        "watch_tasks": {
+          "balance": {
+            "enabled": true,
+            "exchange_type": "perp",
+            "interval": 5
+          },
+          "account": {
+            "enabled": true,
+            "interval": 5
+          },
+          "positions": {
+            "enabled": true,
+            "interval": 5
+          }
+        }
+      },
+      "binance_main_002": {
+        "name": "Binance账号2",
+        "exchange": "binance",
+        "api_key": "zt6mWuKhEVK9N5TUoelZQaYbplpKae5WAfETltgsUt6vtQeRNA9MlDqrwrijHhfi",
+        "api_secret": "EVOO5JrSdy74kMLIjZw9AiNLf42pZoK3X0tftmg2uinlknzdVGyqmrlz0pwNLuo3",
+        "enabled": false,
+        "channels": ["account","position"]
+      }
+    }
+  }
+  
+  

@@ -79,7 +79,7 @@
       "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
       "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
       "enabled": true,
-      "channels": ["account", "position","order"],
+      "channels": ["trade","position","order"],
       "watch_tasks": {
         "balance": {
           "enabled": true,
@@ -102,7 +102,7 @@
       "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
       "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
       "enabled": true,
-      "channels": ["account", "position","order"],
+      "channels": ["position","order","trade"],
       "watch_tasks": {
         "balance": {
           "enabled": true,
@@ -125,7 +125,7 @@
       "api_key": "28a898c2-afe2-4823-b2ca-306433959365",
       "api_secret": "5280f1ab4483a0a7c8ee4f63139ca3ed6e042921",
       "enabled": true,
-      "channels": ["order","trade","account","position"],
+      "channels": ["order","trade","position"],
       "watch_tasks": {
         "balance": {
           "enabled": true,
@@ -148,7 +148,7 @@
       "api_key": "2h6ps5jqtt8qYyx0KeOdWNvwkywQAP8nKBUlHFQQo4y7wM44kadCclJTrSoq4Lop",
       "api_secret": "Ix7oHQdadgTTQEoT1WqQuxh7ui7g9YzEV90JGuffOTkcRAPkAJvC2KsdPaAFEDVx",
       "enabled": true,
-      "channels": ["order"],
+      "channels": ["order","trade"],
       "watch_tasks": {
         "balance": {
           "enabled": true,

@@ -1047,26 +1047,38 @@ class XTUserStreamService:
             table.add_column("数量", style="red")
             table.add_column("金额", style="dim")
             
-            # 解析成交数据 - 支持两种格式：
+            # 解析成交数据 - 支持多种格式：
             # 1. trades 列表格式: {"trades": [...]}
             # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
+            # 3. XT WebSocket 格式: {"orderId": "...", "orderSide": "...", "price": "...", "quantity": "...", ...}
+            #    根据文档: https://doc.xt.com/zh-Hans/docs/futures/UserWebsocket/Transactions
             trades = []
             if "trades" in data and isinstance(data.get("trades"), list):
                 trades = data.get("trades", [])
-            elif "trade_id" in data or "tradeId" in data:
-                # 单个成交对象，转换为列表
+            elif isinstance(data, list):
+                # 如果 data 本身就是列表
+                trades = data
+            elif "orderId" in data or "order_id" in data or "trade_id" in data or "tradeId" in data:
+                # 单个成交对象（包括 XT 格式），转换为列表
                 trades = [data]
+            
+            # 如果没有成交数据，不显示表格
+            if len(trades) == 0:
+                logger.debug(f"No trade data found in message: {json.dumps(data, cls=DecimalEncoder)[:200]}")
+                return
             
             # 处理成交数据
             for trade in trades:
-                # 支持不同的字段名（trade_id/tradeId, order_id/orderId等）
-                trade_id = trade.get("trade_id") or trade.get("tradeId") or ""
-                order_id = trade.get("order_id") or trade.get("orderId") or ""
-                symbol = trade.get("symbol") or ""
-                side = trade.get("side") or ""
-                price = trade.get("price") or "0"
-                quantity = trade.get("quantity") or trade.get("qty") or "0"
-                quote_quantity = trade.get("quote_quantity") or trade.get("quoteQuantity") or trade.get("amount") or "0"
+                # XT 格式：orderId, orderSide, price, quantity, symbol, positionSide
+                # 其他格式：trade_id/tradeId, order_id/orderId, side, price, quantity, symbol
+                order_id = trade.get("orderId") or trade.get("order_id") or ""
+                trade_id = trade.get("trade_id") or trade.get("tradeId") or trade.get("id") or ""
+                # XT 使用 orderSide，其他使用 side
+                side = trade.get("orderSide") or trade.get("side") or trade.get("S") or ""
+                symbol = trade.get("symbol") or trade.get("s") or ""
+                price = trade.get("price") or trade.get("p") or trade.get("executedPrice") or "0"
+                quantity = trade.get("quantity") or trade.get("qty") or trade.get("q") or trade.get("executedQty") or "0"
+                quote_quantity = trade.get("quote_quantity") or trade.get("quoteQuantity") or trade.get("amount") or trade.get("notional") or "0"
                 
                 # 如果没有 quote_quantity，计算它
                 if quote_quantity == "0" or quote_quantity == 0:
@@ -1077,21 +1089,25 @@ class XTUserStreamService:
                     except (ValueError, TypeError):
                         quote_quantity = "0"
                 
-                table.add_row(
-                    str(trade_id),
-                    str(order_id),
-                    str(symbol),
-                    str(side),
-                    str(price),
-                    str(quantity),
-                    str(quote_quantity),
-                )
+                # 只显示有效的成交数据（至少要有 orderId 或 trade_id）
+                if order_id or trade_id:
+                    # 使用 orderId 作为成交ID（如果没有 trade_id，用 orderId 代替）
+                    display_trade_id = trade_id or order_id or ""
+                    table.add_row(
+                        str(display_trade_id),
+                        str(order_id),
+                        str(symbol),
+                        str(side),
+                        str(price),
+                        str(quantity),
+                        str(quote_quantity),
+                    )
             
-            if len(trades) == 0:
-                # 如果没有成交数据，显示警告
-                table.add_row("无成交数据", "", "", "", "", "", "")
-            
-            console.print(table)
+            # 如果表格有数据，才显示
+            if len(table.rows) > 0:
+                console.print(table)
+            else:
+                logger.debug(f"Trade data found but no valid trades to display: {json.dumps(data, cls=DecimalEncoder)[:200]}")
     
     async def _save_account_update(self, data: Dict[str, Any]) -> None:
         """保存账户更新到数据库."""
@@ -1416,32 +1432,44 @@ class XTUserStreamService:
             await self._ensure_account_tables_if_needed()
             
             async with self.db_manager.session() as session:
-                # 支持两种格式：
+                # 支持多种格式：
                 # 1. trades 列表格式: {"trades": [...]}
                 # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
+                # 3. XT WebSocket 格式: {"orderId": "...", "orderSide": "...", ...}
                 trades = []
                 if "trades" in data and isinstance(data.get("trades"), list):
                     trades = data.get("trades", [])
-                elif "trade_id" in data or "tradeId" in data:
-                    # 单个成交对象，转换为列表
+                elif isinstance(data, list):
+                    trades = data
+                elif "orderId" in data or "order_id" in data or "trade_id" in data or "tradeId" in data:
+                    # 单个成交对象（包括 XT 格式），转换为列表
                     trades = [data]
                 
                 if not trades:
                     logger.debug("No trades data to save")
                     return
                 
-                update_time = datetime.utcnow()
-                
                 for trade in trades:
                     # 支持不同的字段名
+                    # XT 格式没有 trade_id，使用 orderId + timestamp 作为 trade_id
                     trade_id = trade.get("trade_id") or trade.get("tradeId") or ""
+                    order_id = trade.get("orderId") or trade.get("order_id") or ""
+                    
+                    # 如果没有 trade_id，使用 orderId + timestamp 生成一个
+                    if not trade_id and order_id:
+                        timestamp = trade.get("timestamp")
+                        if timestamp:
+                            trade_id = f"{order_id}_{timestamp}"
+                        else:
+                            trade_id = order_id
+                    
                     if not trade_id:
-                        logger.debug("Trade missing trade_id, skipping")
+                        logger.debug("Trade missing trade_id and orderId, skipping")
                         continue
                     
-                    order_id = trade.get("order_id") or trade.get("orderId") or ""
                     symbol = trade.get("symbol") or ""
-                    side = trade.get("side") or ""
+                    # XT 使用 orderSide，其他使用 side
+                    side = trade.get("orderSide") or trade.get("side") or ""
                     price = self._safe_decimal(trade.get("price") or "0")
                     quantity = self._safe_decimal(trade.get("quantity") or trade.get("qty") or "0")
                     quote_quantity = self._safe_decimal(
@@ -1450,6 +1478,20 @@ class XTUserStreamService:
                         trade.get("amount") or 
                         str(price * quantity)  # 如果没有提供，计算它
                     )
+                    
+                    # 使用 XT 的 timestamp（如果存在），否则使用当前时间
+                    timestamp = trade.get("timestamp")
+                    if timestamp:
+                        try:
+                            # XT timestamp 是秒级时间戳
+                            if isinstance(timestamp, (int, float)):
+                                update_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                            else:
+                                update_time = datetime.utcnow()
+                        except (ValueError, OSError):
+                            update_time = datetime.utcnow()
+                    else:
+                        update_time = datetime.utcnow()
                     
                     TradeUpdateModel = self._get_model('XTTradeUpdate')
                     record = TradeUpdateModel(
@@ -2189,8 +2231,22 @@ class XTUserStreamService:
     def _has_trade_changed(self, trade_data: Dict[str, Any]) -> bool:
         """检查成交数据是否有变化."""
         # 成交数据每次都是新的，总是返回True
-        # 除非trade_id完全相同
-        trade_id = trade_data.get("trade_id") or trade_data.get("trades", [{}])[0].get("trade_id") if trade_data.get("trades") else None
+        # 除非trade_id或orderId+timestamp完全相同
+        # XT 格式使用 orderId + timestamp 作为唯一标识
+        trade_id = None
+        if "trades" in trade_data and isinstance(trade_data.get("trades"), list) and len(trade_data.get("trades", [])) > 0:
+            trade_id = trade_data.get("trades", [{}])[0].get("trade_id")
+        else:
+            # 单个成交对象
+            trade_id = trade_data.get("trade_id") or trade_data.get("tradeId")
+            # XT 格式：使用 orderId + timestamp 作为唯一标识
+            if not trade_id:
+                order_id = trade_data.get("orderId") or trade_data.get("order_id")
+                timestamp = trade_data.get("timestamp")
+                if order_id and timestamp:
+                    trade_id = f"{order_id}_{timestamp}"
+                elif order_id:
+                    trade_id = order_id
 
         if not trade_id:
             return True  # 无法识别成交，视为新数据

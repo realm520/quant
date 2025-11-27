@@ -315,14 +315,18 @@ def update_trade_metrics(
         account_id: Account ID
         trade_data: Trade data dictionary (may be single trade or dict with 'trades' list)
     """
-    # 支持两种格式：
+    # 支持多种格式：
     # 1. trades 列表格式: {"trades": [...]}
     # 2. 单个成交对象格式: {"trade_id": "...", "symbol": "...", ...}
+    # 3. XT WebSocket 格式: {"orderId": "...", "orderSide": "...", ...}
     trades = []
     if "trades" in trade_data and isinstance(trade_data.get("trades"), list):
         trades = trade_data.get("trades", [])
-    elif "trade_id" in trade_data or "tradeId" in trade_data:
-        # 单个成交对象，转换为列表
+    elif isinstance(trade_data, list):
+        # 如果 trade_data 本身就是列表
+        trades = trade_data
+    elif "orderId" in trade_data or "order_id" in trade_data or "trade_id" in trade_data or "tradeId" in trade_data:
+        # 单个成交对象（包括 XT 格式），转换为列表
         trades = [trade_data]
     
     for trade in trades:
@@ -337,8 +341,10 @@ def update_trade_metrics(
         if not symbol:
             continue  # 跳过没有交易对的成交
         
+        # XT 使用 orderSide，其他使用 side
         side = (
-            trade.get("side") 
+            trade.get("orderSide")  # XT
+            or trade.get("side") 
             or trade.get("S")  # Binance
             or ""
         ).upper()

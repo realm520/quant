@@ -222,12 +222,35 @@ def update_balance_metrics(
             open_order_margin_frozen = _to_float(data.get("openOrderMarginFrozen", data.get("frozen", 0)))
             isolated_margin = _to_float(data.get("isolatedMargin", 0))
             crossed_margin = _to_float(data.get("crossedMargin", 0))
-            # totalAmount 应该是总权益（marginBalance），如果没有则使用 total
-            total_amount = _to_float(data.get("totalAmount", data.get("marginBalance", data.get("equity", data.get("total", 0)))))
-            
-            if total_amount > 0:
+            # totalAmount 是 API 返回的总权益，必须使用 API 返回的 totalAmount 字段
+            # 注意：不要使用 marginBalance，因为 marginBalance 是保证金余额，不是总权益
+            # 也不要使用 walletBalance，因为 walletBalance 是钱包余额，不是总权益
+            total_amount = _to_float(data.get("totalAmount", 0))
+            if total_amount <= 0:
+                # 如果 totalAmount 不存在或为 0，记录错误并跳过计算
+                logger.error(
+                    "XT balance data missing totalAmount, cannot calculate margin usage ratio",
+                    account_id=account_id,
+                    asset=asset_label,
+                    has_totalAmount="totalAmount" in data,
+                    totalAmount_value=data.get("totalAmount"),
+                    available_keys=list(data.keys()),
+                )
+                margin_usage_ratio = 0.0
+            else:
                 margin_usage = open_order_margin_frozen + isolated_margin + crossed_margin
                 margin_usage_ratio = (margin_usage / total_amount) * 100.0
+                logger.debug(
+                    "Calculated XT margin usage ratio",
+                    account_id=account_id,
+                    asset=asset_label,
+                    open_order_margin_frozen=open_order_margin_frozen,
+                    isolated_margin=isolated_margin,
+                    crossed_margin=crossed_margin,
+                    margin_usage=margin_usage,
+                    total_amount=total_amount,
+                    margin_usage_ratio=margin_usage_ratio,
+                )
         
         _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)
 

@@ -1141,10 +1141,31 @@ class XTPerpExchange(BaseExchange):
             # Only include non-zero balances
             if total > 0:
                 # totalAmount 用于计算保证金占用率，优先使用 API 返回的 totalAmount 字段
-                total_amount = Decimal(str(item.get("totalAmount", "0")))
+                # 注意：totalAmount 是总权益，不是 marginBalance（保证金余额）
+                api_total_amount = item.get("totalAmount")
+                if api_total_amount is not None:
+                    total_amount = Decimal(str(api_total_amount))
+                else:
+                    # 如果 API 没有返回 totalAmount，记录警告并使用 walletBalance 或 total
+                    logger.warning(
+                        "XT API response missing totalAmount field",
+                        currency=currency,
+                        has_walletBalance="walletBalance" in item,
+                        walletBalance=item.get("walletBalance"),
+                    )
+                    # 使用 walletBalance（钱包余额）作为备选
+                    wallet_balance = Decimal(str(item.get("walletBalance", "0")))
+                    total_amount = wallet_balance if wallet_balance > 0 else total
+                
+                # 确保 totalAmount 是正数
                 if total_amount <= 0:
-                    # 如果没有 totalAmount，使用 marginBalance（总权益）或 total
-                    total_amount = equity if equity > 0 else total
+                    logger.warning(
+                        "XT totalAmount is 0 or negative, using total as fallback",
+                        currency=currency,
+                        totalAmount=str(total_amount),
+                        total=str(total),
+                    )
+                    total_amount = total
                 
                 balances[currency] = {
                     "available": available,
@@ -1161,6 +1182,7 @@ class XTPerpExchange(BaseExchange):
                     "crossedMargin": crossed_margin,  # 全仓保证金
                     "totalAmount": total_amount,  # 总权益（用于计算保证金占用率，优先使用 API 返回的 totalAmount）
                     "marginBalance": margin_balance,  # 保证金余额
+                    "walletBalance": Decimal(str(item.get("walletBalance", "0"))),  # 钱包余额（用于调试）
                 }
 
         return balances

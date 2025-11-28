@@ -2738,6 +2738,7 @@ async def _run_xt_watch_account_async(
                 if perp_balances:
                     balances_data: dict[str, dict[str, Any]] = {}
                     for currency, balance_info in perp_balances.items():
+                        # 包含所有字段，特别是保证金占用率计算所需的字段
                         balances_data[currency] = {
                             "available": balance_info.get("available", Decimal("0")),
                             "frozen": balance_info.get("frozen", Decimal("0")),
@@ -2747,6 +2748,13 @@ async def _run_xt_watch_account_async(
                             "equity": balance_info.get("equity", Decimal("0")),
                             "margin": balance_info.get("margin", Decimal("0")),
                             "margin_ratio": balance_info.get("margin_ratio", Decimal("0")),
+                            # 保证金占用率计算所需字段
+                            "openOrderMarginFrozen": balance_info.get("openOrderMarginFrozen", balance_info.get("frozen", Decimal("0"))),
+                            "isolatedMargin": balance_info.get("isolatedMargin", Decimal("0")),
+                            "crossedMargin": balance_info.get("crossedMargin", Decimal("0")),
+                            "totalAmount": balance_info.get("totalAmount", Decimal("0")),
+                            "walletBalance": balance_info.get("walletBalance", Decimal("0")),
+                            "marginBalance": balance_info.get("marginBalance", Decimal("0")),
                         }
 
                     perp_table = Table(
@@ -4971,6 +4979,7 @@ async def _run_xt_watch_account_async(
                 if perp_balances:
                     balances_data: dict[str, dict[str, Any]] = {}
                     for currency, balance_info in perp_balances.items():
+                        # 包含所有字段，特别是保证金占用率计算所需的字段
                         balances_data[currency] = {
                             "available": balance_info.get("available", Decimal("0")),
                             "frozen": balance_info.get("frozen", Decimal("0")),
@@ -4980,6 +4989,13 @@ async def _run_xt_watch_account_async(
                             "equity": balance_info.get("equity", Decimal("0")),
                             "margin": balance_info.get("margin", Decimal("0")),
                             "margin_ratio": balance_info.get("margin_ratio", Decimal("0")),
+                            # 保证金占用率计算所需字段
+                            "openOrderMarginFrozen": balance_info.get("openOrderMarginFrozen", balance_info.get("frozen", Decimal("0"))),
+                            "isolatedMargin": balance_info.get("isolatedMargin", Decimal("0")),
+                            "crossedMargin": balance_info.get("crossedMargin", Decimal("0")),
+                            "totalAmount": balance_info.get("totalAmount", Decimal("0")),
+                            "walletBalance": balance_info.get("walletBalance", Decimal("0")),
+                            "marginBalance": balance_info.get("marginBalance", Decimal("0")),
                         }
 
                     perp_table = Table(

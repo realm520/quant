@@ -42,6 +42,13 @@ _balance_total = Gauge(
     "Total balance of each asset per account and exchange.",
     ["exchange", "exchange_type", "account_id", "asset"],
 )
+
+_margin_usage_ratio = Gauge(
+    "exchange_margin_usage_ratio",
+    "Margin usage ratio (percentage) per account and exchange. For Binance: (balance - maxWithdrawAmount) / balance. For XT: (openOrderMarginFrozen + isolatedMargin + crossedMargin) / totalAmount * 100%.",
+    ["exchange", "exchange_type", "account_id", "asset"],
+)
+
 _query_status_counter = Counter(
     "exchange_balance_query_total",
     "Number of balance query attempts grouped by result.",
@@ -198,6 +205,31 @@ def update_balance_metrics(
         _balance_available.labels(*labels).set(available)
         _balance_frozen.labels(*labels).set(frozen)
         _balance_total.labels(*labels).set(total)
+        
+        # 计算保证金占用率
+        margin_usage_ratio = 0.0
+        if exchange.lower() == "binance":
+            # Binance: 保证金占用率 ≈ (balance - maxWithdrawAmount) / balance
+            # 如果没有 maxWithdrawAmount，用 frozen / total 近似
+            max_withdraw = _to_float(data.get("maxWithdrawAmount"))
+            if max_withdraw is not None and max_withdraw >= 0 and total > 0:
+                margin_usage_ratio = ((total - max_withdraw) / total) * 100.0
+            elif total > 0:
+                # 使用 frozen / total 作为近似值
+                margin_usage_ratio = (frozen / total) * 100.0
+        elif exchange.lower() == "xt":
+            # XT: 保证金占有率 = (openOrderMarginFrozen + isolatedMargin + crossedMargin) / totalAmount × 100%
+            open_order_margin_frozen = _to_float(data.get("openOrderMarginFrozen", data.get("frozen", 0)))
+            isolated_margin = _to_float(data.get("isolatedMargin", 0))
+            crossed_margin = _to_float(data.get("crossedMargin", 0))
+            # totalAmount 应该是总权益（marginBalance），如果没有则使用 total
+            total_amount = _to_float(data.get("totalAmount", data.get("marginBalance", data.get("equity", data.get("total", 0)))))
+            
+            if total_amount > 0:
+                margin_usage = open_order_margin_frozen + isolated_margin + crossed_margin
+                margin_usage_ratio = (margin_usage / total_amount) * 100.0
+        
+        _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)
 
 
 def record_balance_query_status(

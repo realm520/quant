@@ -107,7 +107,7 @@ docker run --rm --network host \
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="postgresql+asyncpg://postgres@{ip}:5432/trading" \
+    -e="postgresql+asyncpg://postgres@{ip}:5432/trading" \
     -e XT_API_KEY="" \
     -e XT_API_SECRET="" \
     -e LARK_WEBHOOK_URL="https://open.larksuite.com/open-apis/bot/v2/hook/****" \

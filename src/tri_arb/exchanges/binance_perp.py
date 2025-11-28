@@ -258,12 +258,21 @@ class BinancePerpExchange(BaseExchange):
                 # Frozen = Total - Available
                 frozen = max(Decimal("0"), total_balance - available_balance)
                 
+                # maxWithdrawAmount: 最大可转出余额（如果 API 返回）
+                max_withdraw_amount = balance_item.get("maxWithdrawAmount")
+                if max_withdraw_amount is not None:
+                    max_withdraw_amount = Decimal(str(max_withdraw_amount))
+                else:
+                    # 如果没有 maxWithdrawAmount，用 availableBalance 作为近似值
+                    max_withdraw_amount = available_balance
+                
                 # Only include assets with non-zero balances
                 if total_balance > 0:
                     balances[asset] = {
                         "available": available_balance,
                         "frozen": frozen,
-                        "total": total_balance
+                        "total": total_balance,
+                        "maxWithdrawAmount": max_withdraw_amount,
                     }
         else:
             # Handle unexpected response format

@@ -1140,8 +1140,11 @@ class XTPerpExchange(BaseExchange):
             
             # Only include non-zero balances
             if total > 0:
-                # totalAmount 用于计算保证金占用率，使用 marginBalance（总权益）或 total
-                total_amount = equity if equity > 0 else total
+                # totalAmount 用于计算保证金占用率，优先使用 API 返回的 totalAmount 字段
+                total_amount = Decimal(str(item.get("totalAmount", "0")))
+                if total_amount <= 0:
+                    # 如果没有 totalAmount，使用 marginBalance（总权益）或 total
+                    total_amount = equity if equity > 0 else total
                 
                 balances[currency] = {
                     "available": available,
@@ -1156,7 +1159,7 @@ class XTPerpExchange(BaseExchange):
                     "openOrderMarginFrozen": frozen,  # 订单冻结保证金
                     "isolatedMargin": isolated_margin,  # 逐仓保证金
                     "crossedMargin": crossed_margin,  # 全仓保证金
-                    "totalAmount": total_amount,  # 总权益（用于计算保证金占用率）
+                    "totalAmount": total_amount,  # 总权益（用于计算保证金占用率，优先使用 API 返回的 totalAmount）
                     "marginBalance": margin_balance,  # 保证金余额
                 }
 

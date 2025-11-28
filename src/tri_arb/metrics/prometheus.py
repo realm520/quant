@@ -196,6 +196,21 @@ def update_balance_metrics(
         return
 
     for asset, data in balances.items():
+        # 调试：记录 XT 账号的原始数据（用于排查保证金占用率计算问题）
+        if exchange.lower() == "xt" and asset.upper() == "USDT":
+            logger.info(
+                "XT balance data for margin usage calculation",
+                account_id=account_id,
+                asset=asset,
+                data_keys=list(data.keys()),
+                totalAmount_raw=data.get("totalAmount"),
+                totalAmount_type=type(data.get("totalAmount")).__name__ if data.get("totalAmount") is not None else None,
+                openOrderMarginFrozen=data.get("openOrderMarginFrozen"),
+                isolatedMargin=data.get("isolatedMargin"),
+                crossedMargin=data.get("crossedMargin"),
+                walletBalance=data.get("walletBalance"),
+                marginBalance=data.get("marginBalance"),
+            )
         asset_label = (asset or "").upper()
         labels = (exchange, exchange_type, account_id, asset_label)
         available = _to_float(data.get("available"))
@@ -225,22 +240,44 @@ def update_balance_metrics(
             # totalAmount 是 API 返回的总权益，必须使用 API 返回的 totalAmount 字段
             # 注意：不要使用 marginBalance，因为 marginBalance 是保证金余额，不是总权益
             # 也不要使用 walletBalance，因为 walletBalance 是钱包余额，不是总权益
-            total_amount = _to_float(data.get("totalAmount", 0))
+            total_amount_raw = data.get("totalAmount")
+            total_amount = _to_float(total_amount_raw) if total_amount_raw is not None else 0.0
+            
             if total_amount <= 0:
-                # 如果 totalAmount 不存在或为 0，记录错误并跳过计算
-                logger.error(
-                    "XT balance data missing totalAmount, cannot calculate margin usage ratio",
+                # 如果 totalAmount 不存在或为 0，记录错误并尝试使用 walletBalance 作为备选
+                logger.warning(
+                    "XT balance data missing or zero totalAmount, trying walletBalance as fallback",
                     account_id=account_id,
                     asset=asset_label,
                     has_totalAmount="totalAmount" in data,
-                    totalAmount_value=data.get("totalAmount"),
-                    available_keys=list(data.keys()),
+                    totalAmount_value=total_amount_raw,
+                    totalAmount_float=total_amount,
+                    available_keys=list(data.keys())[:10],  # 只显示前10个键，避免日志过长
                 )
-                margin_usage_ratio = 0.0
-            else:
+                # 尝试使用 walletBalance 作为备选（虽然不准确，但比 0 好）
+                wallet_balance = _to_float(data.get("walletBalance", 0))
+                if wallet_balance > 0:
+                    total_amount = wallet_balance
+                    logger.info(
+                        "Using walletBalance as fallback for totalAmount",
+                        account_id=account_id,
+                        asset=asset_label,
+                        walletBalance=wallet_balance,
+                    )
+                else:
+                    margin_usage_ratio = 0.0
+                    logger.error(
+                        "Cannot calculate XT margin usage ratio: totalAmount and walletBalance are both 0",
+                        account_id=account_id,
+                        asset=asset_label,
+                    )
+                    _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)
+                    continue  # 跳过这个资产
+            
+            if total_amount > 0:
                 margin_usage = open_order_margin_frozen + isolated_margin + crossed_margin
                 margin_usage_ratio = (margin_usage / total_amount) * 100.0
-                logger.debug(
+                logger.info(
                     "Calculated XT margin usage ratio",
                     account_id=account_id,
                     asset=asset_label,
@@ -250,6 +287,15 @@ def update_balance_metrics(
                     margin_usage=margin_usage,
                     total_amount=total_amount,
                     margin_usage_ratio=margin_usage_ratio,
+                )
+            else:
+                margin_usage_ratio = 0.0
+                logger.warning(
+                    "XT total_amount is 0, cannot calculate margin usage ratio",
+                    account_id=account_id,
+                    asset=asset_label,
+                    total_amount_raw=total_amount_raw,
+                    total_amount=total_amount,
                 )
         
         _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)

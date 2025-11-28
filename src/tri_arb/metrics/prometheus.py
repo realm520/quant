@@ -234,6 +234,12 @@ def update_balance_metrics(
                 margin_usage_ratio = (frozen / total) * 100.0
         elif exchange.lower() == "xt":
             # XT: 保证金占有率 = (openOrderMarginFrozen + isolatedMargin + crossedMargin) / totalAmount × 100%
+            # 注意：只有 USDT 等保证金资产才需要计算保证金占用率，其他资产（如 BTC、TRUMP、XRP）通常不需要
+            # 如果数据缺少必要字段，跳过计算（避免错误日志）
+            if asset_label != "USDT":
+                # 非 USDT 资产通常不需要计算保证金占用率，跳过
+                continue
+            
             open_order_margin_frozen = _to_float(data.get("openOrderMarginFrozen", data.get("frozen", 0)))
             isolated_margin = _to_float(data.get("isolatedMargin", 0))
             crossed_margin = _to_float(data.get("crossedMargin", 0))

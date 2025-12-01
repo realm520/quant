@@ -124,22 +124,12 @@ class DatabaseManager:
                     logger.info(f"All {name} tables already exist")
                     return
                 
-                # 特别检查 binance_balance_rest 是否需要创建
-                if "binance_balance_rest" in missing_tables:
-                    logger.info(f"{name}: binance_balance_rest is in missing_tables, will create it")
-                elif "binance_balance_rest" in metadata_tables:
-                    logger.warning(f"{name}: binance_balance_rest is in metadata but NOT in missing_tables! This might be a problem.")
-                
                 logger.info(f"Creating {len(missing_tables)} missing {name} tables: {', '.join(sorted(missing_tables))}")
                 
                 # 对每个缺失的表，尝试创建（忽略索引错误）
                 created_tables = []
                 failed_tables = []
                 for table_name in sorted(missing_tables):
-                    # 特别关注 binance_balance_rest
-                    if table_name == "binance_balance_rest":
-                        logger.info(f"🔍 Attempting to create binance_balance_rest table...")
-                    
                     table = metadata.tables[table_name]
                     try:
                         # 先检查表是否真的存在（可能索引存在但表不存在）
@@ -148,9 +138,6 @@ class DatabaseManager:
                         
                         if not table_exists:
                             # 表不存在，先创建表（不创建索引）
-                            if table_name == "binance_balance_rest":
-                                logger.info(f"🔍 Table binance_balance_rest does not exist, creating table only (without indexes)...")
-                            
                             # 使用原始 SQL 创建表，不包含索引
                             from sqlalchemy.schema import CreateTable
                             from sqlalchemy import text
@@ -158,8 +145,6 @@ class DatabaseManager:
                             sync_conn.execute(text(create_table_sql))
                             sync_conn.commit()
                             logger.info(f"✓ Created table: {table_name}")
-                            if table_name == "binance_balance_rest":
-                                logger.info(f"🔍 Successfully created binance_balance_rest table!")
                             created_tables.append(table_name)
                         else:
                             # 表已存在
@@ -181,8 +166,6 @@ class DatabaseManager:
                     except (ProgrammingError, DBAPIError) as pe:
                         sync_conn.rollback()
                         pe_str = str(pe).lower()
-                        if table_name == "binance_balance_rest":
-                            logger.error(f"🔍 Error creating binance_balance_rest: {pe}", exc_info=True)
                         if "already exists" in pe_str or "duplicate" in pe_str:
                             logger.debug(f"Table {table_name} or its indexes already exist (skipping)")
                             created_tables.append(table_name)  # 表已存在，也算成功
@@ -192,8 +175,6 @@ class DatabaseManager:
                     except Exception as e:
                         sync_conn.rollback()
                         error_str = str(e).lower()
-                        if table_name == "binance_balance_rest":
-                            logger.error(f"🔍 Unexpected error creating binance_balance_rest: {e}", exc_info=True)
                         if "already exists" in error_str or "duplicate" in error_str:
                             logger.debug(f"Table {table_name} already exists (skipping)")
                             created_tables.append(table_name)  # 表已存在，也算成功

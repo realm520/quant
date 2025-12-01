@@ -122,6 +122,8 @@ class DatabaseManager:
                 logger.info(f"Creating {len(missing_tables)} missing {name} tables: {', '.join(sorted(missing_tables))}")
                 
                 # 对每个缺失的表，尝试创建（忽略索引错误）
+                created_tables = []
+                failed_tables = []
                 for table_name in sorted(missing_tables):
                     table = metadata.tables[table_name]
                     try:
@@ -130,6 +132,7 @@ class DatabaseManager:
                         table.create(sync_conn, checkfirst=True)
                         sync_conn.commit()
                         logger.info(f"✓ Created table: {table_name}")
+                        created_tables.append(table_name)
                         
                         # 尝试创建索引（忽略已存在的错误）
                         for index in table.indexes:
@@ -148,15 +151,27 @@ class DatabaseManager:
                         pe_str = str(pe).lower()
                         if "already exists" in pe_str or "duplicate" in pe_str:
                             logger.debug(f"Table {table_name} or its indexes already exist (skipping)")
+                            created_tables.append(table_name)  # 表已存在，也算成功
                         else:
                             logger.warning(f"Failed to create table {table_name}: {pe}")
+                            failed_tables.append((table_name, str(pe)))
                     except Exception as e:
                         sync_conn.rollback()
                         error_str = str(e).lower()
                         if "already exists" in error_str or "duplicate" in error_str:
                             logger.debug(f"Table {table_name} already exists (skipping)")
+                            created_tables.append(table_name)  # 表已存在，也算成功
                         else:
                             logger.error(f"Unexpected error creating table {table_name}: {e}", exc_info=True)
+                            failed_tables.append((table_name, str(e)))
+                
+                # 总结创建结果
+                if created_tables:
+                    logger.info(f"✓ Successfully created/verified {len(created_tables)} {name} tables: {', '.join(sorted(created_tables))}")
+                if failed_tables:
+                    logger.warning(f"⚠ Failed to create {len(failed_tables)} {name} tables: {', '.join([t[0] for t in failed_tables])}")
+                    for table_name, error in failed_tables:
+                        logger.warning(f"  - {table_name}: {error}")
             
             try:
                 logger.info("Creating Binance tables...")

@@ -6318,7 +6318,12 @@ def watch_all(
                             )
             console.print("[green]✅ 基础数据库表已就绪[/green]\n")
         except Exception as init_exc:
-            console.print(f"[yellow]警告:[/yellow] 基础数据库表初始化失败: {init_exc}")
+            console.print(f"[red]错误:[/red] 基础数据库表初始化失败: {init_exc}")
+            if debug:
+                import traceback
+                console.print_exception()
+            logger.error("Failed to create database tables", exc_info=True, error=str(init_exc))
+            # 不关闭连接，让后续任务有机会重试
         finally:
             await db_manager.close()
         

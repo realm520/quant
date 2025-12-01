@@ -97,85 +97,66 @@ class DatabaseManager:
         async with self.async_engine.connect() as conn:
             def _create_safe(sync_conn, metadata, name: str):
                 """创建表，忽略已存在的表/索引错误."""
+                from sqlalchemy import text
+                
+                # 获取 metadata 中定义的所有表
+                metadata_tables = set(metadata.tables.keys())
+                logger.debug(f"{name}: Found {len(metadata_tables)} tables in metadata: {sorted(metadata_tables)}")
+                
+                # 先检查哪些表已经存在
+                existing_tables = set()
                 try:
-                    # 先尝试标准的 create_all（这会处理表和索引）
-                    metadata.create_all(sync_conn, checkfirst=True)
-                    sync_conn.commit()
-                except (ProgrammingError, DBAPIError) as e:
-                    error_str = str(e).lower()
-                    # 回滚当前事务
+                    inspector = inspect(sync_conn)
+                    existing_tables = set(inspector.get_table_names())
+                    logger.debug(f"{name}: Found {len(existing_tables)} existing tables in database")
+                except Exception as inspect_err:
+                    logger.warning(f"{name}: Failed to inspect existing tables: {inspect_err}")
+                
+                # 检查哪些表需要创建
+                missing_tables = metadata_tables - existing_tables
+                
+                if not missing_tables:
+                    logger.debug(f"All {name} tables already exist")
+                    return
+                
+                logger.info(f"Creating {len(missing_tables)} missing {name} tables: {', '.join(sorted(missing_tables))}")
+                
+                # 对每个缺失的表，尝试创建（忽略索引错误）
+                for table_name in sorted(missing_tables):
+                    table = metadata.tables[table_name]
                     try:
+                        # 先尝试创建表（不创建索引）
+                        # 使用原始 SQL 来避免索引冲突
+                        table.create(sync_conn, checkfirst=True)
+                        sync_conn.commit()
+                        logger.info(f"✓ Created table: {table_name}")
+                        
+                        # 尝试创建索引（忽略已存在的错误）
+                        for index in table.indexes:
+                            try:
+                                index.create(sync_conn, checkfirst=True)
+                                sync_conn.commit()
+                            except (ProgrammingError, DBAPIError) as idx_err:
+                                sync_conn.rollback()
+                                idx_err_str = str(idx_err).lower()
+                                if "already exists" in idx_err_str or "duplicate" in idx_err_str:
+                                    logger.debug(f"Index {index.name} already exists (skipping)")
+                                else:
+                                    logger.warning(f"Failed to create index {index.name}: {idx_err}")
+                    except (ProgrammingError, DBAPIError) as pe:
                         sync_conn.rollback()
-                    except Exception:
-                        pass
-                    
-                    # 如果是索引已存在的错误，尝试逐个创建表（跳过索引）
-                    if "already exists" in error_str or "duplicate" in error_str or "aborted" in error_str:
-                        logger.warning(f"Some {name} indexes already exist, creating tables individually...")
-                        
-                        # 获取所有表名
-                        try:
-                            inspector = inspect(sync_conn)
-                            existing_tables = set(inspector.get_table_names())
-                        except Exception as inspect_err:
-                            # 如果检查失败，假设所有表都不存在
-                            logger.warning(f"Failed to inspect existing tables, will try to create all: {inspect_err}")
-                            existing_tables = set()
-                        
-                        # 获取 metadata 中定义的所有表
-                        metadata_tables = set(metadata.tables.keys())
-                        
-                        # 检查哪些表需要创建
-                        missing_tables = metadata_tables - existing_tables
-                        
-                        if missing_tables:
-                            logger.info(f"Creating {len(missing_tables)} missing {name} tables: {', '.join(sorted(missing_tables))}")
-                            # 对每个缺失的表，尝试创建（忽略索引错误）
-                            for table_name in missing_tables:
-                                table = metadata.tables[table_name]
-                                try:
-                                    # 创建表结构（不创建索引）
-                                    table.create(sync_conn, checkfirst=True)
-                                    sync_conn.commit()
-                                    logger.debug(f"Created table: {table_name}")
-                                    
-                                    # 尝试创建索引（忽略已存在的错误）
-                                    for index in table.indexes:
-                                        try:
-                                            index.create(sync_conn, checkfirst=True)
-                                            sync_conn.commit()
-                                        except (ProgrammingError, DBAPIError) as idx_err:
-                                            sync_conn.rollback()
-                                            idx_err_str = str(idx_err).lower()
-                                            if "already exists" in idx_err_str or "duplicate" in idx_err_str:
-                                                logger.debug(f"Index {index.name} already exists (skipping)")
-                                            else:
-                                                logger.warning(f"Failed to create index {index.name}: {idx_err}")
-                                except (ProgrammingError, DBAPIError) as pe:
-                                    sync_conn.rollback()
-                                    pe_str = str(pe).lower()
-                                    if "already exists" in pe_str or "duplicate" in pe_str:
-                                        logger.debug(f"Table {table_name} or its indexes already exist (skipping)")
-                                    else:
-                                        logger.warning(f"Failed to create table {table_name}: {pe}")
+                        pe_str = str(pe).lower()
+                        if "already exists" in pe_str or "duplicate" in pe_str:
+                            logger.debug(f"Table {table_name} or its indexes already exist (skipping)")
                         else:
-                            logger.debug(f"All {name} tables already exist")
-                    else:
-                        # 其他类型的错误，重新抛出
-                        raise
-                except Exception as e:
-                    error_str = str(e).lower()
-                    # 回滚事务
-                    try:
+                            logger.warning(f"Failed to create table {table_name}: {pe}")
+                    except Exception as e:
                         sync_conn.rollback()
-                    except Exception:
-                        pass
-                    # 如果是表/索引已存在的错误，记录为警告而不是错误
-                    if "already exists" in error_str or "duplicate" in error_str:
-                        logger.warning(f"Some {name} tables/indexes already exist (this is OK): {e}")
-                    else:
-                        logger.error(f"Failed to create {name} tables: {e}", exc_info=True)
-                        raise
+                        error_str = str(e).lower()
+                        if "already exists" in error_str or "duplicate" in error_str:
+                            logger.debug(f"Table {table_name} already exists (skipping)")
+                        else:
+                            logger.error(f"Unexpected error creating table {table_name}: {e}", exc_info=True)
             
             try:
                 logger.info("Creating Binance tables...")
@@ -250,7 +231,9 @@ class DatabaseManager:
                     raise
             
             try:
-                logger.info("Creating Exchange-specific REST API tables (binance_balance_rest, xt_balance_rest, etc.)...")
+                # 先检查 metadata 中有哪些表
+                metadata_tables = list(ExchangeRestBase.metadata.tables.keys())
+                logger.info(f"Creating Exchange-specific REST API tables (binance_balance_rest, xt_balance_rest, etc.)... Found {len(metadata_tables)} tables in metadata: {metadata_tables}")
                 await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, ExchangeRestBase.metadata, "Exchange-specific REST API"))
                 logger.info("✓ Exchange-specific REST API tables created/verified")
             except Exception as e:

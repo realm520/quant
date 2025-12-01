@@ -91,61 +91,103 @@ class DatabaseManager:
     async def create_tables(self):
         """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API、按交易所区分的REST API）。"""
         async with self.async_engine.begin() as conn:
+            def _create_safe(sync_conn, metadata, name: str):
+                """创建表，忽略已存在的表/索引错误."""
+                try:
+                    metadata.create_all(sync_conn, checkfirst=True)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # 如果是表/索引已存在的错误，记录为警告而不是错误
+                    if "already exists" in error_str or "duplicate" in error_str:
+                        logger.warning(f"Some {name} tables/indexes already exist (this is OK): {e}")
+                    else:
+                        logger.error(f"Failed to create {name} tables: {e}", exc_info=True)
+                        raise
+            
             try:
                 logger.info("Creating Binance tables...")
-                await conn.run_sync(lambda sync_conn: BinanceBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, BinanceBase.metadata, "Binance"))
                 logger.info("✓ Binance tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create Binance tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some Binance tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create Binance tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating OKX tables...")
-                await conn.run_sync(lambda sync_conn: OKXBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, OKXBase.metadata, "OKX"))
                 logger.info("✓ OKX tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create OKX tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some OKX tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create OKX tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating Gate.io tables...")
-                await conn.run_sync(lambda sync_conn: GateBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, GateBase.metadata, "Gate.io"))
                 logger.info("✓ Gate.io tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create Gate.io tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some Gate.io tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create Gate.io tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating XT WebSocket tables...")
-                await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, XTWebSocketBase.metadata, "XT WebSocket"))
                 logger.info("✓ XT WebSocket tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create XT WebSocket tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some XT WebSocket tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create XT WebSocket tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating REST API tables...")
-                await conn.run_sync(lambda sync_conn: RestBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, RestBase.metadata, "REST API"))
                 logger.info("✓ REST API tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create REST API tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some REST API tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create REST API tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating XT REST API tables...")
-                await conn.run_sync(lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, XTRestBase.metadata, "XT REST API"))
                 logger.info("✓ XT REST API tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create XT REST API tables: {e}", exc_info=True)
-                raise
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some XT REST API tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create XT REST API tables: {e}", exc_info=True)
+                    raise
             
             try:
                 logger.info("Creating Exchange-specific REST API tables (binance_balance_rest, xt_balance_rest, etc.)...")
-                await conn.run_sync(lambda sync_conn: ExchangeRestBase.metadata.create_all(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, ExchangeRestBase.metadata, "Exchange-specific REST API"))
                 logger.info("✓ Exchange-specific REST API tables created/verified")
             except Exception as e:
-                logger.error(f"Failed to create Exchange-specific REST API tables: {e}", exc_info=True)
-                raise
+                # 检查是否是索引/表已存在的错误（这些可以忽略）
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some Exchange-specific REST API tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create Exchange-specific REST API tables: {e}", exc_info=True)
+                    raise
         
         logger.info("✅ All database tables created/verified (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API)")
     

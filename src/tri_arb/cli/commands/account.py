@@ -1989,7 +1989,7 @@ async def _run_generic_watch_balance_async(
                         else:  # table (default)
                             format_balance_table(balance_data, exchange_instance)
                         
-                        # 保存到数据库（rest_balances 表，支持多交易所）
+                        # 保存到数据库（使用 exchange-specific REST 表，如 binance_balance_rest）
                         try:
                             await rest_data_service.save_balance_query(
                                 exchange=exchange_name.value,
@@ -1999,11 +1999,11 @@ async def _run_generic_watch_balance_async(
                                 account_id=account_id,
                             )
                             console.print(
-                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 rest_balances ({exchange_name.value})"
+                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 {exchange_name.value}_balance_rest"
                             )
                         except Exception as save_exc:
                             logger.warning(
-                                f"账号 {account_label} 保存余额到 rest_balances 失败: {save_exc}",
+                                f"账号 {account_label} 保存余额失败: {save_exc}",
                                 extra={"exchange": exchange_name.value, "account_id": account_id},
                             )
                             console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")
@@ -4157,7 +4157,7 @@ async def _run_generic_watch_balance_async(
                         else:  # table (default)
                             format_balance_table(balance_data, exchange_instance)
                         
-                        # 保存到数据库（rest_balances 表，支持多交易所）
+                        # 保存到数据库（使用 exchange-specific REST 表，如 binance_balance_rest）
                         try:
                             await rest_data_service.save_balance_query(
                                 exchange=exchange_name.value,
@@ -4167,11 +4167,11 @@ async def _run_generic_watch_balance_async(
                                 account_id=account_id,
                             )
                             console.print(
-                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 rest_balances ({exchange_name.value})"
+                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 {exchange_name.value}_balance_rest"
                             )
                         except Exception as save_exc:
                             logger.warning(
-                                f"账号 {account_label} 保存余额到 rest_balances 失败: {save_exc}",
+                                f"账号 {account_label} 保存余额失败: {save_exc}",
                                 extra={"exchange": exchange_name.value, "account_id": account_id},
                             )
                             console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")

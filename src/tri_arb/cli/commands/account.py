@@ -3112,6 +3112,14 @@ async def _run_binance_watch_positions_async(
     async def watch_loop():
         iteration = 0
         try:
+            # 确保数据库表存在
+            try:
+                console.print(f"[cyan]正在检查/创建数据库表（账号 {account_label}）...[/cyan]")
+                await db_manager.create_tables()
+                console.print(f"[green]✅ 数据库表已就绪[/green]\n")
+            except Exception as init_exc:
+                console.print(f"[yellow]警告:[/yellow] 数据库表初始化失败: {init_exc}")
+            
             await perp_exchange.connect()
             while True:
                 iteration += 1
@@ -3131,6 +3139,10 @@ async def _run_binance_watch_positions_async(
         finally:
             try:
                 await perp_exchange.disconnect()
+            except Exception:
+                pass
+            try:
+                await db_manager.close()
             except Exception:
                 pass
 
@@ -6066,8 +6078,19 @@ async def _run_watch_orders_async(
     metrics_account = account_id or (account_name or "default")
     exchange_label = exchange.value
     
+    # 初始化数据库管理器
+    db_manager = DatabaseManager()
+    
     iteration = 0
     try:
+        # 确保数据库表存在
+        try:
+            console.print(f"[cyan]正在检查/创建数据库表（账号 {account_label}）...[/cyan]")
+            await db_manager.create_tables()
+            console.print(f"[green]✅ 数据库表已就绪[/green]\n")
+        except Exception as init_exc:
+            console.print(f"[yellow]警告:[/yellow] 数据库表初始化失败: {init_exc}")
+        
         await exchange_instance.connect()
         
         while True:
@@ -6143,6 +6166,10 @@ async def _run_watch_orders_async(
     finally:
         try:
             await exchange_instance.disconnect()
+        except Exception:
+            pass
+        try:
+            await db_manager.close()
         except Exception:
             pass
 
@@ -6273,6 +6300,28 @@ def watch_all(
     console.print("[yellow]按 Ctrl+C 停止监控[/yellow]\n")
 
     async def run_all_watch_tasks():
+        # 在启动所有任务前，统一确保基础数据库表存在
+        console.print("[cyan]正在检查/创建基础数据库表（watch-all）...[/cyan]")
+        db_manager = DatabaseManager(database_url=db_url)
+        try:
+            await db_manager.create_tables()
+            # 为所有 XT 账号预创建多账号专用表
+            xt_accounts = [acc for acc in enabled_accounts if acc.exchange.lower() == "xt"]
+            if xt_accounts:
+                from tri_arb.storage.xt_multi_account_models import create_account_table_models as create_xt_models
+                for acc in xt_accounts:
+                    models = create_xt_models(acc.account_id)
+                    async with db_manager.async_engine.begin() as conn:
+                        for model_class in models.values():
+                            await conn.run_sync(
+                                lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
+                            )
+            console.print("[green]✅ 基础数据库表已就绪[/green]\n")
+        except Exception as init_exc:
+            console.print(f"[yellow]警告:[/yellow] 基础数据库表初始化失败: {init_exc}")
+        finally:
+            await db_manager.close()
+        
         all_tasks = []
         
         for acc in enabled_accounts:

@@ -254,11 +254,20 @@ def user_stream(
             # 初始化数据库管理器
             db_manager = DatabaseManager(database_url=db_url)
             
-            # 创建数据库表（如果指定或提供了账号ID）
-            if create_tables or account_id:
-                console.print("[cyan]正在创建数据库表...[/cyan]")
-                if account_id and exchange == ExchangeName.XT:
-                    # 为账号创建特定的表
+            # 始终确保基础表存在（使用 checkfirst，不会重复创建）
+            try:
+                console.print("[cyan]正在检查/创建基础数据库表...[/cyan]")
+                await db_manager.create_tables()
+                console.print("[green]✅ 基础数据库表已就绪[/green]\n")
+            except Exception as init_exc:
+                # 如果建表失败，不中断后续逻辑，但给出警告
+                console.print(f"[yellow]警告:[/yellow] 基础数据库表初始化失败: {init_exc}")
+            
+            # 如果是 XT 且指定了 account_id，则预先为该账号创建多账号专用表
+            # （XT 服务内部仍有 ensure_account_tables 二次兜底）
+            if account_id and exchange == ExchangeName.XT:
+                try:
+                    console.print(f"[cyan]正在为账号 {account_id} 创建 XT 多账号表...[/cyan]")
                     from tri_arb.storage.xt_multi_account_models import create_account_table_models
                     account_models = create_account_table_models(account_id)
                     async with db_manager.async_engine.begin() as conn:
@@ -268,10 +277,12 @@ def user_stream(
                                     sync_conn, checkfirst=True
                                 )
                             )
-                    console.print(f"[green]✅ 账号 {account_id} 的数据库表已就绪[/green]\n")
-                else:
-                    await db_manager.create_tables()
-                    console.print("[green]✅ 数据库表创建成功[/green]\n")
+                    console.print(f"[green]✅ 账号 {account_id} 的 XT 多账号表已就绪[/green]\n")
+                except Exception as xt_init_exc:
+                    console.print(
+                        f"[yellow]警告:[/yellow] 账号 {account_id} 的 XT 多账号表预创建失败: {xt_init_exc}，"
+                        "将由运行时自动按需创建"
+                    )
             
             # 验证输出格式
             if output not in ["table", "json", "none"]:
@@ -451,13 +462,18 @@ def multi_account(
     console.print("[yellow]按 Ctrl+C 停止订阅[/yellow]\n")
 
     async def prepare_tables_if_needed():
-        if not create_tables:
-            return
-        console.print("[cyan]正在创建基础数据库表...[/cyan]")
+        """为多账号订阅准备数据库表。
+        
+        - 始终确保基础表存在（使用 checkfirst，无论是否传入 --create-tables）
+        - 为 XT 账号预创建多账号表（XT 服务内部仍有 ensure_account_tables 兜底）
+        """
+        console.print("[cyan]正在检查/创建基础数据库表（多账号）...[/cyan]")
         db_manager = DatabaseManager(database_url=db_url)
         try:
+            # 1. 创建/检查通用表（Binance、OKX、Gate、REST 等）
             await db_manager.create_tables()
-            # XT 多账号表
+            
+            # 2. 为所有 XT 账号预创建多账号专用表
             xt_accounts = [acc for acc in enabled_accounts if acc.exchange.lower() == "xt"]
             if xt_accounts:
                 from tri_arb.storage.xt_multi_account_models import create_account_table_models as create_xt_models
@@ -468,7 +484,9 @@ def multi_account(
                             await conn.run_sync(
                                 lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
                             )
-            console.print("[green]✅ 数据库表创建成功[/green]\n")
+            console.print("[green]✅ 多账号基础数据库表已就绪[/green]\n")
+        except Exception as init_exc:
+            console.print(f"[yellow]警告:[/yellow] 多账号基础数据库表初始化失败: {init_exc}")
         finally:
             await db_manager.close()
 

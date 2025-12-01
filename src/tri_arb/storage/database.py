@@ -15,6 +15,7 @@ from tri_arb.storage.gate_models import Base as GateBase
 from tri_arb.storage.xt_websocket_models import Base as XTWebSocketBase
 from tri_arb.storage.rest_models import Base as RestBase
 from tri_arb.storage.xt_rest_models import Base as XTRestBase
+from tri_arb.storage.exchange_rest_models import Base as ExchangeRestBase
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,7 @@ class DatabaseManager:
         )
     
     async def create_tables(self):
-        """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API）。"""
+        """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API、按交易所区分的REST API）。"""
         async with self.async_engine.begin() as conn:
             await conn.run_sync(lambda sync_conn: BinanceBase.metadata.create_all(sync_conn, checkfirst=True))
             await conn.run_sync(lambda sync_conn: OKXBase.metadata.create_all(sync_conn, checkfirst=True))
@@ -81,7 +82,8 @@ class DatabaseManager:
             await conn.run_sync(lambda sync_conn: XTWebSocketBase.metadata.create_all(sync_conn, checkfirst=True))
             await conn.run_sync(lambda sync_conn: RestBase.metadata.create_all(sync_conn, checkfirst=True))
             await conn.run_sync(lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True))
-        logger.info("Database tables created (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API)")
+            await conn.run_sync(lambda sync_conn: ExchangeRestBase.metadata.create_all(sync_conn, checkfirst=True))
+        logger.info("Database tables created (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API)")
     
     async def drop_tables(self):
         """删除数据库表（谨慎使用）。"""
@@ -92,7 +94,8 @@ class DatabaseManager:
             await conn.run_sync(XTWebSocketBase.metadata.drop_all)
             await conn.run_sync(RestBase.metadata.drop_all)
             await conn.run_sync(XTRestBase.metadata.drop_all)
-        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API)")
+            await conn.run_sync(ExchangeRestBase.metadata.drop_all)
+        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API)")
     
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession, None]:

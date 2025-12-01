@@ -13,7 +13,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from tri_arb.config.logging import get_logger
 from tri_arb.storage.database import DatabaseManager
-from tri_arb.storage.rest_models import RestBalance, RestPosition, RestOrder, ScheduledQuery
+from tri_arb.storage.rest_models import ScheduledQuery
+from tri_arb.storage.exchange_rest_models import (
+    get_balance_model,
+    get_position_model,
+    get_order_model,
+)
 
 logger = get_logger(__name__)
 
@@ -51,10 +56,12 @@ class RestDataService:
             account_id: 账号ID（可选，用于区分多账号）
         """
         try:
+            # 根据交易所选择对应的表模型
+            BalanceModel = get_balance_model(exchange)
+            
             async with self.db_manager.session() as session:
                 for asset, data in balances_data.items():
-                    balance_record = RestBalance(
-                        exchange=exchange,
+                    balance_record = BalanceModel(
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,
@@ -92,6 +99,9 @@ class RestDataService:
             account_id: 账号ID（可选，用于区分多账号）
         """
         try:
+            # 根据交易所选择对应的表模型
+            PositionModel = get_position_model(exchange)
+            
             async with self.db_manager.session() as session:
                 for pos_data in positions_data:
                     # 尝试标准化不同交易所的字段
@@ -116,8 +126,7 @@ class RestDataService:
                         except Exception:
                             position_side = "UNKNOWN"
                     
-                    position_record = RestPosition(
-                        exchange=exchange,
+                    position_record = PositionModel(
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,
@@ -132,7 +141,7 @@ class RestDataService:
                         notional=Decimal(str(pos_data.get("notional"))) if pos_data.get("notional") else None,
                         isolated=pos_data.get("isolated", False),
                         leverage=str(leverage) if leverage else None,
-                    raw_data=json.dumps(pos_data, ensure_ascii=False, default=str)
+                        raw_data=json.dumps(pos_data, ensure_ascii=False, default=str)
                     )
                     session.add(position_record)
                 
@@ -161,6 +170,9 @@ class RestDataService:
             account_id: 账号ID（可选，用于区分多账号）
         """
         try:
+            # 根据交易所选择对应的表模型
+            OrderModel = get_order_model(exchange)
+            
             async with self.db_manager.session() as session:
                 for order_data in orders_data:
                     # 尝试标准化不同交易所的字段
@@ -186,8 +198,7 @@ class RestDataService:
                     order_time = datetime.fromtimestamp(int(order_time_ms) / 1000) if order_time_ms else None
                     update_time = datetime.fromtimestamp(int(update_time_ms) / 1000) if update_time_ms else None
                     
-                    order_record = RestOrder(
-                        exchange=exchange,
+                    order_record = OrderModel(
                         exchange_type=exchange_type,
                         query_time=datetime.utcnow(),
                         query_type=query_type,

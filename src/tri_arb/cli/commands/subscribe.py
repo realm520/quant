@@ -468,18 +468,6 @@ def multi_account(
                             await conn.run_sync(
                                 lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
                             )
-
-            # Binance 多账号表
-            binance_accounts = [acc for acc in enabled_accounts if acc.exchange.lower() == "binance"]
-            if binance_accounts:
-                from tri_arb.storage.binance_multi_account_models import create_account_table_models as create_binance_models
-                for acc in binance_accounts:
-                    models = create_binance_models(acc.account_id)
-                    async with db_manager.async_engine.begin() as conn:
-                        for model_class in models.values():
-                            await conn.run_sync(
-                                lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
-                            )
             console.print("[green]✅ 数据库表创建成功[/green]\n")
         finally:
             await db_manager.close()

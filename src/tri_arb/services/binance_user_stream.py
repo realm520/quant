@@ -24,7 +24,6 @@ from tri_arb.storage.models import (
     TradeUpdate,
     ConnectionStatus,
 )
-from tri_arb.storage.binance_multi_account_models import create_account_table_models
 from tri_arb.services.binance_reconciliation import BinanceReconciliationService
 from tri_arb.metrics.prometheus import (
     ensure_metrics_server,
@@ -95,42 +94,12 @@ class BinanceUserStreamService:
         # 记录断线时间，用于重连后计算回溯时间
         self.disconnect_time: Optional[datetime] = None
 
-        # 多账号表模型缓存（当 account_id 设置后按需初始化）
-        self._account_models: Optional[dict[str, type]] = None
-
-        logger.info("BinanceUserStreamService initialized",
-                   display_format=display_format,
-                   enabled_channels=list(self.enabled_channels),
-                   reconciliation_mode="on_reconnect")
-
-    def _get_model(self, base_name: str):
-        """根据是否有 account_id 返回对应的表模型.
-
-        - 如果设置了 account_id，则使用带表名后缀的多账号表
-        - 否则使用默认的共享表（兼容旧数据）
-        """
-        # 优先使用多账号表
-        if self.account_id:
-            if self._account_models is None:
-                self._account_models = create_account_table_models(self.account_id)
-                logger.info(
-                    "Initialized Binance multi-account models",
-                    account_id=self.account_id,
-                    tables=list(self._account_models.keys()),
-                )
-            model = self._account_models.get(base_name)
-            if model is None:
-                raise ValueError(f"Unknown model name for Binance multi-account: {base_name}")
-            return model
-
-        # 兼容模式：使用默认共享表
-        if base_name == "AccountUpdate":
-            return AccountUpdate
-        if base_name == "OrderUpdate":
-            return OrderUpdate
-        if base_name == "TradeUpdate":
-            return TradeUpdate
-        raise ValueError(f"Unknown base model name: {base_name}")
+        logger.info(
+            "BinanceUserStreamService initialized",
+            display_format=display_format,
+            enabled_channels=list(self.enabled_channels),
+            reconciliation_mode="on_reconnect",
+        )
     
     async def get_listen_key(self) -> str:
         """获取ListenKey用于WebSocket连接.
@@ -568,9 +537,9 @@ class BinanceUserStreamService:
         try:
             async with self.db_manager.session() as session:
                 # 创建新的订单更新记录
-                OrderUpdateModel = self._get_model("OrderUpdate")
-                order_update = OrderUpdateModel(
+                order_update = OrderUpdate(
                     exchange="binance_perp",
+                    account_id=self.account_id or None,
                     event_type="ORDER_TRADE_UPDATE",
                     event_time=update_time,
                     transaction_time=update_time,
@@ -657,9 +626,9 @@ class BinanceUserStreamService:
                 # 创建新的成交记录
                 trade_time = datetime.fromtimestamp(trade_data.get("time", 0) / 1000)
 
-                TradeUpdateModel = self._get_model("TradeUpdate")
-                trade_update = TradeUpdateModel(
+                trade_update = TradeUpdate(
                     exchange="binance_perp",
+                    account_id=self.account_id or None,
                     event_type="TRADE",
                     event_time=trade_time,
                     transaction_time=trade_time,
@@ -892,13 +861,15 @@ class BinanceUserStreamService:
             # 更新最后消息时间
             self.last_message_time = event_time
             
+            account_id = self.account_id or None
+
             # 处理余额更新
             if "a" in event and "B" in event["a"]:
                 for balance in event["a"]["B"]:
                     async with self.db_manager.session() as session:
-                        AccountUpdateModel = self._get_model("AccountUpdate")
-                        update = AccountUpdateModel(
+                        update = AccountUpdate(
                             exchange="binance_perp",
+                            account_id=account_id,
                             event_type="ACCOUNT_UPDATE",
                             event_time=event_time,
                             transaction_time=transaction_time,
@@ -916,9 +887,9 @@ class BinanceUserStreamService:
             if "a" in event and "P" in event["a"]:
                 for position in event["a"]["P"]:
                     async with self.db_manager.session() as session:
-                        AccountUpdateModel = self._get_model("AccountUpdate")
-                        update = AccountUpdateModel(
+                        update = AccountUpdate(
                             exchange="binance_perp",
+                            account_id=account_id,
                             event_type="POSITION_UPDATE",
                             event_time=event_time,
                             transaction_time=transaction_time,
@@ -960,12 +931,14 @@ class BinanceUserStreamService:
 
             order = event.get("o", {})
 
+            account_id = self.account_id or None
+
             # 保存订单更新（带去重）
             try:
                 async with self.db_manager.session() as session:
-                    OrderUpdateModel = self._get_model("OrderUpdate")
-                    order_update = OrderUpdateModel(
+                    order_update = OrderUpdate(
                         exchange="binance_perp",
+                        account_id=account_id,
                         event_type="ORDER_TRADE_UPDATE",
                         event_time=event_time,
                         transaction_time=transaction_time,
@@ -1008,9 +981,9 @@ class BinanceUserStreamService:
                 trade_id = int(order.get("t", 0))
                 try:
                     async with self.db_manager.session() as session:
-                        TradeUpdateModel = self._get_model("TradeUpdate")
-                        trade = TradeUpdateModel(
+                        trade = TradeUpdate(
                             exchange="binance_perp",
+                            account_id=account_id,
                             event_type="TRADE",
                             event_time=event_time,
                             transaction_time=transaction_time,

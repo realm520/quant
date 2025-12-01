@@ -23,6 +23,7 @@ class AccountUpdate(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)  # binance_perp
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（多账号区分）
     event_type = Column(String(20), nullable=False)  # ACCOUNT_UPDATE
     event_time = Column(DateTime, nullable=False, index=True)  # 事件时间
     transaction_time = Column(DateTime, nullable=False)  # 交易时间
@@ -47,6 +48,7 @@ class AccountUpdate(Base):
     __table_args__ = (
         Index('idx_exchange_event_time', 'exchange', 'event_time'),
         Index('idx_symbol_event_time', 'symbol', 'event_time'),
+        Index('idx_account_event_time', 'account_id', 'event_time'),
     )
 
 
@@ -60,6 +62,7 @@ class OrderUpdate(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)  # binance_perp
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（多账号区分）
     event_type = Column(String(20), nullable=False)  # ORDER_TRADE_UPDATE
     event_time = Column(DateTime, nullable=False, index=True)  # 事件时间
     transaction_time = Column(DateTime, nullable=False)  # 交易时间
@@ -99,6 +102,7 @@ class OrderUpdate(Base):
         Index('idx_order_id_event_time', 'order_id', 'event_time'),
         Index('idx_symbol_status', 'symbol', 'order_status'),
         Index('idx_exchange_symbol_time', 'exchange', 'symbol', 'event_time'),
+        Index('idx_account_symbol_time', 'account_id', 'symbol', 'event_time'),
         # 唯一约束：防止重复记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'order_id', 'event_time', name='uq_order_update_event'),
     )
@@ -114,6 +118,7 @@ class TradeUpdate(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     exchange = Column(String(20), nullable=False, index=True)  # binance_perp
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（多账号区分）
     event_type = Column(String(20), nullable=False)  # ORDER_TRADE_UPDATE
     event_time = Column(DateTime, nullable=False, index=True)  # 事件时间
     transaction_time = Column(DateTime, nullable=False)  # 交易时间
@@ -146,6 +151,7 @@ class TradeUpdate(Base):
     __table_args__ = (
         Index('idx_symbol_trade_time', 'symbol', 'transaction_time'),
         Index('idx_order_trade', 'order_id', 'trade_id'),
+        Index('idx_account_trade_time', 'account_id', 'transaction_time'),
         # 唯一约束：防止重复成交记录（对账服务依赖此约束）
         UniqueConstraint('exchange', 'trade_id', name='uq_trade_id'),
     )
@@ -212,6 +218,7 @@ class BinanceAccountBalance(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（多账号区分）
 
     # 币种余额
     asset = Column(String(20), nullable=False, index=True)
@@ -225,4 +232,5 @@ class BinanceAccountBalance(Base):
 
     __table_args__ = (
         Index('idx_binance_balance_asset_time', 'asset', 'update_time'),
+        Index('idx_binance_balance_account_time', 'account_id', 'update_time'),
     )

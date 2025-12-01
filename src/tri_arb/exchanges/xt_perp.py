@@ -1640,40 +1640,107 @@ class XTPerpExchange(BaseExchange):
     async def get_user_trades(
         self,
         symbol: str | None = None,
+        order_id: int | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Query user trade history.
+        page: int = 1,
+        size: int = 10,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Query user trade history using XT API /future/trade/v1/order/trade-list endpoint.
+        
+        根据 XT API 文档: https://doc.xt.com/zh-Hans/docs/futures/Order/see-transaction-details
 
         Args:
-            symbol: Trading pair symbol (optional, None for all symbols)
+            symbol: Trading pair symbol (optional, e.g., "btc_usdt")
+            order_id: Order ID (optional, filter trades by specific order)
             start_time: Start timestamp in milliseconds (optional)
             end_time: End timestamp in milliseconds (optional)
-            limit: Maximum number of trades to return (default: 100, max: 500)
+            page: Page number (default: 1, must be positive integer)
+            size: Number of items per page (default: 10, max: 100)
+            limit: Deprecated. Use page and size instead. If provided, will be converted to size.
 
         Returns:
-            List of trade records
+            Dictionary containing:
+            - items: List of trade records
+            - page: Current page number
+            - ps: Page size
+            - total: Total number of trades
+            
+            Trade record format:
+            {
+                "fee": float,              # 手续费
+                "feeCoin": str,            # 手续费币种
+                "orderId": int,            # 订单 ID
+                "execId": int,             # 成交 ID
+                "price": float,            # 价格
+                "quantity": float,         # 成交量
+                "symbol": str,             # 交易对
+                "timestamp": int,          # 时间戳（毫秒）
+                "takerMaker": str          # "TAKER" 或 "MAKER"
+            }
 
         Raises:
             RuntimeError: If exchange is not connected
+            ValueError: If page is not positive or size exceeds 100
         """
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
 
+        # 参数验证
+        if page < 1:
+            raise ValueError("page must be a positive integer")
+        if size > 100:
+            raise ValueError("size maximum value is 100")
+        if size < 1:
+            raise ValueError("size must be a positive integer")
+        
+        # 向后兼容：如果提供了 limit，转换为 size
+        if limit is not None:
+            size = min(limit, 100)
+            logger.warning(
+                "limit parameter is deprecated, use size instead",
+                limit=limit,
+                converted_size=size
+            )
+
         path = "/future/trade/v1/order/trade-list"
-        params = {"limit": min(limit, 500)}
+        params: dict[str, Any] = {
+            "page": page,
+            "size": size,
+        }
 
         if symbol:
             params["symbol"] = symbol
-        if start_time:
+        if order_id is not None:
+            params["orderId"] = order_id
+        if start_time is not None:
             params["startTime"] = start_time
-        if end_time:
+        if end_time is not None:
             params["endTime"] = end_time
 
         data = await self._request("GET", path, params=params, body=None, require_auth=True)
 
-        trades = data.get("result", {}).get("items", [])
+        # XT API 返回格式: {result: {items: [...], page: 1, ps: 10, total: 100}, returnCode: 0}
+        result = data.get("result", {})
+        trades = result.get("items", [])
+        page_num = result.get("page", page)
+        page_size = result.get("ps", size)
+        total = result.get("total", 0)
 
-        logger.info("Retrieved user trades", count=len(trades), symbol=symbol)
-        return trades
+        logger.info(
+            "Retrieved user trades",
+            count=len(trades),
+            symbol=symbol,
+            order_id=order_id,
+            page=page_num,
+            size=page_size,
+            total=total
+        )
+        
+        return {
+            "items": trades,
+            "page": page_num,
+            "ps": page_size,
+            "total": total,
+        }

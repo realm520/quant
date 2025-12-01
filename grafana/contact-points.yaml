@@ -1,0 +1,32 @@
+apiVersion: 1
+
+contactPoints:
+  # 保证金占用率告警 - Lark Webhook
+  - orgId: 3
+    name: 保证金占用率报警
+    receivers:
+      - uid: cf5gjez24hkw0b
+        type: webhook
+        settings:
+          httpMethod: POST
+          message: |
+            🚨 保证金占用率告警
+
+            {{ template "default.message" . }}
+
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            📊 详细信息
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            {{ range .Alerts }}
+            {{ if .Labels.account_id }}账号ID: {{ .Labels.account_id }}{{ end }}
+            {{ if .Labels.exchange }}交易所: {{ .Labels.exchange }}{{ end }}
+            {{ if .Labels.asset }}资产: {{ .Labels.asset }}{{ end }}
+            {{ if .Values.B.Value }}当前保证金占用率: {{ printf "%.2f" .Values.B.Value }}%{{ end }}
+            {{ if gt .Values.B.Value 85 }}⚠️ 严重警告: 保证金占用率超过 85%！{{ else if gt .Values.B.Value 70 }}⚠️ 警告: 保证金占用率超过 70%{{ end }}
+            告警时间: {{ .StartsAt.Format "2006-01-02 15:04:05" }}
+            {{ end }}
+
+            查看详情: {{ .ExternalURL }}
+          url: https://open.larksuite.com/open-apis/bot/v2/hook/e4788562-3474-4386-b04e-6cf183f7e149
+        disableResolveMessage: false

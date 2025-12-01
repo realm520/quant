@@ -66,7 +66,7 @@ class DatabaseManager:
                 "示例:\n"
                 "   postgresql+asyncpg://postgres:password@localhost:5432/trading\n"
                 "   postgresql+asyncpg://postgres@localhost:5432/trading  # 无密码\n"
-            )
+        )
         
         # 异步引擎
         self.async_engine = create_async_engine(
@@ -90,24 +90,37 @@ class DatabaseManager:
     
     async def create_tables(self):
         """创建数据库表（Binance、OKX、Gate.io、XT WebSocket、REST API、XT REST API、按交易所区分的REST API）。"""
-        async with self.async_engine.begin() as conn:
+        from sqlalchemy import inspect, text
+        from sqlalchemy.exc import ProgrammingError, DBAPIError
+        
+        # 使用 connect() 而不是 begin()，每个操作单独提交，避免事务中止问题
+        async with self.async_engine.connect() as conn:
             def _create_safe(sync_conn, metadata, name: str):
                 """创建表，忽略已存在的表/索引错误."""
-                from sqlalchemy import inspect
-                from sqlalchemy.exc import ProgrammingError
-                
                 try:
                     # 先尝试标准的 create_all（这会处理表和索引）
                     metadata.create_all(sync_conn, checkfirst=True)
-                except ProgrammingError as e:
+                    sync_conn.commit()
+                except (ProgrammingError, DBAPIError) as e:
                     error_str = str(e).lower()
+                    # 回滚当前事务
+                    try:
+                        sync_conn.rollback()
+                    except Exception:
+                        pass
+                    
                     # 如果是索引已存在的错误，尝试逐个创建表（跳过索引）
-                    if "already exists" in error_str or "duplicate" in error_str:
+                    if "already exists" in error_str or "duplicate" in error_str or "aborted" in error_str:
                         logger.warning(f"Some {name} indexes already exist, creating tables individually...")
                         
                         # 获取所有表名
-                        inspector = inspect(sync_conn)
-                        existing_tables = set(inspector.get_table_names())
+                        try:
+                            inspector = inspect(sync_conn)
+                            existing_tables = set(inspector.get_table_names())
+                        except Exception as inspect_err:
+                            # 如果检查失败，假设所有表都不存在
+                            logger.warning(f"Failed to inspect existing tables, will try to create all: {inspect_err}")
+                            existing_tables = set()
                         
                         # 获取 metadata 中定义的所有表
                         metadata_tables = set(metadata.tables.keys())
@@ -123,19 +136,23 @@ class DatabaseManager:
                                 try:
                                     # 创建表结构（不创建索引）
                                     table.create(sync_conn, checkfirst=True)
+                                    sync_conn.commit()
                                     logger.debug(f"Created table: {table_name}")
                                     
                                     # 尝试创建索引（忽略已存在的错误）
                                     for index in table.indexes:
                                         try:
                                             index.create(sync_conn, checkfirst=True)
-                                        except ProgrammingError as idx_err:
+                                            sync_conn.commit()
+                                        except (ProgrammingError, DBAPIError) as idx_err:
+                                            sync_conn.rollback()
                                             idx_err_str = str(idx_err).lower()
                                             if "already exists" in idx_err_str or "duplicate" in idx_err_str:
                                                 logger.debug(f"Index {index.name} already exists (skipping)")
                                             else:
                                                 logger.warning(f"Failed to create index {index.name}: {idx_err}")
-                                except ProgrammingError as pe:
+                                except (ProgrammingError, DBAPIError) as pe:
+                                    sync_conn.rollback()
                                     pe_str = str(pe).lower()
                                     if "already exists" in pe_str or "duplicate" in pe_str:
                                         logger.debug(f"Table {table_name} or its indexes already exist (skipping)")
@@ -148,6 +165,11 @@ class DatabaseManager:
                         raise
                 except Exception as e:
                     error_str = str(e).lower()
+                    # 回滚事务
+                    try:
+                        sync_conn.rollback()
+                    except Exception:
+                        pass
                     # 如果是表/索引已存在的错误，记录为警告而不是错误
                     if "already exists" in error_str or "duplicate" in error_str:
                         logger.warning(f"Some {name} tables/indexes already exist (this is OK): {e}")

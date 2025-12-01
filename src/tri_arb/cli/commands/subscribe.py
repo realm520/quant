@@ -489,7 +489,7 @@ def multi_account(
             console.print(f"[red]错误:[/red] 多账号基础数据库表初始化失败: {init_exc}")
             import logging
             logger = logging.getLogger(__name__)
-            logger.error("Failed to create database tables for multi-account", exc_info=True, error=str(init_exc))
+            logger.error("Failed to create database tables for multi-account", exc_info=True, extra={"error": str(init_exc)})
             if debug:
                 console.print_exception()
             # 不关闭连接，让后续任务有机会重试

@@ -6322,7 +6322,7 @@ def watch_all(
             if debug:
                 import traceback
                 console.print_exception()
-            logger.error("Failed to create database tables", exc_info=True, error=str(init_exc))
+            logger.error("Failed to create database tables", exc_info=True, extra={"error": str(init_exc)})
             # 不关闭连接，让后续任务有机会重试
         finally:
             await db_manager.close()

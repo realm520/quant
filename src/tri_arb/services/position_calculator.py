@@ -112,6 +112,8 @@ class PositionCalculator:
             - short_value: 空头市值 = pre_short_value + sell_trade_value
             - avg_buy_prz: 买入平均价格 = long_value / long_qty（如 long_qty 为 0 则为 0）
             - avg_sell_prz: 卖出平均价格 = short_value / short_qty（如 short_qty 为 0 则为 0）
+            - matched_qty: 轧差数量 = min(long_qty, short_qty)
+            - realized_pnl: 当日已实现盈亏 = matched_qty * (avg_sell_prz - avg_buy_prz)
         """
         # 1. 获取区间开始时的持仓（之前遗留的未平仓持仓）
         initial_positions = await self._get_initial_positions(start_time, symbol)
@@ -171,6 +173,12 @@ class PositionCalculator:
         if short_qty > 0:
             avg_sell_prz = short_value / short_qty
         
+        # 7. 计算轧差数量和当日已实现盈亏
+        matched_qty = min(long_qty, short_qty)
+        realized_pnl = Decimal("0")
+        if matched_qty > 0:
+            realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
+        
         return {
             "pre_long_qty": pre_long_qty,
             "pre_short_qty": pre_short_qty,
@@ -188,6 +196,8 @@ class PositionCalculator:
             "short_value": short_value,
             "avg_buy_prz": avg_buy_prz,
             "avg_sell_prz": avg_sell_prz,
+            "matched_qty": matched_qty,
+            "realized_pnl": realized_pnl,
         }
 
     async def calculate_positions_by_symbol(
@@ -361,6 +371,11 @@ class PositionCalculator:
             if short_qty > 0:
                 avg_sell_prz = short_value / short_qty
 
+            matched_qty = min(long_qty, short_qty)
+            realized_pnl = Decimal("0")
+            if matched_qty > 0:
+                realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
+
             data.update(
                 {
                     "pre_long_qty": pre_long_qty,
@@ -373,6 +388,8 @@ class PositionCalculator:
                     "short_value": short_value,
                     "avg_buy_prz": avg_buy_prz,
                     "avg_sell_prz": avg_sell_prz,
+                    "matched_qty": matched_qty,
+                    "realized_pnl": realized_pnl,
                 }
             )
 

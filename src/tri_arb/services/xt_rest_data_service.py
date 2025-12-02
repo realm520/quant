@@ -25,13 +25,11 @@ logger = get_logger(__name__)
 class XTRestDataService:
     """XT交易所REST API数据服务.
     
-    专门用于保存XT交易所的账户数据到独立的表中：
-    - xt_spot_balances: XT现货账户余额
-    - xt_perp_balances: XT合约账户余额
-    - xt_perp_positions: XT合约账户仓位（REST定时拉取）
-    - xt_rest_position_updates: XT合约仓位定时快照（watch-positions 命令）
+    专门用于保存XT交易所的账户数据到统一的表中：
+    - xt_account_snapshot: XT账户余额快照（现货和合约，通过 exchange_type 区分）
+    - xt_position_snapshot: XT合约账户仓位快照
     
-    支持账号特定的表：如果提供 account_id，数据会保存到 {table_name}_{account_id} 表中。
+    所有表都使用 account_id 字段区分不同账号的数据。
     """
     
     def __init__(self, db_manager: DatabaseManager, account_id: Optional[str] = None):
@@ -39,16 +37,10 @@ class XTRestDataService:
         
         Args:
             db_manager: 数据库管理器
-            account_id: 账号ID（可选），如果提供则使用账号特定的表
+            account_id: 账号ID（可选），用于区分多账号数据
         """
         self.db_manager = db_manager
         self.account_id = account_id
-        self._account_models = None
-        
-        # 如果提供了账号ID，加载账号特定的表模型
-        if account_id:
-            from tri_arb.storage.xt_multi_account_models import create_account_table_models
-            self._account_models = create_account_table_models(account_id)
     
     async def save_spot_balance(
         self,
@@ -62,15 +54,6 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
-            # 确保账号特定的表已创建（如果是新账号）
-            await self.ensure_account_tables()
-            
-            # 选择使用账号特定的表模型或默认表模型
-            if self._account_models:
-                BalanceModel = self._account_models['XTSpotBalance']
-            else:
-                BalanceModel = XTSpotBalance
-            
             async with self.db_manager.session() as session:
                 for asset, data in balances_data.items():
                     # 准备原始数据（保存完整的传入数据，包括所有字段）
@@ -81,9 +64,11 @@ class XTRestDataService:
                         "query_type": query_type,
                     }
                     
-                    balance_record = BalanceModel(
+                    balance_record = XTSpotBalance(
+                        exchange_type='spot',  # 明确设置为 spot
                         query_time=datetime.utcnow(),
                         query_type=query_type,
+                        account_id=self.account_id,
                         asset=asset,
                         free=Decimal(str(data.get("available", 0))),
                         locked=Decimal(str(data.get("frozen", 0))),
@@ -112,15 +97,6 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
-            # 确保账号特定的表已创建（如果是新账号）
-            await self.ensure_account_tables()
-            
-            # 选择使用账号特定的表模型或默认表模型
-            if self._account_models:
-                BalanceModel = self._account_models['XTPerpBalance']
-            else:
-                BalanceModel = XTPerpBalance
-            
             async with self.db_manager.session() as session:
                 for asset, data in balances_data.items():
                     # 准备原始数据（保存完整的传入数据，包括所有字段）
@@ -131,9 +107,11 @@ class XTRestDataService:
                         "query_type": query_type,
                     }
                     
-                    balance_record = BalanceModel(
+                    balance_record = XTPerpBalance(
+                        exchange_type='perp',  # 明确设置为 perp
                         query_time=datetime.utcnow(),
                         query_type=query_type,
+                        account_id=self.account_id,
                         asset=asset,
                         free=Decimal(str(data.get("available", 0))),
                         locked=Decimal(str(data.get("frozen", 0))),
@@ -167,15 +145,6 @@ class XTRestDataService:
             query_type: 查询类型 (manual, scheduled)
         """
         try:
-            # 确保账号特定的表已创建（如果是新账号）
-            await self.ensure_account_tables()
-            
-            # 选择使用账号特定的表模型或默认表模型
-            if self._account_models:
-                PositionModel = self._account_models['XTPerpPosition']
-            else:
-                PositionModel = XTPerpPosition
-            
             async with self.db_manager.session() as session:
                 now = datetime.utcnow()
                 for pos_data in positions_data:
@@ -205,9 +174,10 @@ class XTRestDataService:
                     # 保存原始数据（完整的API响应）
                     raw_data = json.dumps(pos_data, ensure_ascii=False, default=str)
                     
-                    position_record = PositionModel(
+                    position_record = XTPerpPosition(
                         query_time=now,
                         query_type=query_type,
+                        account_id=self.account_id,
                         symbol=str(symbol),
                         position_side=str(position_side),
                         position_amount=Decimal(str(position_amount)) if position_amount else Decimal("0"),
@@ -242,15 +212,6 @@ class XTRestDataService:
     ):
         """保存XT永续仓位定时更新记录."""
         try:
-            # 确保账号特定的表已创建（如果是新账号）
-            await self.ensure_account_tables()
-            
-            # 选择使用账号特定的表模型或默认表模型
-            if self._account_models:
-                PositionUpdateModel = self._account_models['XTRestPositionUpdate']
-            else:
-                PositionUpdateModel = XTRestPositionUpdate
-            
             async with self.db_manager.session() as session:
                 now = datetime.utcnow()
                 for pos_data in positions_data:
@@ -271,9 +232,10 @@ class XTRestDataService:
                     leverage = pos_data.get("leverage")
                     roe = pos_data.get("roe")
 
-                    record = PositionUpdateModel(
+                    record = XTRestPositionUpdate(
                         query_time=now,
                         query_type=query_type,
+                        account_id=self.account_id,
                         symbol=str(symbol),
                         position_side=str(position_side),
                         position_amount=Decimal(str(position_amount)) if position_amount is not None else Decimal("0"),
@@ -296,23 +258,5 @@ class XTRestDataService:
 
         except SQLAlchemyError as e:
             logger.error(f"Failed to save XT rest position updates: {e}")
-            raise
-    
-    async def ensure_account_tables(self):
-        """确保账号特定的表已创建."""
-        if not self.account_id or not self._account_models:
-            return
-        
-        try:
-            async with self.db_manager.async_engine.begin() as conn:
-                for model_class in self._account_models.values():
-                    await conn.run_sync(
-                        lambda sync_conn, m=model_class: m.metadata.create_all(
-                            sync_conn, checkfirst=True
-                        )
-                    )
-            logger.info(f"账号 {self.account_id} 的数据库表已就绪")
-        except Exception as e:
-            logger.error(f"创建账号 {self.account_id} 的表失败: {e}")
             raise
 

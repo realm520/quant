@@ -19,10 +19,11 @@ class XTAccountUpdate(Base):
     存储XT WebSocket推送的账户余额变化。
     """
     
-    __tablename__ = "xt_account_updates"
+    __tablename__ = "xt_account_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 余额信息
     currency = Column(String(20), nullable=False, index=True)  # 币种
@@ -37,6 +38,7 @@ class XTAccountUpdate(Base):
     __table_args__ = (
         Index('idx_xt_account_currency_time', 'currency', 'update_time'),
         Index('idx_xt_account_time', 'update_time'),
+        Index('idx_xt_account_account_time', 'account_id', 'update_time'),
     )
 
 
@@ -46,10 +48,11 @@ class XTSpotUpdate(Base):
     在处理合约账户余额变化时，记录对应时间点的现货账户余额。
     """
     
-    __tablename__ = "xt_spot_updates"
+    __tablename__ = "xt_spot_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 记录时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     currency = Column(String(20), nullable=False, index=True)  # 币种
     available = Column(Numeric(30, 10), nullable=False)  # 可用余额
@@ -62,6 +65,7 @@ class XTSpotUpdate(Base):
     __table_args__ = (
         Index('idx_xt_spot_currency_time', 'currency', 'update_time'),
         Index('idx_xt_spot_time', 'update_time'),
+        Index('idx_xt_spot_account_time', 'account_id', 'update_time'),
     )
 
 
@@ -71,10 +75,11 @@ class XTPositionUpdate(Base):
     存储XT WebSocket推送的持仓变化。
     """
     
-    __tablename__ = "xt_position_updates"
+    __tablename__ = "xt_position_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 持仓信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
@@ -96,6 +101,7 @@ class XTPositionUpdate(Base):
         Index('idx_xt_position_symbol_time', 'symbol', 'update_time'),
         Index('idx_xt_position_side_time', 'side', 'update_time'),
         Index('idx_xt_position_time', 'update_time'),
+        Index('idx_xt_position_account_time', 'account_id', 'update_time'),
     )
 
 
@@ -105,10 +111,11 @@ class XTOrderUpdate(Base):
     存储XT WebSocket推送的订单状态变化。
     """
     
-    __tablename__ = "xt_order_updates"
+    __tablename__ = "xt_order_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 订单信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
@@ -135,8 +142,9 @@ class XTOrderUpdate(Base):
         Index('idx_xt_order_id_time', 'order_id', 'update_time'),
         Index('idx_xt_order_symbol_status_time', 'symbol', 'status', 'update_time'),
         Index('idx_xt_order_time', 'update_time'),
+        Index('idx_xt_order_account_time', 'account_id', 'update_time'),
         # 唯一约束：防止重复订单记录（对账服务依赖此约束）
-        UniqueConstraint('order_id', 'update_time', name='uq_xt_order_id_time'),
+        UniqueConstraint('order_id', 'update_time', 'account_id', name='uq_xt_order_id_time_account'),
     )
 
 
@@ -146,15 +154,16 @@ class XTTradeUpdate(Base):
     存储XT WebSocket推送的实时成交信息。
     """
     
-    __tablename__ = "xt_trade_updates"
+    __tablename__ = "xt_trade_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)  # 更新时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 交易信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对
     order_id = Column(String(50), nullable=False, index=True)  # 订单ID
-    trade_id = Column(String(50), nullable=False, unique=True, index=True)  # 成交ID
+    trade_id = Column(String(50), nullable=False, index=True)  # 成交ID
     
     # 成交详情
     side = Column(String(10), nullable=False)  # BUY/SELL
@@ -180,6 +189,9 @@ class XTTradeUpdate(Base):
         Index('idx_xt_trade_symbol_time', 'symbol', 'update_time'),
         Index('idx_xt_trade_order_trade', 'order_id', 'trade_id'),
         Index('idx_xt_trade_time', 'update_time'),
+        Index('idx_xt_trade_account_time', 'account_id', 'update_time'),
+        # 唯一约束：防止重复成交记录（需要包含 account_id）
+        UniqueConstraint('trade_id', 'account_id', name='uq_xt_trade_id_account'),
     )
 
 
@@ -189,15 +201,16 @@ class XTTransfer(Base):
     通过分析账户余额变化识别资金划转（充值、提现、账户间划转等）。
     """
     
-    __tablename__ = "xt_transfers"
+    __tablename__ = "xt_transfer_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     transfer_time = Column(DateTime, nullable=False, index=True)  # 划转时间
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 划转信息
     currency = Column(String(20), nullable=False, index=True)  # 币种
     amount = Column(Numeric(30, 10), nullable=False)  # 划转金额（正数=转入，负数=转出）
-    transfer_type = Column(String(20), nullable=True)  # 划转类型：DEPOSIT(充值), WITHDRAW(提现), TRANSFER(账户间划转), UNKNOWN(未知)
+    transfer_type = Column(String(20), nullable=True, index=True)  # 划转类型：DEPOSIT(充值), WITHDRAW(提现), TRANSFER(账户间划转), UNKNOWN(未知)
     
     # 余额变化
     balance_before = Column(Numeric(30, 10), nullable=True)  # 划转前余额
@@ -218,6 +231,7 @@ class XTTransfer(Base):
         Index('idx_xt_transfer_currency_time', 'currency', 'transfer_time'),
         Index('idx_xt_transfer_time', 'transfer_time'),
         Index('idx_xt_transfer_type', 'transfer_type'),
+        Index('idx_xt_transfer_account_time', 'account_id', 'transfer_time'),
     )
 
 
@@ -227,7 +241,7 @@ class XTWebSocketConnection(Base):
     存储XT WebSocket连接状态和重连信息。
     """
     
-    __tablename__ = "xt_websocket_connections"
+    __tablename__ = "xt_connection"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     connection_id = Column(String(100), nullable=False, unique=True)  # 连接ID

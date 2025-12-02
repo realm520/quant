@@ -16,13 +16,16 @@ class XTSpotBalance(Base):
     """XT现货账户余额记录.
     
     存储XT现货账户的余额快照。
+    注意：与 XTPerpBalance 共享同一个表 xt_account_snapshot，通过 exchange_type 区分。
     """
     
-    __tablename__ = "xt_spot_balances"
+    __tablename__ = "xt_account_snapshot"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    exchange_type = Column(String(10), nullable=False, index=True, default='spot')  # spot/perp
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 余额信息
     asset = Column(String(20), nullable=False, index=True)  # 资产类型（如USDT, BTC）
@@ -30,13 +33,22 @@ class XTSpotBalance(Base):
     locked = Column(Numeric(30, 10), nullable=False)  # 冻结余额
     total = Column(Numeric(30, 10), nullable=False)  # 总余额
     
+    # 盈亏信息（仅 perp 使用，spot 为 NULL）
+    unrealized_pnl = Column(Numeric(30, 10), nullable=True)  # 未实现盈亏
+    realized_pnl = Column(Numeric(30, 10), nullable=True)  # 已实现盈亏
+    equity = Column(Numeric(30, 10), nullable=True)  # 总权益（余额+未实现盈亏）
+    margin = Column(Numeric(30, 10), nullable=True)  # 保证金
+    margin_ratio = Column(Numeric(10, 4), nullable=True)  # 保证金率
+    
     # 原始数据
     raw_data = Column(Text, nullable=True)  # 完整JSON原始数据
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_spot_balance_asset_time', 'asset', 'query_time'),
-        Index('idx_xt_spot_balance_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_account_type_time', 'exchange_type', 'query_time'),
+        Index('idx_xt_account_asset_time', 'asset', 'query_time'),
+        Index('idx_xt_account_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_account_account_time', 'account_id', 'query_time'),
     )
 
 
@@ -44,13 +56,16 @@ class XTPerpBalance(Base):
     """XT合约账户余额记录.
     
     存储XT永续合约账户的余额快照。
+    注意：与 XTSpotBalance 共享同一个表 xt_account_snapshot，通过 exchange_type 区分。
     """
     
-    __tablename__ = "xt_perp_balances"
+    __tablename__ = "xt_account_snapshot"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    exchange_type = Column(String(10), nullable=False, index=True, default='perp')  # spot/perp
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 余额信息
     asset = Column(String(20), nullable=False, index=True)  # 资产类型（如USDT, BTC）
@@ -71,8 +86,10 @@ class XTPerpBalance(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_perp_balance_asset_time', 'asset', 'query_time'),
-        Index('idx_xt_perp_balance_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_account_type_time', 'exchange_type', 'query_time'),
+        Index('idx_xt_account_asset_time', 'asset', 'query_time'),
+        Index('idx_xt_account_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_account_account_time', 'account_id', 'query_time'),
     )
 
 
@@ -82,11 +99,12 @@ class XTPerpPosition(Base):
     存储XT永续合约账户的持仓快照。
     """
     
-    __tablename__ = "xt_perp_positions"
+    __tablename__ = "xt_position_snapshot"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     query_time = Column(DateTime, nullable=False, index=True)  # 查询时间
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
     
     # 持仓信息
     symbol = Column(String(20), nullable=False, index=True)  # 交易对（如BTC/USDT）
@@ -110,20 +128,22 @@ class XTPerpPosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     __table_args__ = (
-        Index('idx_xt_perp_position_symbol_time', 'symbol', 'query_time'),
-        Index('idx_xt_perp_position_side_time', 'position_side', 'query_time'),
-        Index('idx_xt_perp_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_position_symbol_time', 'symbol', 'query_time'),
+        Index('idx_xt_position_side_time', 'position_side', 'query_time'),
+        Index('idx_xt_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_position_account_time', 'account_id', 'query_time'),
     )
 
 
 class XTRestPositionUpdate(Base):
     """XT永续仓位定时更新记录."""
 
-    __tablename__ = "xt_rest_position_updates"
+    __tablename__ = "xt_position_snapshot"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     query_time = Column(DateTime, nullable=False, index=True)
     query_type = Column(String(20), nullable=False, index=True)  # manual, scheduled
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（用于区分多账号）
 
     symbol = Column(String(20), nullable=False, index=True)
     position_side = Column(String(10), nullable=False)
@@ -142,7 +162,8 @@ class XTRestPositionUpdate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        Index('idx_xt_rest_position_symbol_time', 'symbol', 'query_time'),
-        Index('idx_xt_rest_position_side_time', 'position_side', 'query_time'),
-        Index('idx_xt_rest_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_position_symbol_time', 'symbol', 'query_time'),
+        Index('idx_xt_position_side_time', 'position_side', 'query_time'),
+        Index('idx_xt_position_query_type_time', 'query_type', 'query_time'),
+        Index('idx_xt_position_account_time', 'account_id', 'query_time'),
     )

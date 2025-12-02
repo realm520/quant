@@ -31,6 +31,7 @@ class XTReconciliationService(BaseReconciliationService):
         db_manager: DatabaseManager,
         poll_interval: int = 60,
         lookback_window: int = 600,
+        account_id: Optional[str] = None,
     ):
         """初始化 XT 对账服务.
 
@@ -39,9 +40,11 @@ class XTReconciliationService(BaseReconciliationService):
             db_manager: 数据库管理器
             poll_interval: 轮询间隔（秒）
             lookback_window: 回溯窗口（秒）
+            account_id: 账号ID（可选），用于区分多账号数据
         """
         super().__init__(exchange, db_manager, poll_interval, lookback_window)
-        logger.info("XT reconciliation service initialized (auto-discover symbols)")
+        self.account_id = account_id
+        logger.info("XT reconciliation service initialized (auto-discover symbols)", account_id=account_id)
 
     @property
     def exchange_name(self) -> str:
@@ -94,7 +97,7 @@ class XTReconciliationService(BaseReconciliationService):
                             # 使用 PostgreSQL INSERT ... ON CONFLICT DO UPDATE
                             stmt = insert(XTOrderUpdate).values(**order_record)
                             stmt = stmt.on_conflict_do_update(
-                                constraint='uq_xt_order_id_time',
+                                constraint='uq_xt_order_id_time_account',
                                 set_={
                                     'status': stmt.excluded.status,
                                     'filled_quantity': stmt.excluded.filled_quantity,
@@ -170,8 +173,8 @@ class XTReconciliationService(BaseReconciliationService):
                             # 使用 PostgreSQL INSERT ... ON CONFLICT DO NOTHING
                             # 成交记录不可变，只需插入
                             stmt = insert(XTTradeUpdate).values(**trade_record)
-                            # XT 的成交表使用 trade_id unique 约束
-                            stmt = stmt.on_conflict_do_nothing(index_elements=['trade_id'])
+                            # XT 的成交表使用 (trade_id, account_id) 唯一约束
+                            stmt = stmt.on_conflict_do_nothing(constraint='uq_xt_trade_id_account')
                             result = await session.execute(stmt)
 
                             if result.rowcount > 0:
@@ -212,6 +215,7 @@ class XTReconciliationService(BaseReconciliationService):
 
         return {
             'update_time': order.timestamp or datetime.utcnow(),
+            'account_id': self.account_id,  # 添加 account_id 字段
             'symbol': symbol,
             'order_id': order.exchange_order_id,
             'client_order_id': None,  # Order 对象没有 client_order_id
@@ -263,6 +267,7 @@ class XTReconciliationService(BaseReconciliationService):
 
         return {
             'update_time': safe_datetime(trade.get('time')),
+            'account_id': self.account_id,  # 添加 account_id 字段
             'symbol': trade.get('symbol', '').upper(),
             'order_id': str(trade.get('orderId', '')),
             'trade_id': str(trade.get('id', '')),
@@ -290,7 +295,11 @@ class XTReconciliationService(BaseReconciliationService):
         # 查询最近有订单活动的交易对
         stmt = select(XTOrderUpdate.symbol).where(
             XTOrderUpdate.update_time >= since
-        ).distinct()
+        )
+        # 如果指定了 account_id，添加过滤条件
+        if self.account_id:
+            stmt = stmt.where(XTOrderUpdate.account_id == self.account_id)
+        stmt = stmt.distinct()
 
         result = await session.execute(stmt)
         symbols = [row[0].lower() for row in result.fetchall()]  # XT 使用小写

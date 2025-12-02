@@ -74,8 +74,11 @@ class XTPositionCalculator:
                 func.max(XTPerpPosition.query_time).label('max_time')
             )
             .where(XTPerpPosition.query_time <= target_date)
-            .group_by(XTPerpPosition.symbol, XTPerpPosition.position_side)
-        ).subquery()
+        )
+        # 如果指定了 account_id，添加过滤条件
+        if self.account_id:
+            subquery = subquery.where(XTPerpPosition.account_id == self.account_id)
+        subquery = subquery.group_by(XTPerpPosition.symbol, XTPerpPosition.position_side).subquery()
         
         # 主查询：获取这些最新记录的完整信息
         query = (
@@ -88,6 +91,9 @@ class XTPositionCalculator:
             )
             .where(XTPerpPosition.position_amount > 0)  # 只查询有持仓的记录
         )
+        # 如果指定了 account_id，添加过滤条件
+        if self.account_id:
+            query = query.where(XTPerpPosition.account_id == self.account_id)
         
         result = await self.db_session.execute(query)
         positions = result.scalars().all()
@@ -315,8 +321,11 @@ class XTPositionCalculator:
                 func.max(XTPositionUpdate.update_time).label('max_time')
             )
             .where(XTPositionUpdate.update_time <= target_date)
-            .group_by(XTPositionUpdate.symbol, XTPositionUpdate.side)
-        ).subquery()
+        )
+        # 如果指定了 account_id，添加过滤条件
+        if self.account_id:
+            subquery = subquery.where(XTPositionUpdate.account_id == self.account_id)
+        subquery = subquery.group_by(XTPositionUpdate.symbol, XTPositionUpdate.side).subquery()
         
         # 主查询：获取这些最新记录的完整信息
         query = (
@@ -329,6 +338,9 @@ class XTPositionCalculator:
             )
             .where(XTPositionUpdate.quantity > 0)  # 只查询有持仓的记录
         )
+        # 如果指定了 account_id，添加过滤条件
+        if self.account_id:
+            query = query.where(XTPositionUpdate.account_id == self.account_id)
         
         result = await self.db_session.execute(query)
         positions = result.scalars().all()

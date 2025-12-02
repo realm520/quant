@@ -1,6 +1,6 @@
 """XT 多账号订阅服务.
 
-支持同时订阅多个账号的 WebSocket 数据流，每个账号使用独立的数据库表。
+支持同时订阅多个账号的 WebSocket 数据流，使用统一表 + account_id 字段区分账号。
 """
 
 import asyncio
@@ -10,7 +10,7 @@ from typing import Dict, Optional, Set
 from tri_arb.config.account_manager import AccountConfig, AccountManager
 from tri_arb.services.xt_user_stream import XTUserStreamService
 from tri_arb.storage.database import DatabaseManager
-from tri_arb.storage.xt_multi_account_models import create_account_table_models
+# 不再需要按账号分表，统一使用 account_id 字段
 
 logger = logging.getLogger(__name__)
 
@@ -44,45 +44,22 @@ class XTMultiAccountStreamService:
         # 账号服务实例字典
         self.account_services: Dict[str, XTUserStreamService] = {}
         
-        # 账号表模型缓存
-        self.account_models: Dict[str, dict] = {}
-        
         # 运行状态
         self.is_running = False
         self.tasks: Dict[str, asyncio.Task] = {}
     
     async def _ensure_account_tables(self, account_id: str):
-        """确保账号的数据库表已创建."""
-        if account_id in self.account_models:
-            return
-        
-        # 创建账号特定的表模型
-        models = create_account_table_models(account_id)
-        self.account_models[account_id] = models
-        
-        # 创建表
-        async with self.db_manager.async_engine.begin() as conn:
-            for model_class in models.values():
-                await conn.run_sync(
-                    lambda sync_conn, m=model_class: m.metadata.create_all(
-                        sync_conn, checkfirst=True
-                    )
-                )
-        
-        logger.info(f"账号 {account_id} 的数据库表已创建")
+        """确保账号的数据库表已创建（统一表，不再需要按账号分表）."""
+        # 统一表已通过 create_tables() 创建，这里不再需要特殊处理
+        pass
     
     def _create_account_service(
         self,
         account_config: AccountConfig,
-        account_models: dict,
     ) -> XTUserStreamService:
         """创建账号特定的订阅服务.
         
-        这里需要修改 XTUserStreamService 以支持账号特定的表模型。
-        由于 XTUserStreamService 使用硬编码的表模型，我们需要创建一个包装器
-        或者修改 XTUserStreamService 以支持动态表模型。
-        
-        暂时先使用原始服务，后续可以扩展。
+        使用统一表 + account_id 字段区分账号。
         """
         # 解析频道
         enabled_channels: Optional[Set[str]] = None
@@ -99,10 +76,9 @@ class XTMultiAccountStreamService:
             enable_data_sync=self.enable_data_sync,
         )
         
-        # 将账号ID和表模型附加到服务实例
+        # 将账号ID附加到服务实例（不再需要 account_models）
         service.account_id = account_config.account_id
         service.account_name = account_config.name
-        service.account_models = account_models
         
         return service
     
@@ -141,12 +117,11 @@ class XTMultiAccountStreamService:
                 account_id = account_config.account_id
                 logger.info(f"启动账号: {account_id} ({account_config.name})")
                 
-                # 确保数据库表已创建
+                # 确保数据库表已创建（统一表）
                 await self._ensure_account_tables(account_id)
                 
                 # 创建账号服务
-                account_models = self.account_models[account_id]
-                service = self._create_account_service(account_config, account_models)
+                service = self._create_account_service(account_config)
                 self.account_services[account_id] = service
                 
                 # 启动服务（在后台任务中运行）

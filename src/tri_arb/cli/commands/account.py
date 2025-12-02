@@ -219,14 +219,9 @@ async def _run_xt_watch_positions_async(
             )
 
     async def _ensure_xt_rest_tables():
-        if account_id:
-            await xt_rest_service.ensure_account_tables()
-        else:
-            from tri_arb.storage.xt_rest_models import Base as XTRestBase
-            async with db_manager.async_engine.begin() as conn:
-                await conn.run_sync(
-                    lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
-                )
+        # 不再需要按账号分表，统一使用 account_id 字段区分
+        # 统一表已通过 create_tables() 创建
+        pass
 
     iteration = 0
     try:
@@ -440,15 +435,9 @@ def _run_xt_watch_positions(
             )
 
     async def _ensure_xt_rest_tables():
-        if account_id:
-            # 确保账号特定的表已创建
-            await xt_rest_service.ensure_account_tables()
-        else:
-            from tri_arb.storage.xt_rest_models import Base as XTRestBase
-            async with db_manager.async_engine.begin() as conn:
-                await conn.run_sync(
-                    lambda sync_conn: XTRestBase.metadata.create_all(sync_conn, checkfirst=True)
-                )
+        # 不再需要按账号分表，统一使用 account_id 字段区分
+        # 统一表已通过 create_tables() 创建
+        pass
 
     async def run_scheduler():
         iteration = 0
@@ -1733,21 +1722,10 @@ async def _run_xt_watch_balance_async(
         ensure_metrics_server()
         try:
             await exchange_instance.connect()
-            # 确保所需表存在
+            # 确保所需表存在（统一表，不再需要按账号分表）
             try:
-                if account_id:
-                    from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                    account_models = create_account_table_models(account_id)
-                    async with db_manager.async_engine.begin() as conn:
-                        for model_class in account_models.values():
-                            await conn.run_sync(
-                                lambda sync_conn, m=model_class: m.metadata.create_all(
-                                    sync_conn, checkfirst=True
-                                )
-                            )
-                    logger.info(f"账号 {account_label} 的数据库表已就绪")
-                else:
-                    await db_manager.create_tables()
+                await db_manager.create_tables()
+                logger.info(f"账号 {account_label} 的数据库表已就绪")
             except Exception as init_exc:
                 logger.warning(f"账号 {account_label} 初始化数据库表失败: {init_exc}")
 
@@ -1790,15 +1768,9 @@ async def _run_xt_watch_balance_async(
                                 raw_json = json.dumps(data, default=str)
 
                                 async with db_manager.session() as session:
-                                    if account_id:
-                                        from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                                        account_models = create_account_table_models(account_id)
-                                        AccountUpdateModel = account_models['XTAccountUpdate']
-                                    else:
-                                        AccountUpdateModel = XTAccountUpdate
-                                    
-                                    record = AccountUpdateModel(
+                                    record = XTAccountUpdate(
                                         update_time=now,
+                                        account_id=account_id,  # 使用统一表 + account_id
                                         currency=currency.upper(),
                                         available=available,
                                         frozen=frozen,
@@ -3722,22 +3694,10 @@ def watch_balance(
             iteration = 0
             try:
                 await exchange_instance.connect()
-                # 确保所需表存在（只执行一次）
+                # 确保所需表存在（统一表，不再需要按账号分表）
                 try:
-                    if account_id and exchange == ExchangeName.XT:
-                        # 为账号创建特定的表
-                        from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                        account_models = create_account_table_models(account_id)
-                        async with db_manager.async_engine.begin() as conn:
-                            for model_class in account_models.values():
-                                await conn.run_sync(
-                                    lambda sync_conn, m=model_class: m.metadata.create_all(
-                                        sync_conn, checkfirst=True
-                                    )
-                                )
-                        console.print(f"[green]✓[/green] 账号 {account_id} 的数据库表已就绪\n")
-                    else:
-                        await db_manager.create_tables()
+                    await db_manager.create_tables()
+                    console.print(f"[green]✓[/green] 数据库表已就绪\n")
                 except Exception as init_exc:
                     logger.warning(f"初始化数据库表失败: {init_exc}")
                 
@@ -3810,16 +3770,10 @@ def watch_balance(
                                             )
                                         elif exchange == ExchangeName.XT:
                                             # 如果提供了账号ID，使用账号特定的表模型
-                                            if account_id:
-                                                from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                                                account_models = create_account_table_models(account_id)
-                                                AccountUpdateModel = account_models['XTAccountUpdate']
-                                            else:
-                                                AccountUpdateModel = XTAccountUpdate
-                                            
                                             # 复用 XT WebSocket 的账户更新表，记录 REST 快照
-                                            record = AccountUpdateModel(
+                                            record = XTAccountUpdate(
                                                 update_time=now,
+                                                account_id=account_id,  # 使用统一表 + account_id
                                                 currency=currency.upper(),
                                                 available=available,
                                                 frozen=frozen,
@@ -3900,21 +3854,10 @@ async def _run_xt_watch_balance_async(
         iteration = 0
         try:
             await exchange_instance.connect()
-            # 确保所需表存在
+            # 确保所需表存在（统一表，不再需要按账号分表）
             try:
-                if account_id:
-                    from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                    account_models = create_account_table_models(account_id)
-                    async with db_manager.async_engine.begin() as conn:
-                        for model_class in account_models.values():
-                            await conn.run_sync(
-                                lambda sync_conn, m=model_class: m.metadata.create_all(
-                                    sync_conn, checkfirst=True
-                                )
-                            )
-                    logger.info(f"账号 {account_label} 的数据库表已就绪")
-                else:
-                    await db_manager.create_tables()
+                await db_manager.create_tables()
+                logger.info(f"账号 {account_label} 的数据库表已就绪")
             except Exception as init_exc:
                 logger.warning(f"账号 {account_label} 初始化数据库表失败: {init_exc}")
 
@@ -3958,15 +3901,9 @@ async def _run_xt_watch_balance_async(
                                 raw_json = json.dumps(data, default=str)
 
                                 async with db_manager.session() as session:
-                                    if account_id:
-                                        from tri_arb.storage.xt_multi_account_models import create_account_table_models
-                                        account_models = create_account_table_models(account_id)
-                                        AccountUpdateModel = account_models['XTAccountUpdate']
-                                    else:
-                                        AccountUpdateModel = XTAccountUpdate
-                                    
-                                    record = AccountUpdateModel(
+                                    record = XTAccountUpdate(
                                         update_time=now,
+                                        account_id=account_id,  # 使用统一表 + account_id
                                         currency=currency.upper(),
                                         available=available,
                                         frozen=frozen,
@@ -6305,17 +6242,7 @@ def watch_all(
         db_manager = DatabaseManager(database_url=db_url)
         try:
             await db_manager.create_tables()
-            # 为所有 XT 账号预创建多账号专用表
-            xt_accounts = [acc for acc in enabled_accounts if acc.exchange.lower() == "xt"]
-            if xt_accounts:
-                from tri_arb.storage.xt_multi_account_models import create_account_table_models as create_xt_models
-                for acc in xt_accounts:
-                    models = create_xt_models(acc.account_id)
-                    async with db_manager.async_engine.begin() as conn:
-                        for model_class in models.values():
-                            await conn.run_sync(
-                                lambda sync_conn, m=model_class: m.metadata.create_all(sync_conn, checkfirst=True)
-                            )
+            # 统一表已通过 create_tables() 创建，不再需要按账号分表
             console.print("[green]✅ 基础数据库表已就绪[/green]\n")
         except Exception as init_exc:
             console.print(f"[red]错误:[/red] 基础数据库表初始化失败: {init_exc}")

@@ -65,6 +65,6 @@ __all__ = [
     "XTPositionUpdate",
     "XTOrderUpdate",
     "XTTradeUpdate",
-    "XTWebSocketConnection",
+    "XTConnection",
 ]
 

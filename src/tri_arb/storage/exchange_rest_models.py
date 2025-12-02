@@ -26,7 +26,7 @@ def _create_balance_model(exchange: str) -> type:
     Returns:
         SQLAlchemy 模型类
     """
-    table_name = f"{exchange}_balance_rest"
+    table_name = f"{exchange}_account_snapshot"
     class_name = f"{exchange.capitalize()}BalanceRest"
     
     # 使用 type() 动态创建类，避免类名冲突警告
@@ -65,7 +65,7 @@ def _create_position_model(exchange: str) -> type:
     Returns:
         SQLAlchemy 模型类
     """
-    table_name = f"{exchange}_position_rest"
+    table_name = f"{exchange}_position_snapshot"
     class_name = f"{exchange.capitalize()}PositionRest"
     
     attrs = {
@@ -109,7 +109,7 @@ def _create_order_model(exchange: str) -> type:
     Returns:
         SQLAlchemy 模型类
     """
-    table_name = f"{exchange}_order_rest"
+    table_name = f"{exchange}_order_snapshot"
     class_name = f"{exchange.capitalize()}OrderRest"
     
     attrs = {

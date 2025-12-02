@@ -15,7 +15,7 @@ Base = declarative_base()
 class GateAccountBalance(Base):
     """Gate.io账户余额记录."""
     
-    __tablename__ = "gate_account_updates"
+    __tablename__ = "gate_account_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)
@@ -39,7 +39,7 @@ class GateAccountBalance(Base):
 class GatePosition(Base):
     """Gate.io持仓记录."""
     
-    __tablename__ = "gate_position_updates"
+    __tablename__ = "gate_position_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     update_time = Column(DateTime, nullable=False, index=True)
@@ -74,7 +74,7 @@ class GatePosition(Base):
 class GateOrder(Base):
     """Gate.io订单记录."""
     
-    __tablename__ = "gate_order_updates"
+    __tablename__ = "gate_order_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     
@@ -119,7 +119,7 @@ class GateOrder(Base):
 class GateTrade(Base):
     """Gate.io成交记录."""
     
-    __tablename__ = "gate_trade_updates"
+    __tablename__ = "gate_trade_update"
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     

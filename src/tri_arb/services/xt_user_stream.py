@@ -136,10 +136,9 @@ class XTUserStreamService:
         self._last_spot_balances = {}  # 存储上次现货账户余额，用于划转分析
         self._supported_transfer_currencies = {"USDT"}
         
-        # 账号特定的表模型（如果提供了 account_id）
+        # 账号ID和名称（用于区分多账号数据）
         self.account_id = None
         self.account_name = None
-        self.account_models = None
         
         logger.debug("XT WebSocket service initialized",
                     extra={
@@ -149,7 +148,7 @@ class XTUserStreamService:
                     })
     
     def _get_model(self, model_name: str):
-        """获取表模型（账号特定的或默认的）.
+        """获取表模型（统一表模型）.
         
         Args:
             model_name: 模型名称，如 'XTAccountUpdate', 'XTPositionUpdate' 等
@@ -157,9 +156,7 @@ class XTUserStreamService:
         Returns:
             表模型类
         """
-        if self.account_models and model_name in self.account_models:
-            return self.account_models[model_name]
-        # 返回默认模型
+        # 直接返回统一表模型（不再使用按账号分表）
         from tri_arb.storage.xt_websocket_models import (
             XTAccountUpdate,
             XTSpotUpdate,
@@ -179,43 +176,9 @@ class XTUserStreamService:
         return model_map.get(model_name)
     
     async def _ensure_account_tables_if_needed(self):
-        """如果需要，确保账号特定的表已创建（自动创建新账号的表）."""
-        if not self.account_id or not self.account_models:
-            return
-        
-        try:
-            # 检查表是否已创建（通过尝试查询表是否存在）
-            from sqlalchemy import inspect, text
-            async with self.db_manager.async_engine.begin() as conn:
-                # 获取第一个模型的表名来检查
-                first_model = next(iter(self.account_models.values()))
-                table_name = first_model.__tablename__
-                
-                # 检查表是否存在
-                result = await conn.execute(
-                    text("""
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables 
-                            WHERE table_schema = 'public' 
-                            AND table_name = :table_name
-                        )
-                    """),
-                    {"table_name": table_name}
-                )
-                table_exists = result.scalar()
-                
-                if not table_exists:
-                    # 表不存在，创建所有账号特定的表
-                    logger.info(f"检测到新账号 {self.account_id}，正在自动创建数据库表...")
-                    for model_class in self.account_models.values():
-                        await conn.run_sync(
-                            lambda sync_conn, m=model_class: m.metadata.create_all(
-                                sync_conn, checkfirst=True
-                            )
-                        )
-                    logger.info(f"账号 {self.account_id} 的数据库表已自动创建")
-        except Exception as e:
-            logger.warning(f"检查/创建账号 {self.account_id} 的表时出错: {e}，将在保存时重试")
+        """确保统一表已创建（不再需要按账号分表）."""
+        # 统一表会在全局 create_tables() 时创建，这里不再需要特殊处理
+        pass
     async def start(self) -> None:
         """启动WebSocket服务."""
         if self.is_running:
@@ -1134,6 +1097,7 @@ class XTUserStreamService:
                     AccountUpdateModel = self._get_model('XTAccountUpdate')
                     record = AccountUpdateModel(
                         update_time=update_time,
+                        account_id=self.account_id,
                         currency=currency,
                         available=available,
                         frozen=frozen,
@@ -1157,6 +1121,7 @@ class XTUserStreamService:
                         AccountUpdateModel = self._get_model('XTAccountUpdate')
                         record = AccountUpdateModel(
                             update_time=update_time,
+                            account_id=self.account_id,
                             currency=currency,
                             available=available,
                             frozen=frozen,
@@ -1237,6 +1202,7 @@ class XTUserStreamService:
                     PositionUpdateModel = self._get_model('XTPositionUpdate')
                     record = PositionUpdateModel(
                         update_time=update_time,
+                        account_id=self.account_id,
                         symbol=symbol,
                         side=side,
                         quantity=quantity,
@@ -1303,6 +1269,7 @@ class XTUserStreamService:
                         PositionUpdateModel = self._get_model('XTPositionUpdate')
                         record = PositionUpdateModel(
                             update_time=update_time,
+                            account_id=self.account_id,
                             symbol=symbol,
                             side=side,
                             quantity=quantity,
@@ -1358,6 +1325,7 @@ class XTUserStreamService:
                     OrderUpdateModel = self._get_model('XTOrderUpdate')
                     record = OrderUpdateModel(
                         update_time=update_time,
+                        account_id=self.account_id,
                         symbol=symbol,
                         order_id=str(order_id),
                         client_order_id=data.get("clientOrderId") or data.get("client_order_id", ""),
@@ -1401,6 +1369,7 @@ class XTUserStreamService:
                         OrderUpdateModel = self._get_model('XTOrderUpdate')
                         record = OrderUpdateModel(
                             update_time=update_time,
+                            account_id=self.account_id,
                             symbol=symbol,
                             order_id=str(order_id),
                             client_order_id=order.get("clientOrderId") or order.get("client_order_id", ""),
@@ -1497,6 +1466,7 @@ class XTUserStreamService:
                     TradeUpdateModel = self._get_model('XTTradeUpdate')
                     record = TradeUpdateModel(
                         update_time=update_time,
+                        account_id=self.account_id,
                         symbol=symbol,
                         order_id=str(order_id),
                         trade_id=str(trade_id),
@@ -1677,6 +1647,7 @@ class XTUserStreamService:
                 for position in positions:
                     record = PositionUpdateModel(
                         update_time=update_time,
+                        account_id=self.account_id,
                         symbol=position.symbol,
                         side=position.side,
                         quantity=position.quantity,
@@ -1766,6 +1737,7 @@ class XTUserStreamService:
                         client_order_id = order.order_id if order.order_id else ""
                         record = OrderUpdateModel(
                             update_time=update_time,
+                            account_id=self.account_id,
                             symbol=symbol,
                             order_id=order_id,
                             client_order_id=client_order_id,
@@ -1966,6 +1938,7 @@ class XTUserStreamService:
                         OrderUpdateModel = self._get_model('XTOrderUpdate')
                         record = OrderUpdateModel(
                             update_time=update_time,
+                            account_id=self.account_id,
                             symbol=symbol,
                             order_id=order_id,
                             client_order_id=order.order_id or "",
@@ -2062,6 +2035,7 @@ class XTUserStreamService:
 
                         record = XTTradeUpdate(
                             update_time=update_time,
+                            account_id=self.account_id,
                             symbol=symbol,
                             order_id=str(trade.get("orderId", "")),
                             trade_id=str(trade_id),
@@ -2624,6 +2598,7 @@ class XTUserStreamService:
             records.append(
                 {
                     "update_time": snapshot_time,
+                    "account_id": self.account_id,
                     "currency": currency.lower(),
                     "available": self._safe_decimal(values["available"]),
                     "frozen": self._safe_decimal(values["frozen"]),
@@ -3142,6 +3117,7 @@ class XTUserStreamService:
                 TransferModel = self._get_model('XTTransfer')
                 transfer_record = TransferModel(
                     transfer_time=transfer_time,
+                    account_id=self.account_id,
                     currency=currency,
                     amount=amount,
                     transfer_type=transfer_type,
@@ -3188,6 +3164,7 @@ class XTUserStreamService:
                     async with self.db_manager.session() as session:
                         transfer_record = TransferModel(
                             transfer_time=transfer_time,
+                            account_id=self.account_id,
                             currency=currency,
                             amount=amount,
                             transfer_type=transfer_type,

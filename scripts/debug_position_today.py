@@ -150,6 +150,8 @@ async def main() -> None:
         table.add_row("short_value (空头市值)", _format_dec(short_value, 4))
         table.add_row("avg_buy_prz (买入均价)", _format_dec(avg_buy_prz, 8))
         table.add_row("avg_sell_prz (卖出均价)", _format_dec(avg_sell_prz, 8))
+        table.add_row("matched_qty (轧差数量)", _format_dec(m.get("matched_qty", Decimal("0"))))
+        table.add_row("realized_pnl (当日已实现盈亏)", _format_dec(m.get("realized_pnl", Decimal("0")), 4))
 
         console.print()
         console.print(table)

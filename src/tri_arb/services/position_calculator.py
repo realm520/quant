@@ -11,7 +11,7 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional, Callable, Any
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -201,6 +201,9 @@ class PositionCalculator:
                 left_short_qty * (avg_sell_prz - close_prz)
             )
         
+        # 11. 计算单日 PnL
+        daily_pnl = realized_pnl + unrealized_pnl
+        
         return {
             "pre_long_qty": pre_long_qty,
             "pre_short_qty": pre_short_qty,
@@ -226,6 +229,7 @@ class PositionCalculator:
             "left_short_value": left_short_value,
             "close_prz": close_prz,
             "unrealized_pnl": unrealized_pnl,
+            "daily_pnl": daily_pnl,
         }
 
     async def calculate_positions_by_symbol(
@@ -424,6 +428,9 @@ class PositionCalculator:
                     left_short_qty * (avg_sell_prz - close_prz)
                 )
 
+            # 计算单日 PnL
+            daily_pnl = realized_pnl + unrealized_pnl
+
             data.update(
                 {
                     "pre_long_qty": pre_long_qty,
@@ -444,6 +451,7 @@ class PositionCalculator:
                     "left_short_value": left_short_value,
                     "close_prz": close_prz,
                     "unrealized_pnl": unrealized_pnl,
+                    "daily_pnl": daily_pnl,
                 }
             )
 
@@ -507,7 +515,121 @@ class PositionCalculator:
             )
         total["unrealized_pnl"] = unrealized_pnl_total
 
+        # 计算 TOTAL 的单日 PnL
+        daily_pnl_total = realized_pnl_total + unrealized_pnl_total
+        total["daily_pnl"] = daily_pnl_total
+
         by_symbol["TOTAL"] = total
+        return by_symbol
+    
+    async def calculate_cumulative_pnl(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        symbol: Optional[str] = None
+    ) -> Dict[str, Dict[str, Decimal]]:
+        """计算累计 PnL（按币种分别计算）.
+        
+        计算逻辑：
+        - 累计已实现盈亏 = 从 start_date 到 end_date 的所有已实现盈亏累加（按币种）
+        - 当前未实现盈亏 = end_date 时刻的未实现盈亏（按币种）
+        - 累计 PnL = 累计已实现盈亏 + 当前未实现盈亏
+        
+        Args:
+            start_date: 起始日期（UTC，例如：30 天前）
+            end_date: 结束日期（UTC，例如：当前时间）
+            symbol: 交易对（可选），如果不指定则统计所有交易对
+        
+        Returns:
+            字典，格式为:
+            {
+                "BTCUSDT": {
+                    "cumulative_realized_pnl": Decimal,
+                    "current_unrealized_pnl": Decimal,
+                    "cumulative_pnl": Decimal,
+                },
+                "ETHUSDT": {...},
+                "TOTAL": {...}  # 所有币种汇总
+            }
+        """
+        # 按币种分别计算累计 PnL
+        by_symbol: Dict[str, Dict[str, Decimal]] = {}
+        
+        # 遍历每一天，按币种累加已实现盈亏
+        current_date = start_date.date()
+        end_date_only = end_date.date()
+        
+        while current_date <= end_date_only:
+            day_start = datetime(current_date.year, current_date.month, current_date.day)
+            day_end = day_start + timedelta(days=1)
+            
+            # 如果当天还没结束，使用当前时间作为结束时间
+            if current_date == end_date_only:
+                day_end = end_date
+            
+            # 计算当天的指标（按币种）
+            day_metrics_by_symbol = await self.calculate_positions_by_symbol(
+                start_time=day_start,
+                end_time=day_end,
+                symbol=symbol
+            )
+            
+            # 累加每个币种的已实现盈亏
+            for s, metrics in day_metrics_by_symbol.items():
+                if s == "TOTAL":
+                    continue  # TOTAL 最后单独计算
+                
+                if s not in by_symbol:
+                    by_symbol[s] = {
+                        "cumulative_realized_pnl": Decimal("0"),
+                        "current_unrealized_pnl": Decimal("0"),
+                        "cumulative_pnl": Decimal("0"),
+                    }
+                
+                day_realized_pnl = metrics.get("realized_pnl", Decimal("0"))
+                by_symbol[s]["cumulative_realized_pnl"] += day_realized_pnl
+            
+            current_date += timedelta(days=1)
+        
+        # 计算当前时刻（end_date）的未实现盈亏（按币种）
+        current_metrics_by_symbol = await self.calculate_positions_by_symbol(
+            start_time=datetime(end_date_only.year, end_date_only.month, end_date_only.day),
+            end_time=end_date,
+            symbol=symbol
+        )
+        
+        # 更新每个币种的当前未实现盈亏和累计 PnL
+        total_cumulative_realized_pnl = Decimal("0")
+        total_current_unrealized_pnl = Decimal("0")
+        
+        for s, metrics in current_metrics_by_symbol.items():
+            if s == "TOTAL":
+                continue
+            
+            if s not in by_symbol:
+                by_symbol[s] = {
+                    "cumulative_realized_pnl": Decimal("0"),
+                    "current_unrealized_pnl": Decimal("0"),
+                    "cumulative_pnl": Decimal("0"),
+                }
+            
+            current_unrealized_pnl = metrics.get("unrealized_pnl", Decimal("0"))
+            by_symbol[s]["current_unrealized_pnl"] = current_unrealized_pnl
+            by_symbol[s]["cumulative_pnl"] = (
+                by_symbol[s]["cumulative_realized_pnl"] + current_unrealized_pnl
+            )
+            
+            # 累加到 TOTAL
+            total_cumulative_realized_pnl += by_symbol[s]["cumulative_realized_pnl"]
+            total_current_unrealized_pnl += current_unrealized_pnl
+        
+        # 计算 TOTAL
+        by_symbol["TOTAL"] = {
+            "cumulative_realized_pnl": total_cumulative_realized_pnl,
+            "current_unrealized_pnl": total_current_unrealized_pnl,
+            "cumulative_pnl": total_cumulative_realized_pnl + total_current_unrealized_pnl,
+        }
+        
         return by_symbol
     
     async def _get_initial_positions(

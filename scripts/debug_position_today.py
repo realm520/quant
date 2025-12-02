@@ -158,6 +158,7 @@ async def main() -> None:
         table.add_row("left_short_value (空头剩余市值)", _format_dec(m.get("left_short_value", Decimal("0")), 4))
         table.add_row("close_prz (当日最后一笔成交价)", _format_dec(m.get("close_prz", Decimal("0")), 8))
         table.add_row("unrealized_pnl (当日未实现盈亏)", _format_dec(m.get("unrealized_pnl", Decimal("0")), 4))
+        table.add_row("daily_pnl (单日 PnL)", _format_dec(m.get("daily_pnl", Decimal("0")), 4))
 
         console.print()
         console.print(table)

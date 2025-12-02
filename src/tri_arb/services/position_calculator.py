@@ -3,11 +3,15 @@
 用于计算基于成交记录的持仓量：
 - 多头持仓量 = 区间内所有买单的成交量 + 之前遗留的未平仓的买单
 - 空头持仓量 = 区间内所有卖单的成交量 + 之前遗留的未平仓的卖单
+- 多头市值 = 每笔买单市值累加 + 前日遗留的多头市值
+- 空头市值 = 每笔卖单市值累加 + 前日遗留的空头市值
+
+市值计算：每笔市值 = 成交价格 × 成交数量 × 合约乘数
 """
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,17 +29,26 @@ class PositionCalculator:
     - 空头持仓量 = 区间开始时空头持仓 + 区间内所有 SELL 订单的成交量
     """
     
-    def __init__(self, db_session: AsyncSession, exchange: str = "binance", account_id: Optional[str] = None):
+    def __init__(
+        self,
+        db_session: AsyncSession,
+        exchange: str = "binance",
+        account_id: Optional[str] = None,
+        contract_multiplier_getter: Optional[Callable[[str], Decimal]] = None
+    ):
         """初始化持仓量计算器.
         
         Args:
             db_session: 数据库会话
             exchange: 交易所名称 (binance, xt, okx, gate)
             account_id: 账号ID（可选），用于多账号场景
+            contract_multiplier_getter: 获取合约乘数的函数，接收 symbol 参数，返回合约乘数（Decimal）
+                                       如果不提供，默认使用 1
         """
         self.db_session = db_session
         self.exchange = exchange.lower()
         self.account_id = account_id
+        self.contract_multiplier_getter = contract_multiplier_getter or (lambda s: Decimal("1"))
         
         # 根据交易所选择对应的模型
         if self.exchange == "binance":
@@ -53,13 +66,28 @@ class PositionCalculator:
         else:
             raise ValueError(f"Unsupported exchange: {exchange}")
     
+    def _get_contract_multiplier(self, symbol: str) -> Decimal:
+        """获取合约乘数.
+        
+        Args:
+            symbol: 交易对
+        
+        Returns:
+            合约乘数（默认 1）
+        """
+        try:
+            return self.contract_multiplier_getter(symbol)
+        except Exception as e:
+            logger.warning(f"Failed to get contract multiplier for {symbol}, using default 1: {e}")
+            return Decimal("1")
+    
     async def calculate_position_from_trades(
         self,
         start_time: datetime,
         end_time: datetime,
         symbol: Optional[str] = None
     ) -> Dict[str, Decimal]:
-        """基于成交记录计算持仓量.
+        """基于成交记录计算持仓量和市值（用于某一时间区间，例如“昨日”或“今日”）.
         
         Args:
             start_time: 区间开始时间（UTC）
@@ -68,14 +96,22 @@ class PositionCalculator:
         
         Returns:
             字典，包含以下指标：
-            - pre_long_qty: 多头持仓量（区间开始时多头持仓 + 区间内所有 BUY 订单的成交量）
-            - pre_short_qty: 空头持仓量（区间开始时空头持仓 + 区间内所有 SELL 订单的成交量）
-            - pre_long_value: 多头持仓市值
-            - pre_short_value: 空头持仓市值
-            - buy_volume: 区间内所有 BUY 订单的成交量
-            - sell_volume: 区间内所有 SELL 订单的成交量
-            - initial_long_qty: 区间开始时的多头持仓
-            - initial_short_qty: 区间开始时的空头持仓
+            - pre_long_qty: 区间结束时的多头持仓量（= initial_long_qty + buy_volume）
+            - pre_short_qty: 区间结束时的空头持仓量（= initial_short_qty + sell_volume）
+            - pre_long_value: 区间结束时的多头市值
+            - pre_short_value: 区间结束时的空头市值
+            - buy_volume: 区间内所有 BUY 成交量之和
+            - sell_volume: 区间内所有 SELL 成交量之和
+            - initial_long_qty: 区间开始时的多头持仓量（之前遗留的未平仓多头）
+            - initial_short_qty: 区间开始时的空头持仓量（之前遗留的未平仓空头）
+            - buy_trade_value: 区间内所有 BUY 成交市值之和（∑ price * qty * 合约乘数）
+            - sell_trade_value: 区间内所有 SELL 成交市值之和
+            - long_qty: 多头交易量 = pre_long_qty + buy_volume
+            - short_qty: 空头交易量 = pre_short_qty + sell_volume
+            - long_value: 多头市值 = pre_long_value + buy_trade_value
+            - short_value: 空头市值 = pre_short_value + sell_trade_value
+            - avg_buy_prz: 买入平均价格 = long_value / long_qty（如 long_qty 为 0 则为 0）
+            - avg_sell_prz: 卖出平均价格 = short_value / short_qty（如 short_qty 为 0 则为 0）
         """
         # 1. 获取区间开始时的持仓（之前遗留的未平仓持仓）
         initial_positions = await self._get_initial_positions(start_time, symbol)
@@ -84,13 +120,23 @@ class PositionCalculator:
         initial_long_value = Decimal("0")
         initial_short_value = Decimal("0")
         
+        # 计算初始持仓量和市值（使用开仓均价和合约乘数）
         for symbol_key, pos_data in initial_positions.items():
-            if pos_data.get("side", "").upper() == "LONG":
-                initial_long_qty += pos_data.get("quantity", Decimal("0"))
-                initial_long_value += pos_data.get("notional", Decimal("0"))
-            elif pos_data.get("side", "").upper() == "SHORT":
-                initial_short_qty += pos_data.get("quantity", Decimal("0"))
-                initial_short_value += pos_data.get("notional", Decimal("0"))
+            pos_symbol = symbol_key.split("_")[0]  # 从 "symbol_side" 中提取 symbol
+            contract_multiplier = self._get_contract_multiplier(pos_symbol)
+            side = pos_data.get("side", "").upper()
+            quantity = pos_data.get("quantity", Decimal("0"))
+            entry_price = pos_data.get("entry_price", Decimal("0"))
+            
+            # 市值 = 持仓量 × 开仓均价 × 合约乘数
+            position_value = quantity * entry_price * contract_multiplier
+            
+            if side == "LONG":
+                initial_long_qty += quantity
+                initial_long_value += position_value
+            elif side == "SHORT":
+                initial_short_qty += quantity
+                initial_short_value += position_value
         
         # 2. 统计区间内所有成交记录
         buy_volume, sell_volume = await self._calculate_trade_volumes(start_time, end_time, symbol)
@@ -99,12 +145,31 @@ class PositionCalculator:
         pre_long_qty = initial_long_qty + buy_volume
         pre_short_qty = initial_short_qty + sell_volume
         
-        # 4. 计算持仓市值（使用平均价格）
-        # 这里简化处理，使用区间内成交的平均价格
-        avg_buy_price, avg_sell_price = await self._calculate_avg_prices(start_time, end_time, symbol)
+        # 4. 计算持仓市值
+        # 4.1 计算区间内成交的市值（每笔成交的市值累加）
+        buy_trade_value, sell_trade_value = await self._calculate_trade_values(start_time, end_time, symbol)
         
-        pre_long_value = initial_long_value + (buy_volume * avg_buy_price if avg_buy_price > 0 else Decimal("0"))
-        pre_short_value = initial_short_value + (sell_volume * avg_sell_price if avg_sell_price > 0 else Decimal("0"))
+        # 4.2 计算区间结束时的市值（基于初始市值 + 区间内成交市值之和）
+        pre_long_value = initial_long_value + buy_trade_value
+        pre_short_value = initial_short_value + sell_trade_value
+
+        # 5. 根据你的公式计算“今日”的交易量和市值：
+        #   long_qty = sum(buy_vol) + pre_long_qty
+        #   short_qty = sum(sell_vol) + pre_short_qty
+        #   long_value = sum(buy_vol * buy_price) + pre_long_value
+        #   short_value = sum(sell_vol * sell_price) + pre_short_value
+        long_qty = pre_long_qty + buy_volume
+        short_qty = pre_short_qty + sell_volume
+        long_value = pre_long_value + buy_trade_value
+        short_value = pre_short_value + sell_trade_value
+
+        # 6. 计算平均价格（不可舍入，直接用 Decimal 相除）
+        avg_buy_prz = Decimal("0")
+        avg_sell_prz = Decimal("0")
+        if long_qty > 0:
+            avg_buy_prz = long_value / long_qty
+        if short_qty > 0:
+            avg_sell_prz = short_value / short_qty
         
         return {
             "pre_long_qty": pre_long_qty,
@@ -115,6 +180,14 @@ class PositionCalculator:
             "sell_volume": sell_volume,
             "initial_long_qty": initial_long_qty,
             "initial_short_qty": initial_short_qty,
+            "buy_trade_value": buy_trade_value,
+            "sell_trade_value": sell_trade_value,
+            "long_qty": long_qty,
+            "short_qty": short_qty,
+            "long_value": long_value,
+            "short_value": short_value,
+            "avg_buy_prz": avg_buy_prz,
+            "avg_sell_prz": avg_sell_prz,
         }
     
     async def _get_initial_positions(
@@ -253,13 +326,16 @@ class PositionCalculator:
         Returns:
             (buy_volume, sell_volume) 元组
         """
+        # 根据交易所选择时间字段
+        time_column = self.TradeModel.transaction_time if self.exchange == "binance" else self.TradeModel.update_time
+        
         query = (
             select(
                 self.TradeModel.side,
                 func.sum(self.TradeModel.quantity).label('total_quantity')
             )
-            .where(self.TradeModel.transaction_time >= start_time)
-            .where(self.TradeModel.transaction_time < end_time)
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
         )
         
         if self.exchange == "binance":
@@ -285,13 +361,15 @@ class PositionCalculator:
         
         return buy_volume, sell_volume
     
-    async def _calculate_avg_prices(
+    async def _calculate_trade_values(
         self,
         start_time: datetime,
         end_time: datetime,
         symbol: Optional[str] = None
     ) -> tuple[Decimal, Decimal]:
-        """计算区间内成交的平均价格.
+        """计算区间内所有成交的市值（每笔成交的市值累加）.
+        
+        每笔成交的市值 = 成交价格 × 成交数量 × 合约乘数
         
         Args:
             start_time: 区间开始时间
@@ -299,17 +377,20 @@ class PositionCalculator:
             symbol: 交易对（可选）
         
         Returns:
-            (avg_buy_price, avg_sell_price) 元组
+            (buy_trade_value, sell_trade_value) 元组
         """
-        # 计算加权平均价格：sum(price * quantity) / sum(quantity)
+        # 查询所有成交记录
+        time_column = self.TradeModel.transaction_time if self.exchange == "binance" else self.TradeModel.update_time
+        
         query = (
             select(
+                self.TradeModel.symbol,
                 self.TradeModel.side,
-                func.sum(self.TradeModel.price * self.TradeModel.quantity).label('total_value'),
-                func.sum(self.TradeModel.quantity).label('total_quantity')
+                self.TradeModel.price,
+                self.TradeModel.quantity
             )
-            .where(self.TradeModel.transaction_time >= start_time)
-            .where(self.TradeModel.transaction_time < end_time)
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
         )
         
         if self.exchange == "binance":
@@ -319,21 +400,28 @@ class PositionCalculator:
         if symbol:
             query = query.where(self.TradeModel.symbol == symbol)
         
-        query = query.group_by(self.TradeModel.side)
-        
         result = await self.db_session.execute(query)
-        rows = result.all()
+        trades = result.all()
         
-        avg_buy_price = Decimal("0")
-        avg_sell_price = Decimal("0")
+        buy_trade_value = Decimal("0")
+        sell_trade_value = Decimal("0")
         
-        for side, total_value, total_quantity in rows:
-            if total_quantity and total_quantity > 0:
-                avg_price = total_value / total_quantity
-                if side.upper() == "BUY":
-                    avg_buy_price = avg_price
-                elif side.upper() == "SELL":
-                    avg_sell_price = avg_price
+        for trade in trades:
+            trade_symbol = trade.symbol
+            side = trade.side.upper()
+            price = trade.price
+            quantity = trade.quantity
+            
+            # 获取合约乘数
+            contract_multiplier = self._get_contract_multiplier(trade_symbol)
+            
+            # 计算市值：成交价格 × 成交数量 × 合约乘数
+            trade_value = price * quantity * contract_multiplier
+            
+            if side == "BUY":
+                buy_trade_value += trade_value
+            elif side == "SELL":
+                sell_trade_value += trade_value
         
-        return avg_buy_price, avg_sell_price
+        return buy_trade_value, sell_trade_value
 

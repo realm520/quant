@@ -209,28 +209,28 @@ class ConnectionStatus(Base):
     )
 
 
+# 注意：BinanceAccountBalance 已废弃，请使用 exchange_rest_models.BinanceBalanceRest
+# 为了保持向后兼容，保留此模型但使用 BinanceBalanceRest 的表定义
+from tri_arb.storage.exchange_rest_models import BinanceBalanceRest
+
 class BinanceAccountBalance(Base):
-    """Binance 账户余额记录.
+    """Binance 账户余额记录（已废弃，请使用 BinanceBalanceRest）.
     
     存储通过 REST/定时查询得到的余额快照（按资产维度）。
+    
+    注意：此模型与 exchange_rest_models.BinanceBalanceRest 共享同一个表 binance_account_snapshot。
+    为了保持兼容性，此模型保留 update_time 属性（映射到 query_time），
+    但新代码应使用 BinanceBalanceRest 模型。
     """
-    __tablename__ = "binance_account_snapshot"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    update_time = Column(DateTime, nullable=False, index=True)
-    account_id = Column(String(64), nullable=True, index=True)  # 账号ID（多账号区分）
-
-    # 币种余额
-    asset = Column(String(20), nullable=False, index=True)
-    free = Column(Numeric(30, 10), nullable=False)
-    locked = Column(Numeric(30, 10), nullable=False)
-    total = Column(Numeric(30, 10), nullable=False)
-
-    # 原始数据
-    raw_data = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    __table_args__ = (
-        Index('idx_binance_balance_asset_time', 'asset', 'update_time'),
-        Index('idx_binance_balance_account_time', 'account_id', 'update_time'),
-    )
+    __table__ = BinanceBalanceRest.__table__
+    
+    # 为了向后兼容，添加 update_time 属性（映射到 query_time）
+    @property
+    def update_time(self):
+        """兼容旧代码：update_time 映射到 query_time"""
+        return self.query_time
+    
+    @update_time.setter
+    def update_time(self, value):
+        """兼容旧代码：update_time 映射到 query_time"""
+        self.query_time = value

@@ -199,7 +199,7 @@ async def _run_xt_watch_positions_async(
             positions_data=positions_payload,
             query_type="scheduled",
         )
-        console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据已保存到数据库\n")
+        console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据 (perp) 已保存到 [cyan]xt_position_snapshot[/cyan]\n")
 
         update_position_metrics(
             exchange_label,
@@ -415,7 +415,9 @@ def _run_xt_watch_positions(
             positions_data=positions_payload,
             query_type="scheduled",
         )
-        console.print("[green]✓[/green] 仓位数据已保存到数据库\n")
+        # 使用 account_id 或默认值（此函数没有 account_label 变量）
+        acc_label = account_id or "默认账号"
+        console.print(f"[green]✓[/green] [账号 {acc_label}] 仓位数据 (perp) 已保存到 [cyan]xt_position_snapshot[/cyan]\n")
 
         update_position_metrics(
             exchange_label,
@@ -1780,7 +1782,7 @@ async def _run_xt_watch_balance_async(
                                     session.add(record)
                                     # 提交由 session 上下文管理器自动处理
                                     logger.info(f"账号 {account_label} 余额已保存到数据库: {currency.upper()}")
-                                    console.print(f"[green]✓[/green] [账号 {account_label}] 余额已保存: {currency.upper()}")
+                                    console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 ({exchange_type.value}) 已保存到 [cyan]xt_account_update[/cyan]: {currency.upper()}")
                         except Exception as save_exc:
                             logger.warning(f"账号 {account_label} 保存余额到数据库失败: {save_exc}")
                             console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")
@@ -1971,7 +1973,7 @@ async def _run_generic_watch_balance_async(
                                 account_id=account_id,
                             )
                             console.print(
-                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 {exchange_name.value}_balance_rest"
+                                f"[green]✓[/green] [账号 {account_label}] 余额数据 ({exchange_type.value}) 已保存到 [cyan]{exchange_name.value}_account_snapshot[/cyan]"
                             )
                         except Exception as save_exc:
                             logger.warning(
@@ -2087,6 +2089,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 (spot) 已保存到 [cyan]binance_account_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_balance_metrics(
                     "binance",
@@ -2141,6 +2144,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 (perp) 已保存到 [cyan]binance_account_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_balance_metrics(
                     "binance",
@@ -2204,6 +2208,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据 (perp) 已保存到 [cyan]binance_position_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_position_metrics(
                     "binance",
@@ -3067,7 +3072,7 @@ async def _run_binance_watch_positions_async(
                 query_type="scheduled",
                 account_id=account_id,
             )
-            console.print(f"[green]✓[/green] [账号 {account_label}] 仓位已保存到 rest_positions")
+            console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据 (perp) 已保存到 [cyan]binance_position_snapshot[/cyan]")
         except Exception as save_exc:
             console.print(f"[red][账号 {account_label}] 保存仓位失败:[/red] {save_exc}")
             logger.error("账号 %s Binance 仓位保存失败: %s", account_label, save_exc)
@@ -3210,7 +3215,7 @@ def watch_positions(
 
     - 单账号模式支持通过命令行或配置文件提供 API 凭证。
     - 多账号模式会根据配置文件中账号的 `exchange` 字段自动路由到对应实现。
-    - Binance 仓位数据会保存到通用的 `rest_positions` 表；XT 仍使用账号特定的表结构。
+    - Binance 仓位数据会保存到 `binance_position_snapshot` 表；XT 使用 `xt_position_snapshot` 表。
     """
     try:
         if exchange_type != ExchangeType.PERP:
@@ -3744,13 +3749,18 @@ def watch_balance(
                                     async with db_manager.session() as session:
                                         if exchange == ExchangeName.BINANCE:
                                             record = BinanceAccountBalance(
-                                                update_time=now,
+                                                exchange_type=exchange_type.value if hasattr(exchange_type, 'value') else str(exchange_type),
+                                                query_time=now,
+                                                query_type='manual',
+                                                account_id=account_id,
                                                 asset=currency.upper(),
                                                 free=available,
                                                 locked=frozen,
                                                 total=total,
                                                 raw_data=raw_json,
                                             )
+                                            # 设置 update_time 属性（向后兼容）
+                                            record.update_time = now
                                         elif exchange == ExchangeName.OKX:
                                             record = OKXAccountBalance(
                                                 update_time=now,
@@ -3786,7 +3796,17 @@ def watch_balance(
                                         if record is not None:
                                             session.add(record)
                                             logger.info(f"余额已保存到数据库: {currency.upper()}")
-                                            console.print(f"[green]✓[/green] 余额已保存: {currency.upper()}")
+                                            if exchange == ExchangeName.OKX:
+                                                table_name = "okx_account_update"
+                                            elif exchange == ExchangeName.GATE:
+                                                table_name = "gate_account_update"
+                                            elif exchange == ExchangeName.XT:
+                                                table_name = "xt_account_update"
+                                            else:
+                                                table_name = "unknown"
+                                            # account_label 可能未定义，使用 account_id 或默认值
+                                            acc_label = account_id or account_name or "默认账号"
+                                            console.print(f"[green]✓[/green] [账号 {acc_label}] 余额数据 ({exchange_type.value}) 已保存到 [cyan]{table_name}[/cyan]: {currency.upper()}")
                                 # 提交由 session ctx 管理
                             except Exception as save_exc:
                                 logger.warning(f"保存余额到数据库失败: {save_exc}")
@@ -3913,7 +3933,7 @@ async def _run_xt_watch_balance_async(
                                     session.add(record)
                                     # 提交由 session 上下文管理器自动处理
                                     logger.info(f"账号 {account_label} 余额已保存到数据库: {currency.upper()}")
-                                    console.print(f"[green]✓[/green] [账号 {account_label}] 余额已保存: {currency.upper()}")
+                                    console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 ({exchange_type.value}) 已保存到 [cyan]xt_account_update[/cyan]: {currency.upper()}")
                         except Exception as save_exc:
                             logger.warning(f"账号 {account_label} 保存余额到数据库失败: {save_exc}")
                             console.print(f"[red]✗[/red] [账号 {account_label}] 保存余额失败: {save_exc}")
@@ -4104,7 +4124,7 @@ async def _run_generic_watch_balance_async(
                                 account_id=account_id,
                             )
                             console.print(
-                                f"[green]✓[/green] [账号 {account_label}] 余额已保存到 {exchange_name.value}_balance_rest"
+                                f"[green]✓[/green] [账号 {account_label}] 余额数据 ({exchange_type.value}) 已保存到 [cyan]{exchange_name.value}_account_snapshot[/cyan]"
                             )
                         except Exception as save_exc:
                             logger.warning(
@@ -4223,6 +4243,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 (spot) 已保存到 [cyan]binance_account_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_balance_metrics(
                     "binance",
@@ -4277,6 +4298,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 余额数据 (perp) 已保存到 [cyan]binance_account_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_balance_metrics(
                     "binance",
@@ -4340,6 +4362,7 @@ async def _run_binance_watch_account_async(
                     query_type="scheduled",
                     account_id=account_id,
                 )
+                console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据 (perp) 已保存到 [cyan]binance_position_snapshot[/cyan]")
                 # 更新 Prometheus 指标
                 update_position_metrics(
                     "binance",
@@ -5275,7 +5298,7 @@ async def _run_binance_watch_positions_async(
                 query_type="scheduled",
                 account_id=account_id,
             )
-            console.print(f"[green]✓[/green] [账号 {account_label}] 仓位已保存到 rest_positions")
+            console.print(f"[green]✓[/green] [账号 {account_label}] 仓位数据 (perp) 已保存到 [cyan]binance_position_snapshot[/cyan]")
         except Exception as save_exc:
             console.print(f"[red][账号 {account_label}] 保存仓位失败:[/red] {save_exc}")
             logger.error("账号 %s Binance 仓位保存失败: %s", account_label, save_exc)

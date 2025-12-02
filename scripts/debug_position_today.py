@@ -152,6 +152,12 @@ async def main() -> None:
         table.add_row("avg_sell_prz (卖出均价)", _format_dec(avg_sell_prz, 8))
         table.add_row("matched_qty (轧差数量)", _format_dec(m.get("matched_qty", Decimal("0"))))
         table.add_row("realized_pnl (当日已实现盈亏)", _format_dec(m.get("realized_pnl", Decimal("0")), 4))
+        table.add_row("left_long_qty (多头剩余持仓)", _format_dec(m.get("left_long_qty", Decimal("0"))))
+        table.add_row("left_short_qty (空头剩余持仓)", _format_dec(m.get("left_short_qty", Decimal("0"))))
+        table.add_row("left_long_value (多头剩余市值)", _format_dec(m.get("left_long_value", Decimal("0")), 4))
+        table.add_row("left_short_value (空头剩余市值)", _format_dec(m.get("left_short_value", Decimal("0")), 4))
+        table.add_row("close_prz (当日最后一笔成交价)", _format_dec(m.get("close_prz", Decimal("0")), 8))
+        table.add_row("unrealized_pnl (当日未实现盈亏)", _format_dec(m.get("unrealized_pnl", Decimal("0")), 4))
 
         console.print()
         console.print(table)

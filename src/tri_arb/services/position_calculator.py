@@ -179,6 +179,28 @@ class PositionCalculator:
         if matched_qty > 0:
             realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
         
+        # 8. 计算剩余持仓和市值
+        left_long_qty = long_qty - matched_qty
+        left_short_qty = short_qty - matched_qty
+        left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+        left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+        
+        # 9. 获取最后一笔成交价（close_prz）
+        close_prices = await self._get_close_prices(start_time, end_time, symbol)
+        # 如果指定了 symbol，取该 symbol 的 close_prz；否则取所有 symbol 中最大的 close_prz
+        if symbol:
+            close_prz = close_prices.get(symbol, Decimal("0"))
+        else:
+            close_prz = max(close_prices.values()) if close_prices else Decimal("0")
+        
+        # 10. 计算未实现盈亏
+        unrealized_pnl = Decimal("0")
+        if close_prz > 0:
+            unrealized_pnl = (
+                left_long_qty * (close_prz - avg_buy_prz) +
+                left_short_qty * (avg_sell_prz - close_prz)
+            )
+        
         return {
             "pre_long_qty": pre_long_qty,
             "pre_short_qty": pre_short_qty,
@@ -198,6 +220,12 @@ class PositionCalculator:
             "avg_sell_prz": avg_sell_prz,
             "matched_qty": matched_qty,
             "realized_pnl": realized_pnl,
+            "left_long_qty": left_long_qty,
+            "left_short_qty": left_short_qty,
+            "left_long_value": left_long_value,
+            "left_short_value": left_short_value,
+            "close_prz": close_prz,
+            "unrealized_pnl": unrealized_pnl,
         }
 
     async def calculate_positions_by_symbol(
@@ -328,6 +356,9 @@ class PositionCalculator:
             elif side == "SELL":
                 by_symbol[trade_symbol]["sell_trade_value"] += trade_value
 
+        # 2.5 获取每个 symbol 的最后一笔成交价（close_prz）
+        close_prices = await self._get_close_prices(start_time, end_time, symbol)
+
         # 3. 计算每个 symbol 的最终指标
         total: Dict[str, Decimal] = {
             "pre_long_qty": Decimal("0"),
@@ -376,6 +407,23 @@ class PositionCalculator:
             if matched_qty > 0:
                 realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
 
+            # 计算剩余持仓和市值
+            left_long_qty = long_qty - matched_qty
+            left_short_qty = short_qty - matched_qty
+            left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+            left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+
+            # 获取最后一笔成交价（close_prz）
+            close_prz = close_prices.get(s, Decimal("0"))
+
+            # 计算未实现盈亏
+            unrealized_pnl = Decimal("0")
+            if close_prz > 0:
+                unrealized_pnl = (
+                    left_long_qty * (close_prz - avg_buy_prz) +
+                    left_short_qty * (avg_sell_prz - close_prz)
+                )
+
             data.update(
                 {
                     "pre_long_qty": pre_long_qty,
@@ -390,6 +438,12 @@ class PositionCalculator:
                     "avg_sell_prz": avg_sell_prz,
                     "matched_qty": matched_qty,
                     "realized_pnl": realized_pnl,
+                    "left_long_qty": left_long_qty,
+                    "left_short_qty": left_short_qty,
+                    "left_long_value": left_long_value,
+                    "left_short_value": left_short_value,
+                    "close_prz": close_prz,
+                    "unrealized_pnl": unrealized_pnl,
                 }
             )
 
@@ -416,6 +470,42 @@ class PositionCalculator:
             avg_sell_prz_total = total["short_value"] / total["short_qty"]
         total["avg_buy_prz"] = avg_buy_prz_total
         total["avg_sell_prz"] = avg_sell_prz_total
+
+        # 计算 TOTAL 的 matched_qty 和 realized_pnl
+        matched_qty_total = min(total["long_qty"], total["short_qty"])
+        realized_pnl_total = Decimal("0")
+        if matched_qty_total > 0:
+            realized_pnl_total = matched_qty_total * (avg_sell_prz_total - avg_buy_prz_total)
+        total["matched_qty"] = matched_qty_total
+        total["realized_pnl"] = realized_pnl_total
+
+        # 计算 TOTAL 的剩余持仓和市值
+        left_long_qty_total = total["long_qty"] - matched_qty_total
+        left_short_qty_total = total["short_qty"] - matched_qty_total
+        left_long_value_total = left_long_qty_total * avg_buy_prz_total if avg_buy_prz_total > 0 else Decimal("0")
+        left_short_value_total = left_short_qty_total * avg_sell_prz_total if avg_sell_prz_total > 0 else Decimal("0")
+        total["left_long_qty"] = left_long_qty_total
+        total["left_short_qty"] = left_short_qty_total
+        total["left_long_value"] = left_long_value_total
+        total["left_short_value"] = left_short_value_total
+
+        # TOTAL 的 close_prz：使用所有 symbol 中最新的最后一笔成交价
+        close_prz_total = Decimal("0")
+        if close_prices:
+            # 取所有 symbol 的最后一笔成交价的最大值（最新的时间对应的价格）
+            # 这里简化处理，使用所有 symbol 的 close_prz 的加权平均
+            # 或者更简单：使用所有 symbol 中最大的 close_prz
+            close_prz_total = max(close_prices.values()) if close_prices.values() else Decimal("0")
+        total["close_prz"] = close_prz_total
+
+        # 计算 TOTAL 的未实现盈亏
+        unrealized_pnl_total = Decimal("0")
+        if close_prz_total > 0:
+            unrealized_pnl_total = (
+                left_long_qty_total * (close_prz_total - avg_buy_prz_total) +
+                left_short_qty_total * (avg_sell_prz_total - close_prz_total)
+            )
+        total["unrealized_pnl"] = unrealized_pnl_total
 
         by_symbol["TOTAL"] = total
         return by_symbol
@@ -654,4 +744,83 @@ class PositionCalculator:
                 sell_trade_value += trade_value
         
         return buy_trade_value, sell_trade_value
+    
+    async def _get_close_prices(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        symbol: Optional[str] = None
+    ) -> Dict[str, Decimal]:
+        """获取每个 symbol 的最后一笔成交价（close_prz）.
+        
+        Args:
+            start_time: 区间开始时间
+            end_time: 区间结束时间
+            symbol: 交易对（可选）
+        
+        Returns:
+            字典，格式为 {symbol: close_price}
+        """
+        time_column = (
+            self.TradeModel.transaction_time
+            if self.exchange == "binance"
+            else self.TradeModel.update_time
+        )
+        
+        # 子查询：找到每个 symbol 的最后一笔成交时间
+        subquery = (
+            select(
+                self.TradeModel.symbol,
+                func.max(time_column).label('max_time')
+            )
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
+        )
+        
+        if self.exchange == "binance":
+            subquery = subquery.where(self.TradeModel.exchange == 'binance_perp')
+        if self.account_id:
+            subquery = subquery.where(self.TradeModel.account_id == self.account_id)
+        if symbol:
+            subquery = subquery.where(self.TradeModel.symbol == symbol)
+        
+        subquery = subquery.group_by(self.TradeModel.symbol).subquery()
+        
+        # 主查询：获取最后一笔成交的价格
+        # 使用窗口函数或者更简单的方法：对每个 symbol，找到最大时间对应的第一条记录
+        from sqlalchemy import distinct
+        
+        # 使用子查询 + JOIN 的方式，但需要处理同一时间多笔成交的情况
+        # 简化：直接查询所有记录，在 Python 中处理
+        query_all = (
+            select(
+                self.TradeModel.symbol,
+                self.TradeModel.price,
+                time_column
+            )
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
+        )
+        
+        if self.exchange == "binance":
+            query_all = query_all.where(self.TradeModel.exchange == 'binance_perp')
+        if self.account_id:
+            query_all = query_all.where(self.TradeModel.account_id == self.account_id)
+        if symbol:
+            query_all = query_all.where(self.TradeModel.symbol == symbol)
+        
+        query_all = query_all.order_by(self.TradeModel.symbol, time_column.desc())
+        
+        result = await self.db_session.execute(query_all)
+        rows = result.all()
+        
+        # 在 Python 中处理：对每个 symbol，取第一条（即时间最大的）
+        close_prices = {}
+        seen_symbols = set()
+        for row in rows:
+            if row.symbol not in seen_symbols:
+                close_prices[row.symbol] = row.price
+                seen_symbols.add(row.symbol)
+        
+        return close_prices
 

@@ -189,6 +189,219 @@ class PositionCalculator:
             "avg_buy_prz": avg_buy_prz,
             "avg_sell_prz": avg_sell_prz,
         }
+
+    async def calculate_positions_by_symbol(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Decimal]]:
+        """按交易对（symbol）维度计算区间内的持仓与交易指标.
+
+        与 ``calculate_position_from_trades`` 类似，但会返回每个 symbol 的独立统计结果。
+
+        返回结构示例::
+
+            {
+                "BTCUSDT": {
+                    "pre_long_qty": ...,
+                    "pre_short_qty": ...,
+                    "pre_long_value": ...,
+                    "pre_short_value": ...,
+                    "buy_volume": ...,
+                    "sell_volume": ...,
+                    "buy_trade_value": ...,
+                    "sell_trade_value": ...,
+                    "long_qty": ...,
+                    "short_qty": ...,
+                    "long_value": ...,
+                    "short_value": ...,
+                    "avg_buy_prz": ...,
+                    "avg_sell_prz": ...,
+                    "initial_long_qty": ...,
+                    "initial_short_qty": ...,
+                },
+                "TOTAL": { ... 所有 symbol 汇总 ... }
+            }
+        """
+        # 1. 获取区间开始时的逐 symbol 持仓
+        initial_positions = await self._get_initial_positions(start_time, symbol)
+
+        # 先构建逐 symbol 的初始多空持仓与市值
+        by_symbol: Dict[str, Dict[str, Decimal]] = {}
+        for symbol_key, pos_data in initial_positions.items():
+            pos_symbol = symbol_key.split("_")[0]
+            contract_multiplier = self._get_contract_multiplier(pos_symbol)
+            side = pos_data.get("side", "").upper()
+            quantity = pos_data.get("quantity", Decimal("0"))
+            entry_price = pos_data.get("entry_price", Decimal("0"))
+
+            position_value = quantity * entry_price * contract_multiplier
+
+            s = pos_symbol
+            if s not in by_symbol:
+                by_symbol[s] = {
+                    "initial_long_qty": Decimal("0"),
+                    "initial_short_qty": Decimal("0"),
+                    "initial_long_value": Decimal("0"),
+                    "initial_short_value": Decimal("0"),
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                }
+
+            if side == "LONG":
+                by_symbol[s]["initial_long_qty"] += quantity
+                by_symbol[s]["initial_long_value"] += position_value
+            elif side == "SHORT":
+                by_symbol[s]["initial_short_qty"] += quantity
+                by_symbol[s]["initial_short_value"] += position_value
+
+        # 2. 统计区间内逐 symbol 的成交量与市值
+        time_column = (
+            self.TradeModel.transaction_time
+            if self.exchange == "binance"
+            else self.TradeModel.update_time
+        )
+
+        query = (
+            select(
+                self.TradeModel.symbol,
+                self.TradeModel.side,
+                self.TradeModel.price,
+                self.TradeModel.quantity,
+            )
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
+        )
+
+        if self.exchange == "binance":
+            query = query.where(self.TradeModel.exchange == "binance_perp")
+        if self.account_id:
+            query = query.where(self.TradeModel.account_id == self.account_id)
+        if symbol:
+            query = query.where(self.TradeModel.symbol == symbol)
+
+        result = await self.db_session.execute(query)
+        rows = result.all()
+
+        for row in rows:
+            trade_symbol = row.symbol
+            side = row.side.upper()
+            price = row.price
+            qty = row.quantity
+
+            if trade_symbol not in by_symbol:
+                by_symbol[trade_symbol] = {
+                    "initial_long_qty": Decimal("0"),
+                    "initial_short_qty": Decimal("0"),
+                    "initial_long_value": Decimal("0"),
+                    "initial_short_value": Decimal("0"),
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                }
+
+            # 成交量
+            if side == "BUY":
+                by_symbol[trade_symbol]["buy_volume"] += qty
+            elif side == "SELL":
+                by_symbol[trade_symbol]["sell_volume"] += qty
+
+            # 成交市值（使用合约乘数）
+            contract_multiplier = self._get_contract_multiplier(trade_symbol)
+            trade_value = price * qty * contract_multiplier
+            if side == "BUY":
+                by_symbol[trade_symbol]["buy_trade_value"] += trade_value
+            elif side == "SELL":
+                by_symbol[trade_symbol]["sell_trade_value"] += trade_value
+
+        # 3. 计算每个 symbol 的最终指标
+        total: Dict[str, Decimal] = {
+            "pre_long_qty": Decimal("0"),
+            "pre_short_qty": Decimal("0"),
+            "pre_long_value": Decimal("0"),
+            "pre_short_value": Decimal("0"),
+            "buy_volume": Decimal("0"),
+            "sell_volume": Decimal("0"),
+            "buy_trade_value": Decimal("0"),
+            "sell_trade_value": Decimal("0"),
+            "long_qty": Decimal("0"),
+            "short_qty": Decimal("0"),
+            "long_value": Decimal("0"),
+            "short_value": Decimal("0"),
+        }
+
+        for s, data in by_symbol.items():
+            initial_long_qty = data["initial_long_qty"]
+            initial_short_qty = data["initial_short_qty"]
+            initial_long_value = data["initial_long_value"]
+            initial_short_value = data["initial_short_value"]
+            buy_volume = data["buy_volume"]
+            sell_volume = data["sell_volume"]
+            buy_trade_value = data["buy_trade_value"]
+            sell_trade_value = data["sell_trade_value"]
+
+            pre_long_qty = initial_long_qty + buy_volume
+            pre_short_qty = initial_short_qty + sell_volume
+            pre_long_value = initial_long_value + buy_trade_value
+            pre_short_value = initial_short_value + sell_trade_value
+
+            long_qty = pre_long_qty + buy_volume
+            short_qty = pre_short_qty + sell_volume
+            long_value = pre_long_value + buy_trade_value
+            short_value = pre_short_value + sell_trade_value
+
+            avg_buy_prz = Decimal("0")
+            avg_sell_prz = Decimal("0")
+            if long_qty > 0:
+                avg_buy_prz = long_value / long_qty
+            if short_qty > 0:
+                avg_sell_prz = short_value / short_qty
+
+            data.update(
+                {
+                    "pre_long_qty": pre_long_qty,
+                    "pre_short_qty": pre_short_qty,
+                    "pre_long_value": pre_long_value,
+                    "pre_short_value": pre_short_value,
+                    "long_qty": long_qty,
+                    "short_qty": short_qty,
+                    "long_value": long_value,
+                    "short_value": short_value,
+                    "avg_buy_prz": avg_buy_prz,
+                    "avg_sell_prz": avg_sell_prz,
+                }
+            )
+
+            # 累加到 TOTAL
+            total["pre_long_qty"] += pre_long_qty
+            total["pre_short_qty"] += pre_short_qty
+            total["pre_long_value"] += pre_long_value
+            total["pre_short_value"] += pre_short_value
+            total["buy_volume"] += buy_volume
+            total["sell_volume"] += sell_volume
+            total["buy_trade_value"] += buy_trade_value
+            total["sell_trade_value"] += sell_trade_value
+            total["long_qty"] += long_qty
+            total["short_qty"] += short_qty
+            total["long_value"] += long_value
+            total["short_value"] += short_value
+
+        # 计算 TOTAL 的均价
+        avg_buy_prz_total = Decimal("0")
+        avg_sell_prz_total = Decimal("0")
+        if total["long_qty"] > 0:
+            avg_buy_prz_total = total["long_value"] / total["long_qty"]
+        if total["short_qty"] > 0:
+            avg_sell_prz_total = total["short_value"] / total["short_qty"]
+        total["avg_buy_prz"] = avg_buy_prz_total
+        total["avg_sell_prz"] = avg_sell_prz_total
+
+        by_symbol["TOTAL"] = total
+        return by_symbol
     
     async def _get_initial_positions(
         self,

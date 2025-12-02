@@ -57,7 +57,9 @@ def _format_dec(value: Decimal, prec: int = 8) -> str:
 async def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="调试单账号今日持仓与交易统计（UTC+0 当日 00:00~当前）。")
+    parser = argparse.ArgumentParser(
+        description="调试单账号今日持仓与交易统计（UTC+0 当日 00:00~当前），支持按币种拆分。"
+    )
     parser.add_argument(
         "--account-id",
         type=str,
@@ -70,6 +72,12 @@ async def main() -> None:
         choices=["binance", "xt"],
         required=True,
         help="交易所标识（binance 或 xt）",
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="可选：指定单个交易对（如 BTCUSDT），否则统计该账号下所有交易对并逐币种展示",
     )
     parser.add_argument(
         "--config",
@@ -104,41 +112,47 @@ async def main() -> None:
             exchange=args.exchange,
             account_id=args.account_id,
         )
-        metrics = await calc.calculate_position_from_trades(
+        metrics_by_symbol = await calc.calculate_positions_by_symbol(
             start_time=start_time,
             end_time=end_time,
-            symbol=None,
+            symbol=args.symbol,
         )
 
-    # 构造输出表
-    table = Table(title="今日持仓与交易统计（基于成交记录）", show_header=True, header_style="bold magenta")
-    table.add_column("指标", justify="left")
-    table.add_column("数值", justify="right")
+    # 逐币种输出
+    for symbol_key, m in metrics_by_symbol.items():
+        title = (
+            f"今日持仓与交易统计（{symbol_key}，基于成交记录）"
+            if symbol_key != "TOTAL"
+            else "今日持仓与交易统计（TOTAL 汇总，基于成交记录）"
+        )
+        table = Table(title=title, show_header=True, header_style="bold magenta")
+        table.add_column("指标", justify="left")
+        table.add_column("数值", justify="right")
 
-    long_qty = metrics["long_qty"]
-    short_qty = metrics["short_qty"]
-    long_value = metrics["long_value"]
-    short_value = metrics["short_value"]
-    avg_buy_prz = metrics["avg_buy_prz"]
-    avg_sell_prz = metrics["avg_sell_prz"]
+        long_qty = m.get("long_qty", Decimal("0"))
+        short_qty = m.get("short_qty", Decimal("0"))
+        long_value = m.get("long_value", Decimal("0"))
+        short_value = m.get("short_value", Decimal("0"))
+        avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
+        avg_sell_prz = m.get("avg_sell_prz", Decimal("0"))
 
-    table.add_row("pre_long_qty (区间结束多头持仓量)", _format_dec(metrics["pre_long_qty"]))
-    table.add_row("pre_short_qty (区间结束空头持仓量)", _format_dec(metrics["pre_short_qty"]))
-    table.add_row("initial_long_qty (区间开始多头)", _format_dec(metrics["initial_long_qty"]))
-    table.add_row("initial_short_qty (区间开始空头)", _format_dec(metrics["initial_short_qty"]))
-    table.add_row("buy_volume (BUY 成交量)", _format_dec(metrics["buy_volume"]))
-    table.add_row("sell_volume (SELL 成交量)", _format_dec(metrics["sell_volume"]))
-    table.add_row("buy_trade_value (BUY 市值累加)", _format_dec(metrics["buy_trade_value"], 4))
-    table.add_row("sell_trade_value (SELL 市值累加)", _format_dec(metrics["sell_trade_value"], 4))
-    table.add_row("long_qty (多头交易量)", _format_dec(long_qty))
-    table.add_row("short_qty (空头交易量)", _format_dec(short_qty))
-    table.add_row("long_value (多头市值)", _format_dec(long_value, 4))
-    table.add_row("short_value (空头市值)", _format_dec(short_value, 4))
-    table.add_row("avg_buy_prz (买入均价)", _format_dec(avg_buy_prz, 8))
-    table.add_row("avg_sell_prz (卖出均价)", _format_dec(avg_sell_prz, 8))
+        table.add_row("pre_long_qty (区间结束多头持仓量)", _format_dec(m.get("pre_long_qty", Decimal("0"))))
+        table.add_row("pre_short_qty (区间结束空头持仓量)", _format_dec(m.get("pre_short_qty", Decimal("0"))))
+        table.add_row("initial_long_qty (区间开始多头)", _format_dec(m.get("initial_long_qty", Decimal("0"))))
+        table.add_row("initial_short_qty (区间开始空头)", _format_dec(m.get("initial_short_qty", Decimal("0"))))
+        table.add_row("buy_volume (BUY 成交量)", _format_dec(m.get("buy_volume", Decimal("0"))))
+        table.add_row("sell_volume (SELL 成交量)", _format_dec(m.get("sell_volume", Decimal("0"))))
+        table.add_row("buy_trade_value (BUY 市值累加)", _format_dec(m.get("buy_trade_value", Decimal("0")), 4))
+        table.add_row("sell_trade_value (SELL 市值累加)", _format_dec(m.get("sell_trade_value", Decimal("0")), 4))
+        table.add_row("long_qty (多头交易量)", _format_dec(long_qty))
+        table.add_row("short_qty (空头交易量)", _format_dec(short_qty))
+        table.add_row("long_value (多头市值)", _format_dec(long_value, 4))
+        table.add_row("short_value (空头市值)", _format_dec(short_value, 4))
+        table.add_row("avg_buy_prz (买入均价)", _format_dec(avg_buy_prz, 8))
+        table.add_row("avg_sell_prz (卖出均价)", _format_dec(avg_sell_prz, 8))
 
-    console.print()
-    console.print(table)
+        console.print()
+        console.print(table)
 
     await db_manager.close()
 

@@ -31,6 +31,7 @@ from tri_arb.storage.exchange_rest_models import (
     GatePositionRest,
     GateOrderRest,
 )
+from tri_arb.storage.position_metrics_models import Base as PositionMetricsBase
 
 logger = get_logger(__name__)
 
@@ -276,8 +277,20 @@ class DatabaseManager:
                 else:
                     logger.error(f"Failed to create Exchange-specific REST API tables: {e}", exc_info=True)
                     raise
+            
+            try:
+                logger.info("Creating Position Metrics tables...")
+                await conn.run_sync(lambda sync_conn: _create_safe(sync_conn, PositionMetricsBase.metadata, "Position Metrics"))
+                logger.info("✓ Position Metrics tables created/verified")
+            except Exception as e:
+                error_str = str(e).lower()
+                if "already exists" in error_str or "duplicate" in error_str:
+                    logger.warning(f"Some Position Metrics tables/indexes already exist (this is OK): {e}")
+                else:
+                    logger.error(f"Failed to create Position Metrics tables: {e}", exc_info=True)
+                    raise
         
-        logger.info("✅ All database tables created/verified (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API)")
+        logger.info("✅ All database tables created/verified (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API + Position Metrics)")
     
     async def drop_tables(self):
         """删除数据库表（谨慎使用）。"""
@@ -289,7 +302,8 @@ class DatabaseManager:
             await conn.run_sync(RestBase.metadata.drop_all)
             await conn.run_sync(XTRestBase.metadata.drop_all)
             await conn.run_sync(ExchangeRestBase.metadata.drop_all)
-        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API)")
+            await conn.run_sync(PositionMetricsBase.metadata.drop_all)
+        logger.warning("Database tables dropped (Binance + OKX + Gate.io + XT WebSocket + REST API + XT REST API + Exchange-specific REST API + Position Metrics)")
     
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession, None]:

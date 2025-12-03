@@ -1,25 +1,23 @@
-#!/usr/bin/env python3
-"""持仓指标定时计算服务启动脚本.
-
-每5分钟计算一次持仓和交易指标，并存储到数据库供 Grafana 可视化。
-"""
+"""持仓指标定时计算命令."""
 
 import asyncio
 import os
 import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
-# 添加项目根目录到路径
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+import typer
+from prometheus_client import start_http_server
 
 from tri_arb.config.logging import get_logger
 from tri_arb.services.position_metrics_scheduler import PositionMetricsScheduler
 from tri_arb.storage.database import DatabaseManager
-from tri_arb.utils.metrics import MetricsServer
 
 logger = get_logger(__name__)
+
+# 创建独立的 Typer app（用于注册到 cextools）
+app = typer.Typer(help="交易指标监控服务（持仓、交易量、盈亏等）")
 
 
 class SchedulerApp:
@@ -49,21 +47,6 @@ class SchedulerApp:
         if self.db_manager:
             await self.db_manager.close()
         logger.info("应用已关闭")
-    
-    def run(self, config_path: str = "config/accounts.json", interval_minutes: int = 5):
-        """运行应用.
-        
-        Args:
-            config_path: 账号配置文件路径
-            interval_minutes: 计算间隔（分钟）
-        """
-        try:
-            asyncio.run(self._main(config_path=config_path, interval_minutes=interval_minutes))
-        except KeyboardInterrupt:
-            logger.info("收到键盘中断信号")
-        except Exception as e:
-            logger.error("应用运行出错", error=str(e), exc_info=True)
-            sys.exit(1)
     
     async def _main(self, config_path: str = "config/accounts.json", interval_minutes: int = 5):
         """主函数.
@@ -107,7 +90,6 @@ class SchedulerApp:
         
         # 启动 Prometheus metrics server
         # 注意：直接启动，不依赖 settings.enable_metrics（因为这是独立服务）
-        from prometheus_client import start_http_server
         try:
             start_http_server(9602)
             logger.info("Prometheus metrics server 已启动", port=9602)
@@ -138,32 +120,39 @@ class SchedulerApp:
             await self._shutdown()
 
 
-def main():
-    """主入口函数."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="持仓指标定时计算服务 - 每5分钟计算一次持仓和交易指标"
-    )
-    parser.add_argument(
+@app.command()
+def start(
+    config: Optional[str] = typer.Option(
+        "config/accounts.json",
         "--config",
-        type=str,
-        default="config/accounts.json",
+        "-c",
         help="账号配置文件路径（默认: config/accounts.json）",
-    )
-    parser.add_argument(
+    ),
+    interval: int = typer.Option(
+        5,
         "--interval",
-        type=int,
-        default=5,
+        "-i",
         help="计算间隔（分钟），默认5分钟",
-    )
+    ),
+) -> None:
+    """启动交易指标监控服务.
     
-    args = parser.parse_args()
+    每N分钟计算一次持仓、交易量、市值、盈亏等综合指标，并存储到数据库供 Grafana 可视化。
+    同时启动 Prometheus metrics server 在端口 9602，用于实时监控。
     
-    app = SchedulerApp()
-    app.run(config_path=args.config, interval_minutes=args.interval)
-
-
-if __name__ == "__main__":
-    main()
+    Examples:
+        # 使用默认配置（config/accounts.json，每5分钟）
+        cextools trading-monitor start
+        
+        # 使用自定义配置文件，每10分钟计算一次
+        cextools trading-monitor start --config config/accounts_test.json --interval 10
+    """
+    try:
+        app_instance = SchedulerApp()
+        asyncio.run(app_instance._main(config_path=config, interval_minutes=interval))
+    except KeyboardInterrupt:
+        logger.info("收到键盘中断信号")
+    except Exception as e:
+        logger.error("应用运行出错", error=str(e), exc_info=True)
+        sys.exit(1)
 

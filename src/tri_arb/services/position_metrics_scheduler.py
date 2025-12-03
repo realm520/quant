@@ -358,53 +358,17 @@ class PositionMetricsScheduler:
                         logger.info(f"计算账号指标: {account_id} ({exchange_name})")
                         
                         try:
-                            # 创建合约乘数 getter（包装异步方法为同步函数）
+                            # 创建合约乘数 getter（使用同步方法）
                             contract_multiplier_getter: Optional[Callable[[str], Decimal]] = None
                             if self.contract_multiplier_service:
-                                # 创建一个同步包装器，使用当前事件循环来调用异步方法
+                                # 使用同步方法，直接调用公开 API（不需要 API key）
                                 service = self.contract_multiplier_service
                                 exchange = exchange_name
                                 
                                 # 使用闭包捕获 service 和 exchange
                                 def sync_getter(symbol: str) -> Decimal:
-                                    """同步包装器，调用异步 get_multiplier 方法."""
-                                    try:
-                                        # 尝试获取当前事件循环
-                                        try:
-                                            loop = asyncio.get_running_loop()
-                                            # 如果事件循环正在运行，我们需要使用不同的方法
-                                            # 创建一个新任务，但这在同步上下文中不可行
-                                            # 所以使用默认值
-                                            logger.warning(
-                                                f"无法在运行中的事件循环中调用异步方法，使用默认合约乘数 1",
-                                                symbol=symbol,
-                                                exchange=exchange,
-                                            )
-                                            return Decimal("1")
-                                        except RuntimeError:
-                                            # 没有运行中的事件循环，可以使用 run_until_complete
-                                            loop = asyncio.get_event_loop()
-                                            if loop.is_running():
-                                                # 如果事件循环正在运行，使用默认值
-                                                logger.warning(
-                                                    f"事件循环正在运行，无法同步调用异步方法，使用默认合约乘数 1",
-                                                    symbol=symbol,
-                                                    exchange=exchange,
-                                                )
-                                                return Decimal("1")
-                                            else:
-                                                # 事件循环未运行，可以使用 run_until_complete
-                                                return loop.run_until_complete(service.get_multiplier(exchange, symbol))
-                                    except RuntimeError:
-                                        # 没有事件循环，创建新的
-                                        return asyncio.run(service.get_multiplier(exchange, symbol))
-                                    except Exception as e:
-                                        logger.warning(
-                                            f"获取合约乘数失败，使用默认值 1: {e}",
-                                            symbol=symbol,
-                                            exchange=exchange,
-                                        )
-                                        return Decimal("1")
+                                    """同步获取合约乘数."""
+                                    return service.get_multiplier_sync(exchange, symbol)
                                 
                                 contract_multiplier_getter = sync_getter
                             

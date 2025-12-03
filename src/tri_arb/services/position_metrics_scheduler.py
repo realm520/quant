@@ -14,6 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tri_arb.config.logging import get_logger
+from tri_arb.exchanges.xt_perp import XTPerpExchange
 from tri_arb.services.contract_multiplier_service import ContractMultiplierService
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.storage.database import DatabaseManager
@@ -110,9 +111,20 @@ class PositionMetricsScheduler:
                     xt_api_secret = account.get("api_secret")
                     break
             
+            # 创建 XTPerpExchange 实例（如果需要）
+            xt_exchange = None
+            if xt_api_key and xt_api_secret:
+                try:
+                    xt_exchange = XTPerpExchange(
+                        api_key=xt_api_key,
+                        api_secret=xt_api_secret,
+                    )
+                    logger.info("XTPerpExchange 已创建，用于获取合约乘数")
+                except Exception as e:
+                    logger.warning(f"创建 XTPerpExchange 失败: {e}，将使用默认合约乘数")
+            
             self.contract_multiplier_service = ContractMultiplierService(
-                xt_api_key=xt_api_key,
-                xt_api_secret=xt_api_secret,
+                xt_exchange=xt_exchange,
             )
             logger.info("合约乘数服务已初始化")
         

@@ -168,7 +168,7 @@ class MetricsServer:
             logger.warning("Metrics server already started")
             return
 
-        if not settings.metrics_enabled:
+        if not settings.enable_metrics:
             logger.info("Metrics disabled in configuration")
             return
 

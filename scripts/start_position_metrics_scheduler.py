@@ -106,9 +106,10 @@ class SchedulerApp:
             sys.exit(1)
         
         # 启动 Prometheus metrics server
-        metrics_server = MetricsServer(port=9602)  # 使用 9602 端口
+        # 注意：直接启动，不依赖 settings.enable_metrics（因为这是独立服务）
+        from prometheus_client import start_http_server
         try:
-            metrics_server.start()
+            start_http_server(9602)
             logger.info("Prometheus metrics server 已启动", port=9602)
         except Exception as e:
             logger.warning(f"启动 Prometheus metrics server 失败: {e}，metrics 将不可用")

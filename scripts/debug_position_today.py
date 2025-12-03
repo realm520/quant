@@ -100,6 +100,11 @@ async def main() -> None:
     start_time = datetime(today.year, today.month, today.day)          # 今日 00:00 UTC
     end_time = datetime.utcnow()                                       # 当前 UTC
 
+    # 计算昨日 UTC 区间（用于显示"昨收持仓"）
+    yesterday = today - timedelta(days=1)
+    yesterday_start = datetime(yesterday.year, yesterday.month, yesterday.day)  # 昨日 00:00 UTC
+    yesterday_end = datetime(today.year, today.month, today.day)                # 昨日 24:00 UTC（即今日 00:00）
+
     console.print(
         f"[cyan]统计区间 (UTC+0): {start_time.isoformat()} -> {end_time.isoformat()}[/cyan]"
     )
@@ -119,6 +124,13 @@ async def main() -> None:
             exchange=args.exchange,
             account_id=args.account_id,
         )
+        # 计算昨日数据（用于显示"昨收持仓"）
+        yesterday_metrics_by_symbol = await calc.calculate_positions_by_symbol(
+            start_time=yesterday_start,
+            end_time=yesterday_end,
+            symbol=args.symbol,
+        )
+        
         # 计算今日指标
         metrics_by_symbol = await calc.calculate_positions_by_symbol(
             start_time=start_time,
@@ -138,17 +150,20 @@ async def main() -> None:
         if symbol_key == "TOTAL":
             continue
         
+        # 获取昨日数据（用于显示"昨收持仓"）
+        yesterday_m = yesterday_metrics_by_symbol.get(symbol_key, {})
+        
         title = f"今日持仓与交易统计（{symbol_key}，基于成交记录）"
         table = Table(title=title, show_header=True, header_style="bold magenta")
         table.add_column("指标", justify="left")
         table.add_column("数值", justify="right")
 
-        # 1. 昨收持仓
+        # 1. 昨收持仓（使用昨日的数据）
         table.add_row("[bold cyan]--- 1. 昨收持仓 ---[/bold cyan]", "")
-        table.add_row("昨日多头持仓量 (pre_long_qty)", _format_dec(m.get("pre_long_qty", Decimal("0"))))
-        table.add_row("昨日空头持仓量 (pre_short_qty)", _format_dec(m.get("pre_short_qty", Decimal("0"))))
-        table.add_row("昨日多头市值 (pre_long_value)", _format_dec(m.get("pre_long_value", Decimal("0")), 4))
-        table.add_row("昨日空头市值 (pre_short_value)", _format_dec(m.get("pre_short_value", Decimal("0")), 4))
+        table.add_row("昨日多头持仓量 (pre_long_qty)", _format_dec(yesterday_m.get("pre_long_qty", Decimal("0"))))
+        table.add_row("昨日空头持仓量 (pre_short_qty)", _format_dec(yesterday_m.get("pre_short_qty", Decimal("0"))))
+        table.add_row("昨日多头市值 (pre_long_value)", _format_dec(yesterday_m.get("pre_long_value", Decimal("0")), 4))
+        table.add_row("昨日空头市值 (pre_short_value)", _format_dec(yesterday_m.get("pre_short_value", Decimal("0")), 4))
         table.add_row("", "")  # 空行分隔
 
         # 2. 今日交易

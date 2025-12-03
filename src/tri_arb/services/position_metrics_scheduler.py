@@ -13,6 +13,8 @@ from typing import Optional, Dict, Any
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from prometheus_client import Gauge
+from rich.console import Console
+from rich.table import Table
 
 from tri_arb.config.logging import get_logger
 from tri_arb.exchanges.xt_perp import XTPerpExchange
@@ -20,8 +22,12 @@ from tri_arb.services.contract_multiplier_service import ContractMultiplierServi
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.position_metrics_models import PositionMetrics
+from rich.console import Console
+from rich.table import Table
 
 logger = get_logger(__name__)
+console = Console()
+console = Console()
 
 # Prometheus metrics for position metrics
 position_pre_long_qty = Gauge(
@@ -353,6 +359,16 @@ class PositionMetricsScheduler:
                                     end_time=end_time,
                                 )
                                 
+                                # 在日志中输出详细指标（使用表格格式）
+                                self._log_metrics_table(
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                    symbol=symbol_key,
+                                    yesterday_m=yesterday_m,
+                                    today_m=m,
+                                    cumulative_pnl=cumulative_pnl,
+                                )
+                                
                                 # 创建指标记录
                                 metrics_record = PositionMetrics(
                                     timestamp=end_time,
@@ -426,6 +442,7 @@ class PositionMetricsScheduler:
                                 position_cumulative_pnl.labels(**labels).set(float(cumulative_pnl))
                             
                             await session.commit()
+                            
                             logger.info(
                                 f"已计算并存储指标（包括 Prometheus metrics）",
                                 account_id=account_id,
@@ -501,4 +518,81 @@ class PositionMetricsScheduler:
             )
             # 如果查询失败，返回当前未实现盈亏（至少保证有值）
             return current_unrealized_pnl
+    
+    def _log_metrics_table(
+        self,
+        account_id: str,
+        exchange: str,
+        symbol: str,
+        yesterday_m: Dict[str, Any],
+        today_m: Dict[str, Any],
+        cumulative_pnl: Decimal,
+    ) -> None:
+        """使用表格格式输出持仓指标到日志.
+        
+        Args:
+            account_id: 账号ID
+            exchange: 交易所
+            symbol: 交易对
+            yesterday_m: 昨日指标数据
+            today_m: 今日指标数据
+            cumulative_pnl: 累计 PnL
+        """
+        def _format_decimal(value: Decimal, precision: int = 2) -> str:
+            """格式化 Decimal 值."""
+            if value is None:
+                return "0.00"
+            return f"{float(value):,.{precision}f}"
+        
+        table = Table(
+            title=f"持仓指标计算结果 [{account_id} - {exchange} - {symbol}]",
+            show_header=True,
+            header_style="bold cyan",
+            box=None,  # 使用简单边框
+        )
+        table.add_column("指标", justify="left", style="cyan")
+        table.add_column("数值", justify="right", style="green")
+        
+        # 1. 昨收持仓
+        table.add_row("[bold yellow]--- 1. 昨收持仓 ---[/bold yellow]", "")
+        table.add_row("  昨日多头持仓量 (pre_long_qty)", _format_decimal(yesterday_m.get("pre_long_qty", Decimal("0")), 2))
+        table.add_row("  昨日空头持仓量 (pre_short_qty)", _format_decimal(yesterday_m.get("pre_short_qty", Decimal("0")), 2))
+        table.add_row("  昨日多头市值 (pre_long_value)", _format_decimal(yesterday_m.get("pre_long_value", Decimal("0")), 4))
+        table.add_row("  昨日空头市值 (pre_short_value)", _format_decimal(yesterday_m.get("pre_short_value", Decimal("0")), 4))
+        table.add_row("", "")  # 空行
+        
+        # 2. 今日交易
+        table.add_row("[bold yellow]--- 2. 今日交易 ---[/bold yellow]", "")
+        table.add_row("  多头交易量 (long_qty)", _format_decimal(today_m.get("long_qty", Decimal("0")), 2))
+        table.add_row("  空头交易量 (short_qty)", _format_decimal(today_m.get("short_qty", Decimal("0")), 2))
+        table.add_row("  多头市值 (long_value)", _format_decimal(today_m.get("long_value", Decimal("0")), 4))
+        table.add_row("  空头市值 (short_value)", _format_decimal(today_m.get("short_value", Decimal("0")), 4))
+        table.add_row("  买入平均价格 (avg_buy_prz)", _format_decimal(today_m.get("avg_buy_prz", Decimal("0")), 8))
+        table.add_row("  卖出平均价格 (avg_sell_prz)", _format_decimal(today_m.get("avg_sell_prz", Decimal("0")), 8))
+        table.add_row("", "")  # 空行
+        
+        # 3. 已实现 Pnl
+        table.add_row("[bold yellow]--- 3. 已实现 Pnl ---[/bold yellow]", "")
+        table.add_row("  轧差数量 (matched_qty)", _format_decimal(today_m.get("matched_qty", Decimal("0")), 2))
+        table.add_row("  当日已实现盈亏 (realized_pnl)", _format_decimal(today_m.get("realized_pnl", Decimal("0")), 4))
+        table.add_row("", "")  # 空行
+        
+        # 4. 当日剩余仓位
+        table.add_row("[bold yellow]--- 4. 当日剩余仓位 ---[/bold yellow]", "")
+        table.add_row("  多头剩余持仓 (left_long_qty)", _format_decimal(today_m.get("left_long_qty", Decimal("0")), 2))
+        table.add_row("  空头剩余持仓 (left_short_qty)", _format_decimal(today_m.get("left_short_qty", Decimal("0")), 2))
+        table.add_row("  多头剩余市值 (left_long_value)", _format_decimal(today_m.get("left_long_value", Decimal("0")), 4))
+        table.add_row("  空头剩余市值 (left_short_value)", _format_decimal(today_m.get("left_short_value", Decimal("0")), 4))
+        table.add_row("  当日最后一笔成交价 (close_prz)", _format_decimal(today_m.get("close_prz", Decimal("0")), 8))
+        table.add_row("  当日未实现盈亏 (unrealized_pnl)", _format_decimal(today_m.get("unrealized_pnl", Decimal("0")), 4))
+        table.add_row("", "")  # 空行
+        
+        # 5. Pnl 汇总
+        table.add_row("[bold yellow]--- 5. Pnl 汇总 ---[/bold yellow]", "")
+        table.add_row("  单日 PnL (daily_pnl)", _format_decimal(today_m.get("daily_pnl", Decimal("0")), 4))
+        table.add_row("  累计 PnL (cumulative_pnl)", _format_decimal(cumulative_pnl, 4))
+        
+        # 输出表格到控制台
+        console.print()
+        console.print(table)
 

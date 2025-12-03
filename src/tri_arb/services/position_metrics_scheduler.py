@@ -22,12 +22,10 @@ from tri_arb.services.contract_multiplier_service import ContractMultiplierServi
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.position_metrics_models import PositionMetrics
-from rich.console import Console
-from rich.table import Table
 
 logger = get_logger(__name__)
-console = Console()
-console = Console()
+# 使用标准输出流，确保表格能在控制台正确显示
+console = Console(file=None)  # file=None 表示使用 sys.stdout
 
 # Prometheus metrics for position metrics
 position_pre_long_qty = Gauge(
@@ -287,6 +285,7 @@ class PositionMetricsScheduler:
     async def _calculate_and_store_metrics(self):
         """计算并存储指标."""
         try:
+            logger.info("开始计算持仓指标...")
             # 读取账号配置
             config_path = Path(self.config_path)
             if not config_path.exists():
@@ -297,6 +296,7 @@ class PositionMetricsScheduler:
                 config = json.load(f)
             
             accounts = config.get("accounts", {})
+            logger.info(f"找到 {len(accounts)} 个交易所配置")
             
             # 计算今日 UTC 区间
             today = datetime.utcnow().date()
@@ -314,10 +314,14 @@ class PositionMetricsScheduler:
                     if exchange_name not in ["binance", "xt"]:
                         continue
                     
+                    logger.info(f"处理交易所: {exchange_name}, 账号数: {len(account_list)}")
+                    
                     for account_config in account_list:
                         account_id = account_config.get("account_id")
                         if not account_id:
                             continue
+                        
+                        logger.info(f"计算账号指标: {account_id} ({exchange_name})")
                         
                         try:
                             # 创建计算器
@@ -359,7 +363,8 @@ class PositionMetricsScheduler:
                                     end_time=end_time,
                                 )
                                 
-                                # 在日志中输出详细指标（使用表格格式）
+                                # 在控制台输出详细指标（使用表格格式）
+                                logger.info(f"计算完成: {account_id} - {exchange_name} - {symbol_key}")
                                 self._log_metrics_table(
                                     account_id=account_id,
                                     exchange=exchange_name,
@@ -548,7 +553,7 @@ class PositionMetricsScheduler:
             title=f"持仓指标计算结果 [{account_id} - {exchange} - {symbol}]",
             show_header=True,
             header_style="bold cyan",
-            box=None,  # 使用简单边框
+            box=None,  # 使用简单边框，确保在控制台正确显示
         )
         table.add_column("指标", justify="left", style="cyan")
         table.add_column("数值", justify="right", style="green")
@@ -592,7 +597,8 @@ class PositionMetricsScheduler:
         table.add_row("  单日 PnL (daily_pnl)", _format_decimal(today_m.get("daily_pnl", Decimal("0")), 4))
         table.add_row("  累计 PnL (cumulative_pnl)", _format_decimal(cumulative_pnl, 4))
         
-        # 输出表格到控制台
-        console.print()
+        # 输出表格到控制台（使用标准输出，确保在控制台可见）
+        console.print()  # 空行分隔
         console.print(table)
+        console.print()  # 空行分隔
 

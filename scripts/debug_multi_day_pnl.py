@@ -147,13 +147,12 @@ async def main() -> None:
         }
         console.print(json.dumps(output, indent=2, ensure_ascii=False))
     else:
-        # 按币种输出表格
+        # 按币种输出表格（不包含 TOTAL）
         for symbol_key, pnl_data in cumulative_pnl_by_symbol.items():
-            title = (
-                f"累计 PnL 统计（{symbol_key}，{args.days} 天）"
-                if symbol_key != "TOTAL"
-                else f"累计 PnL 统计（TOTAL 汇总，{args.days} 天）"
-            )
+            if symbol_key == "TOTAL":
+                continue
+            
+            title = f"累计 PnL 统计（{symbol_key}，{args.days} 天）"
             table = Table(
                 title=title,
                 show_header=True,

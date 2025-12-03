@@ -599,9 +599,6 @@ class PositionCalculator:
         )
         
         # 更新每个币种的当前未实现盈亏和累计 PnL
-        total_cumulative_realized_pnl = Decimal("0")
-        total_current_unrealized_pnl = Decimal("0")
-        
         for s, metrics in current_metrics_by_symbol.items():
             if s == "TOTAL":
                 continue
@@ -618,17 +615,6 @@ class PositionCalculator:
             by_symbol[s]["cumulative_pnl"] = (
                 by_symbol[s]["cumulative_realized_pnl"] + current_unrealized_pnl
             )
-            
-            # 累加到 TOTAL
-            total_cumulative_realized_pnl += by_symbol[s]["cumulative_realized_pnl"]
-            total_current_unrealized_pnl += current_unrealized_pnl
-        
-        # 计算 TOTAL
-        by_symbol["TOTAL"] = {
-            "cumulative_realized_pnl": total_cumulative_realized_pnl,
-            "current_unrealized_pnl": total_current_unrealized_pnl,
-            "cumulative_pnl": total_cumulative_realized_pnl + total_current_unrealized_pnl,
-        }
         
         return by_symbol
     

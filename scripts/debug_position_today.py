@@ -136,10 +136,16 @@ async def main() -> None:
         avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
         avg_sell_prz = m.get("avg_sell_prz", Decimal("0"))
 
-        table.add_row("pre_long_qty (区间结束多头持仓量)", _format_dec(m.get("pre_long_qty", Decimal("0"))))
-        table.add_row("pre_short_qty (区间结束空头持仓量)", _format_dec(m.get("pre_short_qty", Decimal("0"))))
-        table.add_row("initial_long_qty (区间开始多头)", _format_dec(m.get("initial_long_qty", Decimal("0"))))
-        table.add_row("initial_short_qty (区间开始空头)", _format_dec(m.get("initial_short_qty", Decimal("0"))))
+        # 昨收持仓（区间结束时的持仓）
+        table.add_row("[bold cyan]--- 昨收持仓 ---[/bold cyan]", "")
+        table.add_row("昨日多头持仓量 (pre_long_qty)", _format_dec(m.get("pre_long_qty", Decimal("0"))))
+        table.add_row("昨日空头持仓量 (pre_short_qty)", _format_dec(m.get("pre_short_qty", Decimal("0"))))
+        table.add_row("昨日多头市值 (pre_long_value)", _format_dec(m.get("pre_long_value", Decimal("0")), 4))
+        table.add_row("昨日空头市值 (pre_short_value)", _format_dec(m.get("pre_short_value", Decimal("0")), 4))
+        table.add_row("", "")  # 空行分隔
+        table.add_row("[bold cyan]--- 区间开始持仓 ---[/bold cyan]", "")
+        table.add_row("区间开始多头持仓 (initial_long_qty)", _format_dec(m.get("initial_long_qty", Decimal("0"))))
+        table.add_row("区间开始空头持仓 (initial_short_qty)", _format_dec(m.get("initial_short_qty", Decimal("0"))))
         table.add_row("buy_volume (BUY 成交量)", _format_dec(m.get("buy_volume", Decimal("0"))))
         table.add_row("sell_volume (SELL 成交量)", _format_dec(m.get("sell_volume", Decimal("0"))))
         table.add_row("buy_trade_value (BUY 市值累加)", _format_dec(m.get("buy_trade_value", Decimal("0")), 4))

@@ -118,8 +118,10 @@ async def main() -> None:
             symbol=args.symbol,
         )
 
-    # 逐币种输出
+    # 逐币种输出（不包含 TOTAL）
     for symbol_key, m in metrics_by_symbol.items():
+        if symbol_key == "TOTAL":
+            continue
         title = (
             f"今日持仓与交易统计（{symbol_key}，基于成交记录）"
             if symbol_key != "TOTAL"

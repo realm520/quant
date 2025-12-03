@@ -124,9 +124,16 @@ class PositionCalculator:
         
         # 计算初始持仓量和市值（使用开仓均价和合约乘数）
         for symbol_key, pos_data in initial_positions.items():
-            pos_symbol = symbol_key.split("_")[0]  # 从 "symbol_side" 中提取 symbol
-            contract_multiplier = self._get_contract_multiplier(pos_symbol)
+            # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
+            # 需要去掉最后一部分（side）来获取完整的 symbol
             side = pos_data.get("side", "").upper()
+            # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
+            if symbol_key.endswith(f"_{side}"):
+                pos_symbol = symbol_key[:-len(f"_{side}")]
+            else:
+                # 兼容处理：如果格式不对，尝试 split
+                pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
+            contract_multiplier = self._get_contract_multiplier(pos_symbol)
             quantity = pos_data.get("quantity", Decimal("0"))
             entry_price = pos_data.get("entry_price", Decimal("0"))
             
@@ -263,7 +270,8 @@ class PositionCalculator:
                     "initial_long_qty": ...,
                     "initial_short_qty": ...,
                 },
-                "TOTAL": { ... 所有 symbol 汇总 ... }
+                "ETHUSDT": { ... },
+                ...
             }
         """
         # 1. 获取区间开始时的逐 symbol 持仓
@@ -272,9 +280,17 @@ class PositionCalculator:
         # 先构建逐 symbol 的初始多空持仓与市值
         by_symbol: Dict[str, Dict[str, Decimal]] = {}
         for symbol_key, pos_data in initial_positions.items():
-            pos_symbol = symbol_key.split("_")[0]
-            contract_multiplier = self._get_contract_multiplier(pos_symbol)
+            # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
+            # 需要去掉最后一部分（side）来获取完整的 symbol
             side = pos_data.get("side", "").upper()
+            # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
+            if symbol_key.endswith(f"_{side}"):
+                pos_symbol = symbol_key[:-len(f"_{side}")]
+            else:
+                # 兼容处理：如果格式不对，尝试 split
+                pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
+            
+            contract_multiplier = self._get_contract_multiplier(pos_symbol)
             quantity = pos_data.get("quantity", Decimal("0"))
             entry_price = pos_data.get("entry_price", Decimal("0"))
 
@@ -364,21 +380,6 @@ class PositionCalculator:
         close_prices = await self._get_close_prices(start_time, end_time, symbol)
 
         # 3. 计算每个 symbol 的最终指标
-        total: Dict[str, Decimal] = {
-            "pre_long_qty": Decimal("0"),
-            "pre_short_qty": Decimal("0"),
-            "pre_long_value": Decimal("0"),
-            "pre_short_value": Decimal("0"),
-            "buy_volume": Decimal("0"),
-            "sell_volume": Decimal("0"),
-            "buy_trade_value": Decimal("0"),
-            "sell_trade_value": Decimal("0"),
-            "long_qty": Decimal("0"),
-            "short_qty": Decimal("0"),
-            "long_value": Decimal("0"),
-            "short_value": Decimal("0"),
-        }
-
         for s, data in by_symbol.items():
             initial_long_qty = data["initial_long_qty"]
             initial_short_qty = data["initial_short_qty"]
@@ -455,71 +456,6 @@ class PositionCalculator:
                 }
             )
 
-            # 累加到 TOTAL
-            total["pre_long_qty"] += pre_long_qty
-            total["pre_short_qty"] += pre_short_qty
-            total["pre_long_value"] += pre_long_value
-            total["pre_short_value"] += pre_short_value
-            total["buy_volume"] += buy_volume
-            total["sell_volume"] += sell_volume
-            total["buy_trade_value"] += buy_trade_value
-            total["sell_trade_value"] += sell_trade_value
-            total["long_qty"] += long_qty
-            total["short_qty"] += short_qty
-            total["long_value"] += long_value
-            total["short_value"] += short_value
-
-        # 计算 TOTAL 的均价
-        avg_buy_prz_total = Decimal("0")
-        avg_sell_prz_total = Decimal("0")
-        if total["long_qty"] > 0:
-            avg_buy_prz_total = total["long_value"] / total["long_qty"]
-        if total["short_qty"] > 0:
-            avg_sell_prz_total = total["short_value"] / total["short_qty"]
-        total["avg_buy_prz"] = avg_buy_prz_total
-        total["avg_sell_prz"] = avg_sell_prz_total
-
-        # 计算 TOTAL 的 matched_qty 和 realized_pnl
-        matched_qty_total = min(total["long_qty"], total["short_qty"])
-        realized_pnl_total = Decimal("0")
-        if matched_qty_total > 0:
-            realized_pnl_total = matched_qty_total * (avg_sell_prz_total - avg_buy_prz_total)
-        total["matched_qty"] = matched_qty_total
-        total["realized_pnl"] = realized_pnl_total
-
-        # 计算 TOTAL 的剩余持仓和市值
-        left_long_qty_total = total["long_qty"] - matched_qty_total
-        left_short_qty_total = total["short_qty"] - matched_qty_total
-        left_long_value_total = left_long_qty_total * avg_buy_prz_total if avg_buy_prz_total > 0 else Decimal("0")
-        left_short_value_total = left_short_qty_total * avg_sell_prz_total if avg_sell_prz_total > 0 else Decimal("0")
-        total["left_long_qty"] = left_long_qty_total
-        total["left_short_qty"] = left_short_qty_total
-        total["left_long_value"] = left_long_value_total
-        total["left_short_value"] = left_short_value_total
-
-        # TOTAL 的 close_prz：使用所有 symbol 中最新的最后一笔成交价
-        close_prz_total = Decimal("0")
-        if close_prices:
-            # 取所有 symbol 的最后一笔成交价的最大值（最新的时间对应的价格）
-            # 这里简化处理，使用所有 symbol 的 close_prz 的加权平均
-            # 或者更简单：使用所有 symbol 中最大的 close_prz
-            close_prz_total = max(close_prices.values()) if close_prices.values() else Decimal("0")
-        total["close_prz"] = close_prz_total
-
-        # 计算 TOTAL 的未实现盈亏
-        unrealized_pnl_total = Decimal("0")
-        if close_prz_total > 0:
-            unrealized_pnl_total = (
-                left_long_qty_total * (close_prz_total - avg_buy_prz_total) +
-                left_short_qty_total * (avg_sell_prz_total - close_prz_total)
-            )
-        total["unrealized_pnl"] = unrealized_pnl_total
-
-        # 计算 TOTAL 的单日 PnL
-        daily_pnl_total = realized_pnl_total + unrealized_pnl_total
-        total["daily_pnl"] = daily_pnl_total
-
-        by_symbol["TOTAL"] = total
         return by_symbol
     
     async def calculate_cumulative_pnl(

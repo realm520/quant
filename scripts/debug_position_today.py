@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""基于成交记录的“今日”持仓与交易统计调试脚本（UTC+0）。
+"""基于成交记录的"今日"持仓与交易统计调试脚本（UTC+0）。
 
 统计区间：当日 UTC 00:00 ~ 当前时间（左闭右开 [00:00, now)）。
 
-输出字段（单账号、单交易所聚合）：
-- long_qty       今日多头交易量 = pre_long_qty + buy_volume
-- short_qty      今日空头交易量 = pre_short_qty + sell_volume
-- long_value     今日多头市值   = pre_long_value + buy_trade_value
-- short_value    今日空头市值   = pre_short_value + sell_trade_value
-- avg_buy_prz    买入平均价格   = long_value / long_qty
-- avg_sell_prz   卖出平均价格   = short_value / short_qty
+输出内容（按币种分别显示）：
+1. 昨收持仓：pre_long_qty, pre_short_qty, pre_long_value, pre_short_value
+2. 今日交易：long_qty, short_qty, long_value, short_value, avg_buy_prz, avg_sell_prz
+3. 已实现 Pnl：matched_qty, realized_pnl
+4. 当日剩余仓位：left_long_qty, left_short_qty, left_long_value, left_short_value, close_prz, unrealized_pnl
+5. Pnl 汇总：daily_pnl, cumulative_pnl
 """
 
 import asyncio
@@ -106,15 +105,31 @@ async def main() -> None:
     )
     console.print(f"[cyan]账号: {args.account_id}, 交易所: {args.exchange}[/cyan]")
 
+    # 计算多日 PnL 的起始日期（从月初开始，或从30天前开始）
+    month_start = datetime(today.year, today.month, 1)  # 本月1日
+    # 如果本月1日早于今日，则从本月1日开始；否则从30天前开始
+    if month_start < start_time:
+        cumulative_start = month_start
+    else:
+        cumulative_start = start_time - timedelta(days=30)
+    
     async with db_manager.session() as session:
         calc = PositionCalculator(
             session,
             exchange=args.exchange,
             account_id=args.account_id,
         )
+        # 计算今日指标
         metrics_by_symbol = await calc.calculate_positions_by_symbol(
             start_time=start_time,
             end_time=end_time,
+            symbol=args.symbol,
+        )
+        
+        # 计算多日 PnL
+        cumulative_metrics = await calc.calculate_cumulative_pnl(
+            start_date=cumulative_start,
+            end_date=end_time,
             symbol=args.symbol,
         )
 
@@ -122,51 +137,57 @@ async def main() -> None:
     for symbol_key, m in metrics_by_symbol.items():
         if symbol_key == "TOTAL":
             continue
-        title = (
-            f"今日持仓与交易统计（{symbol_key}，基于成交记录）"
-            if symbol_key != "TOTAL"
-            else "今日持仓与交易统计（TOTAL 汇总，基于成交记录）"
-        )
+        
+        title = f"今日持仓与交易统计（{symbol_key}，基于成交记录）"
         table = Table(title=title, show_header=True, header_style="bold magenta")
         table.add_column("指标", justify="left")
         table.add_column("数值", justify="right")
 
-        long_qty = m.get("long_qty", Decimal("0"))
-        short_qty = m.get("short_qty", Decimal("0"))
-        long_value = m.get("long_value", Decimal("0"))
-        short_value = m.get("short_value", Decimal("0"))
-        avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
-        avg_sell_prz = m.get("avg_sell_prz", Decimal("0"))
-
-        # 昨收持仓（区间结束时的持仓）
-        table.add_row("[bold cyan]--- 昨收持仓 ---[/bold cyan]", "")
+        # 1. 昨收持仓
+        table.add_row("[bold cyan]--- 1. 昨收持仓 ---[/bold cyan]", "")
         table.add_row("昨日多头持仓量 (pre_long_qty)", _format_dec(m.get("pre_long_qty", Decimal("0"))))
         table.add_row("昨日空头持仓量 (pre_short_qty)", _format_dec(m.get("pre_short_qty", Decimal("0"))))
         table.add_row("昨日多头市值 (pre_long_value)", _format_dec(m.get("pre_long_value", Decimal("0")), 4))
         table.add_row("昨日空头市值 (pre_short_value)", _format_dec(m.get("pre_short_value", Decimal("0")), 4))
         table.add_row("", "")  # 空行分隔
-        table.add_row("[bold cyan]--- 区间开始持仓 ---[/bold cyan]", "")
-        table.add_row("区间开始多头持仓 (initial_long_qty)", _format_dec(m.get("initial_long_qty", Decimal("0"))))
-        table.add_row("区间开始空头持仓 (initial_short_qty)", _format_dec(m.get("initial_short_qty", Decimal("0"))))
-        table.add_row("buy_volume (BUY 成交量)", _format_dec(m.get("buy_volume", Decimal("0"))))
-        table.add_row("sell_volume (SELL 成交量)", _format_dec(m.get("sell_volume", Decimal("0"))))
-        table.add_row("buy_trade_value (BUY 市值累加)", _format_dec(m.get("buy_trade_value", Decimal("0")), 4))
-        table.add_row("sell_trade_value (SELL 市值累加)", _format_dec(m.get("sell_trade_value", Decimal("0")), 4))
-        table.add_row("long_qty (多头交易量)", _format_dec(long_qty))
-        table.add_row("short_qty (空头交易量)", _format_dec(short_qty))
-        table.add_row("long_value (多头市值)", _format_dec(long_value, 4))
-        table.add_row("short_value (空头市值)", _format_dec(short_value, 4))
-        table.add_row("avg_buy_prz (买入均价)", _format_dec(avg_buy_prz, 8))
-        table.add_row("avg_sell_prz (卖出均价)", _format_dec(avg_sell_prz, 8))
-        table.add_row("matched_qty (轧差数量)", _format_dec(m.get("matched_qty", Decimal("0"))))
-        table.add_row("realized_pnl (当日已实现盈亏)", _format_dec(m.get("realized_pnl", Decimal("0")), 4))
-        table.add_row("left_long_qty (多头剩余持仓)", _format_dec(m.get("left_long_qty", Decimal("0"))))
-        table.add_row("left_short_qty (空头剩余持仓)", _format_dec(m.get("left_short_qty", Decimal("0"))))
-        table.add_row("left_long_value (多头剩余市值)", _format_dec(m.get("left_long_value", Decimal("0")), 4))
-        table.add_row("left_short_value (空头剩余市值)", _format_dec(m.get("left_short_value", Decimal("0")), 4))
-        table.add_row("close_prz (当日最后一笔成交价)", _format_dec(m.get("close_prz", Decimal("0")), 8))
-        table.add_row("unrealized_pnl (当日未实现盈亏)", _format_dec(m.get("unrealized_pnl", Decimal("0")), 4))
-        table.add_row("daily_pnl (单日 PnL)", _format_dec(m.get("daily_pnl", Decimal("0")), 4))
+
+        # 2. 今日交易
+        table.add_row("[bold cyan]--- 2. 今日交易 ---[/bold cyan]", "")
+        table.add_row("多头交易量 (long_qty)", _format_dec(m.get("long_qty", Decimal("0"))))
+        table.add_row("空头交易量 (short_qty)", _format_dec(m.get("short_qty", Decimal("0"))))
+        table.add_row("多头市值 (long_value)", _format_dec(m.get("long_value", Decimal("0")), 4))
+        table.add_row("空头市值 (short_value)", _format_dec(m.get("short_value", Decimal("0")), 4))
+        table.add_row("买入平均价格 (avg_buy_prz)", _format_dec(m.get("avg_buy_prz", Decimal("0")), 8))
+        table.add_row("卖出平均价格 (avg_sell_prz)", _format_dec(m.get("avg_sell_prz", Decimal("0")), 8))
+        table.add_row("", "")  # 空行分隔
+
+        # 3. 已实现 Pnl 计算
+        table.add_row("[bold cyan]--- 3. 已实现 Pnl 计算 ---[/bold cyan]", "")
+        table.add_row("轧差数量 (matched_qty)", _format_dec(m.get("matched_qty", Decimal("0"))))
+        table.add_row("当日已实现盈亏 (realized_pnl)", _format_dec(m.get("realized_pnl", Decimal("0")), 4))
+        table.add_row("", "")  # 空行分隔
+
+        # 4. 当日剩余仓位
+        table.add_row("[bold cyan]--- 4. 当日剩余仓位 ---[/bold cyan]", "")
+        table.add_row("多头剩余持仓 (left_long_qty)", _format_dec(m.get("left_long_qty", Decimal("0"))))
+        table.add_row("空头剩余持仓 (left_short_qty)", _format_dec(m.get("left_short_qty", Decimal("0"))))
+        table.add_row("多头剩余市值 (left_long_value)", _format_dec(m.get("left_long_value", Decimal("0")), 4))
+        table.add_row("空头剩余市值 (left_short_value)", _format_dec(m.get("left_short_value", Decimal("0")), 4))
+        table.add_row("当日最后一笔成交价 (close_prz)", _format_dec(m.get("close_prz", Decimal("0")), 8))
+        table.add_row("当日未实现盈亏 (unrealized_pnl)", _format_dec(m.get("unrealized_pnl", Decimal("0")), 4))
+        table.add_row("", "")  # 空行分隔
+
+        # 5. Pnl 汇总
+        table.add_row("[bold cyan]--- 5. Pnl 汇总 ---[/bold cyan]", "")
+        daily_pnl = m.get("daily_pnl", Decimal("0"))
+        table.add_row("单日 pnl (realized_pnl + unrealized_pnl)", _format_dec(daily_pnl, 4))
+        
+        # 多日 pnl = sum(realized_pnl) + 最后一期 unrealized_pnl
+        cumulative_pnl = Decimal("0")
+        if symbol_key in cumulative_metrics:
+            cum_data = cumulative_metrics[symbol_key]
+            cumulative_pnl = cum_data.get("cumulative_pnl", Decimal("0"))
+        table.add_row("多日 pnl (sum(realized_pnl) + 最后一期 unrealized_pnl)", _format_dec(cumulative_pnl, 4))
 
         console.print()
         console.print(table)

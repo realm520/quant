@@ -162,15 +162,16 @@ class PositionCalculator:
         pre_long_value = initial_long_value + buy_trade_value
         pre_short_value = initial_short_value + sell_trade_value
 
-        # 5. 根据你的公式计算“今日”的交易量和市值：
-        #   long_qty = sum(buy_vol) + pre_long_qty
-        #   short_qty = sum(sell_vol) + pre_short_qty
-        #   long_value = sum(buy_vol * buy_price) + pre_long_value
-        #   short_value = sum(sell_vol * sell_price) + pre_short_value
-        long_qty = pre_long_qty + buy_volume
-        short_qty = pre_short_qty + sell_volume
-        long_value = pre_long_value + buy_trade_value
-        short_value = pre_short_value + sell_trade_value
+        # 5. 根据你的公式计算"今日"的交易量和市值：
+        #   用户公式：long_qty = sum(buy_vol) + pre_long_qty
+        #   其中 sum(buy_vol) 是"今日"成交，pre_long_qty 是"昨收持仓"
+        #   当前实现：pre_long_qty = initial_long_qty + buy_volume（区间结束时的持仓）
+        #   如果区间是"今日"：initial_long_qty 是昨收持仓，buy_volume 是今日成交
+        #   所以：long_qty = buy_volume + initial_long_qty = pre_long_qty
+        long_qty = pre_long_qty  # = initial_long_qty + buy_volume
+        short_qty = pre_short_qty  # = initial_short_qty + sell_volume
+        long_value = pre_long_value  # = initial_long_value + buy_trade_value
+        short_value = pre_short_value  # = initial_short_value + sell_trade_value
 
         # 6. 计算平均价格（不可舍入，直接用 Decimal 相除）
         avg_buy_prz = Decimal("0")
@@ -395,10 +396,13 @@ class PositionCalculator:
             pre_long_value = initial_long_value + buy_trade_value
             pre_short_value = initial_short_value + sell_trade_value
 
-            long_qty = pre_long_qty + buy_volume
-            short_qty = pre_short_qty + sell_volume
-            long_value = pre_long_value + buy_trade_value
-            short_value = pre_short_value + sell_trade_value
+            # 根据用户公式：long_qty = sum(buy_vol) + pre_long_qty
+            # 其中 pre_long_qty 是"昨收持仓"（= initial_long_qty），sum(buy_vol) 是"今日"成交（= buy_volume）
+            # 所以：long_qty = buy_volume + initial_long_qty = pre_long_qty
+            long_qty = pre_long_qty  # = initial_long_qty + buy_volume
+            short_qty = pre_short_qty  # = initial_short_qty + sell_volume
+            long_value = pre_long_value  # = initial_long_value + buy_trade_value
+            short_value = pre_short_value  # = initial_short_value + sell_trade_value
 
             avg_buy_prz = Decimal("0")
             avg_sell_prz = Decimal("0")

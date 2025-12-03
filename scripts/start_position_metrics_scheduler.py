@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from tri_arb.config.logging import get_logger
 from tri_arb.services.position_metrics_scheduler import PositionMetricsScheduler
 from tri_arb.storage.database import DatabaseManager
+from tri_arb.utils.metrics import MetricsServer
 
 logger = get_logger(__name__)
 
@@ -103,6 +104,14 @@ class SchedulerApp:
         except Exception as e:
             logger.error("创建数据库表失败", error=str(e), exc_info=True)
             sys.exit(1)
+        
+        # 启动 Prometheus metrics server
+        metrics_server = MetricsServer(port=9602)  # 使用 9602 端口
+        try:
+            metrics_server.start()
+            logger.info("Prometheus metrics server 已启动", port=9602)
+        except Exception as e:
+            logger.warning(f"启动 Prometheus metrics server 失败: {e}，metrics 将不可用")
         
         # 初始化定时任务服务
         self.scheduler = PositionMetricsScheduler(

@@ -12,11 +12,21 @@ scrape_configs:
   - job_name: 'cextools-monitor'
     static_configs:
       - targets: 
-          - 'localhost:9600'  # watch-balance, watch-account
           - 'localhost:9601'  # subscribe multi-account
         labels:
           service: 'cextools'
           component: 'exchange-monitor'
     scrape_interval: 10s  # 更频繁的抓取以获得实时数据
+    metrics_path: '/metrics'
+  
+  # 抓取持仓指标服务的 metrics
+  - job_name: 'position-metrics-scheduler'
+    static_configs:
+      - targets: 
+          - 'localhost:9602'  # position metrics scheduler
+        labels:
+          service: 'position-metrics'
+          component: 'scheduler'
+    scrape_interval: 30s  # 每30秒抓取一次（因为服务每5-10分钟计算一次）
     metrics_path: '/metrics'
 

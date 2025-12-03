@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from prometheus_client import Gauge
 
 from tri_arb.config.logging import get_logger
 from tri_arb.exchanges.xt_perp import XTPerpExchange
@@ -21,6 +22,127 @@ from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.position_metrics_models import PositionMetrics
 
 logger = get_logger(__name__)
+
+# Prometheus metrics for position metrics
+position_pre_long_qty = Gauge(
+    "position_pre_long_qty",
+    "昨日多头持仓量",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_pre_short_qty = Gauge(
+    "position_pre_short_qty",
+    "昨日空头持仓量",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_pre_long_value = Gauge(
+    "position_pre_long_value",
+    "昨日多头市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_pre_short_value = Gauge(
+    "position_pre_short_value",
+    "昨日空头市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_long_qty = Gauge(
+    "position_long_qty",
+    "多头交易量",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_short_qty = Gauge(
+    "position_short_qty",
+    "空头交易量",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_long_value = Gauge(
+    "position_long_value",
+    "多头市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_short_value = Gauge(
+    "position_short_value",
+    "空头市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_avg_buy_prz = Gauge(
+    "position_avg_buy_prz",
+    "买入平均价格",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_avg_sell_prz = Gauge(
+    "position_avg_sell_prz",
+    "卖出平均价格",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_matched_qty = Gauge(
+    "position_matched_qty",
+    "轧差数量",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_realized_pnl = Gauge(
+    "position_realized_pnl",
+    "当日已实现盈亏",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_left_long_qty = Gauge(
+    "position_left_long_qty",
+    "多头剩余持仓",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_left_short_qty = Gauge(
+    "position_left_short_qty",
+    "空头剩余持仓",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_left_long_value = Gauge(
+    "position_left_long_value",
+    "多头剩余市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_left_short_value = Gauge(
+    "position_left_short_value",
+    "空头剩余市值",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_close_prz = Gauge(
+    "position_close_prz",
+    "当日最后一笔成交价",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_unrealized_pnl = Gauge(
+    "position_unrealized_pnl",
+    "当日未实现盈亏",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_daily_pnl = Gauge(
+    "position_daily_pnl",
+    "单日 PnL",
+    ["account_id", "exchange", "symbol"],
+)
+
+position_cumulative_pnl = Gauge(
+    "position_cumulative_pnl",
+    "累计 PnL",
+    ["account_id", "exchange", "symbol"],
+)
 
 
 class PositionMetricsScheduler:
@@ -134,13 +256,20 @@ class PositionMetricsScheduler:
     
     async def _run_loop(self):
         """运行定时计算循环."""
+        # 启动时立即执行一次计算
+        try:
+            await self._calculate_and_store_metrics()
+        except Exception as e:
+            logger.error(f"启动时计算指标失败: {e}", exc_info=True)
+        
+        # 然后按间隔循环执行
         while self._running:
             try:
-                # 计算并存储指标
-                await self._calculate_and_store_metrics()
-                
                 # 等待下一个周期
                 await asyncio.sleep(self.interval_seconds)
+                
+                # 计算并存储指标
+                await self._calculate_and_store_metrics()
             
             except asyncio.CancelledError:
                 break
@@ -263,10 +392,42 @@ class PositionMetricsScheduler:
                                 )
                                 
                                 session.add(metrics_record)
+                                
+                                # 更新 Prometheus metrics
+                                labels = {
+                                    "account_id": account_id,
+                                    "exchange": exchange_name,
+                                    "symbol": symbol_key,
+                                }
+                                
+                                position_pre_long_qty.labels(**labels).set(float(yesterday_m.get("pre_long_qty", Decimal("0"))))
+                                position_pre_short_qty.labels(**labels).set(float(yesterday_m.get("pre_short_qty", Decimal("0"))))
+                                position_pre_long_value.labels(**labels).set(float(yesterday_m.get("pre_long_value", Decimal("0"))))
+                                position_pre_short_value.labels(**labels).set(float(yesterday_m.get("pre_short_value", Decimal("0"))))
+                                
+                                position_long_qty.labels(**labels).set(float(m.get("long_qty", Decimal("0"))))
+                                position_short_qty.labels(**labels).set(float(m.get("short_qty", Decimal("0"))))
+                                position_long_value.labels(**labels).set(float(m.get("long_value", Decimal("0"))))
+                                position_short_value.labels(**labels).set(float(m.get("short_value", Decimal("0"))))
+                                position_avg_buy_prz.labels(**labels).set(float(m.get("avg_buy_prz", Decimal("0"))))
+                                position_avg_sell_prz.labels(**labels).set(float(m.get("avg_sell_prz", Decimal("0"))))
+                                
+                                position_matched_qty.labels(**labels).set(float(m.get("matched_qty", Decimal("0"))))
+                                position_realized_pnl.labels(**labels).set(float(m.get("realized_pnl", Decimal("0"))))
+                                
+                                position_left_long_qty.labels(**labels).set(float(m.get("left_long_qty", Decimal("0"))))
+                                position_left_short_qty.labels(**labels).set(float(m.get("left_short_qty", Decimal("0"))))
+                                position_left_long_value.labels(**labels).set(float(m.get("left_long_value", Decimal("0"))))
+                                position_left_short_value.labels(**labels).set(float(m.get("left_short_value", Decimal("0"))))
+                                position_close_prz.labels(**labels).set(float(m.get("close_prz", Decimal("0"))))
+                                position_unrealized_pnl.labels(**labels).set(float(m.get("unrealized_pnl", Decimal("0"))))
+                                
+                                position_daily_pnl.labels(**labels).set(float(m.get("daily_pnl", Decimal("0"))))
+                                position_cumulative_pnl.labels(**labels).set(float(cumulative_pnl))
                             
                             await session.commit()
                             logger.info(
-                                f"已计算并存储指标",
+                                f"已计算并存储指标（包括 Prometheus metrics）",
                                 account_id=account_id,
                                 exchange=exchange_name,
                                 symbol_count=len([k for k in today_metrics.keys() if k != "TOTAL"]),

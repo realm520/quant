@@ -297,6 +297,16 @@ class PositionMetricsScheduler:
             
             accounts = config.get("accounts", {})
             logger.info(f"找到 {len(accounts)} 个交易所配置")
+            logger.info(f"交易所列表: {list(accounts.keys())}")
+            
+            # 检查是否有 binance 或 xt
+            has_binance = "binance" in accounts
+            has_xt = "xt" in accounts
+            logger.info(f"包含 binance: {has_binance}, 包含 xt: {has_xt}")
+            
+            if not has_binance and not has_xt:
+                logger.warning("配置中没有找到 binance 或 xt 交易所，跳过计算")
+                return
             
             # 计算今日 UTC 区间
             today = datetime.utcnow().date()
@@ -312,13 +322,28 @@ class PositionMetricsScheduler:
                 # 遍历所有账号
                 for exchange_name, account_list in accounts.items():
                     if exchange_name not in ["binance", "xt"]:
+                        logger.debug(f"跳过交易所: {exchange_name} (不在 binance/xt 列表中)")
+                        continue
+                    
+                    if not account_list:
+                        logger.warning(f"交易所 {exchange_name} 的账号列表为空")
                         continue
                     
                     logger.info(f"处理交易所: {exchange_name}, 账号数: {len(account_list)}")
                     
                     for account_config in account_list:
+                        if not isinstance(account_config, dict):
+                            logger.warning(f"账号配置不是字典类型: {type(account_config)}")
+                            continue
+                            
                         account_id = account_config.get("account_id")
                         if not account_id:
+                            logger.warning(f"账号配置缺少 account_id: {account_config}")
+                            continue
+                        
+                        enabled = account_config.get("enabled", True)
+                        if not enabled:
+                            logger.debug(f"账号 {account_id} 未启用，跳过")
                             continue
                         
                         logger.info(f"计算账号指标: {account_id} ({exchange_name})")
@@ -339,10 +364,18 @@ class PositionMetricsScheduler:
                             )
                             
                             # 计算今日数据
+                            logger.debug(f"计算今日数据: {start_time} -> {end_time}")
                             today_metrics = await calc.calculate_positions_by_symbol(
                                 start_time=start_time,
                                 end_time=end_time,
                             )
+                            
+                            symbol_count = len([k for k in today_metrics.keys() if k != "TOTAL"])
+                            logger.info(f"账号 {account_id} 找到 {symbol_count} 个交易对")
+                            
+                            if symbol_count == 0:
+                                logger.warning(f"账号 {account_id} 没有找到交易对数据，跳过")
+                                continue
                             
                             # 存储每个交易对的指标
                             for symbol_key, m in today_metrics.items():

@@ -103,6 +103,35 @@ docker-compose -f docker-compose.monitoring.yml restart prometheus
 | `position_daily_pnl` | Gauge | 单日 PnL |
 | `position_cumulative_pnl` | Gauge | 累计 PnL |
 
+## 导入 Dashboard 时选择数据源
+
+在导入 `grafana/dashboards/position-metrics-prometheus.json` 时：
+
+1. 进入 Grafana **Dashboards** > **Import**
+2. 点击 **Upload JSON file** 或粘贴 JSON 内容
+3. **重要**：在导入界面中，会看到 **"Prometheus"** 数据源选择框
+4. 从下拉菜单中选择你已配置的 Prometheus 数据源
+5. 点击 **Import** 完成导入
+
+如果导入后仍然显示 `Datasource ${DS_PROMETHEUS} was not found`：
+
+### 方法 1：重新导入（推荐）
+1. 删除现有的 dashboard
+2. 重新导入 JSON 文件，确保在导入时选择了正确的 Prometheus 数据源
+
+### 方法 2：手动修复数据源
+1. 进入 Dashboard 设置（点击右上角齿轮图标）
+2. 选择 **Variables** 标签
+3. 找到每个变量（`account_id`, `exchange`, `symbol`）
+4. 在 **Data source** 下拉菜单中选择你的 Prometheus 数据源
+5. 保存 Dashboard
+
+### 方法 3：批量替换数据源
+1. 进入 Dashboard 设置 > **JSON Model**
+2. 搜索 `"uid": "${DS_PROMETHEUS}"`
+3. 替换为你的 Prometheus 数据源的 UID（可以在 **Configuration** > **Data sources** 中查看）
+4. 保存 Dashboard
+
 ## 常用 PromQL 查询示例
 
 ### 查看所有账号的单日 PnL

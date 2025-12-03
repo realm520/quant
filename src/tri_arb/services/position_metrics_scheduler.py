@@ -296,16 +296,38 @@ class PositionMetricsScheduler:
                 config = json.load(f)
             
             accounts = config.get("accounts", {})
-            logger.info(f"找到 {len(accounts)} 个交易所配置")
-            logger.info(f"交易所列表: {list(accounts.keys())}")
+            logger.info(f"找到 {len(accounts)} 个账号配置")
             
-            # 检查是否有 binance 或 xt
-            has_binance = "binance" in accounts
-            has_xt = "xt" in accounts
-            logger.info(f"包含 binance: {has_binance}, 包含 xt: {has_xt}")
+            # 按交易所分组账号
+            accounts_by_exchange: Dict[str, list] = {"binance": [], "xt": []}
             
-            if not has_binance and not has_xt:
-                logger.warning("配置中没有找到 binance 或 xt 交易所，跳过计算")
+            for account_id, account_config in accounts.items():
+                if not isinstance(account_config, dict):
+                    logger.warning(f"账号配置不是字典类型: {account_id} - {type(account_config)}")
+                    continue
+                
+                exchange_name = account_config.get("exchange", "").lower()
+                if exchange_name not in ["binance", "xt"]:
+                    logger.debug(f"跳过账号 {account_id}: 交易所 {exchange_name} 不在支持列表中")
+                    continue
+                
+                enabled = account_config.get("enabled", True)
+                if not enabled:
+                    logger.debug(f"账号 {account_id} 未启用，跳过")
+                    continue
+                
+                # 添加 account_id 到配置中（如果还没有）
+                account_config_with_id = account_config.copy()
+                account_config_with_id["account_id"] = account_id
+                accounts_by_exchange[exchange_name].append(account_config_with_id)
+            
+            # 统计信息
+            binance_count = len(accounts_by_exchange["binance"])
+            xt_count = len(accounts_by_exchange["xt"])
+            logger.info(f"Binance 账号数: {binance_count}, XT 账号数: {xt_count}")
+            
+            if binance_count == 0 and xt_count == 0:
+                logger.warning("没有找到启用的 binance 或 xt 账号，跳过计算")
                 return
             
             # 计算今日 UTC 区间
@@ -319,31 +341,18 @@ class PositionMetricsScheduler:
             yesterday_end = datetime(today.year, today.month, today.day)  # 昨日 24:00 UTC
             
             async with self.db_manager.session() as session:
-                # 遍历所有账号
-                for exchange_name, account_list in accounts.items():
-                    if exchange_name not in ["binance", "xt"]:
-                        logger.debug(f"跳过交易所: {exchange_name} (不在 binance/xt 列表中)")
-                        continue
-                    
+                # 遍历所有交易所
+                for exchange_name in ["binance", "xt"]:
+                    account_list = accounts_by_exchange[exchange_name]
                     if not account_list:
-                        logger.warning(f"交易所 {exchange_name} 的账号列表为空")
                         continue
                     
                     logger.info(f"处理交易所: {exchange_name}, 账号数: {len(account_list)}")
                     
                     for account_config in account_list:
-                        if not isinstance(account_config, dict):
-                            logger.warning(f"账号配置不是字典类型: {type(account_config)}")
-                            continue
-                            
                         account_id = account_config.get("account_id")
                         if not account_id:
                             logger.warning(f"账号配置缺少 account_id: {account_config}")
-                            continue
-                        
-                        enabled = account_config.get("enabled", True)
-                        if not enabled:
-                            logger.debug(f"账号 {account_id} 未启用，跳过")
                             continue
                         
                         logger.info(f"计算账号指标: {account_id} ({exchange_name})")

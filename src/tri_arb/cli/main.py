@@ -49,6 +49,17 @@ except Exception as e:
     import sys
     print(f"Error loading subscribe command: {e}", file=sys.stderr)
 
+# 添加trading-monitor命令组（交易指标监控）
+try:
+    from tri_arb.cli.commands import position_metrics
+    app.add_typer(position_metrics.app, name="trading-monitor", help="交易指标监控服务")
+except ImportError as e:
+    import sys
+    print(f"Warning: trading-monitor command not available: {e}", file=sys.stderr)
+except Exception as e:
+    import sys
+    print(f"Error loading trading-monitor command: {e}", file=sys.stderr)
+
 console = Console()
 
 

@@ -408,14 +408,17 @@ class PositionMetricsScheduler:
                                 # 获取昨日数据
                                 yesterday_m = yesterday_metrics.get(symbol_key, {})
                                 
-                                # 从数据库计算累计 PnL（历史已实现盈亏总和 + 当前未实现盈亏）
-                                current_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
+                                # 从数据库计算累计 PnL
+                                # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏 + 今天的未实现盈亏
+                                today_realized_pnl = m.get("realized_pnl", Decimal("0"))
+                                today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
                                 cumulative_pnl = await self._calculate_cumulative_pnl_from_db(
                                     session=session,
                                     account_id=account_id,
                                     exchange=exchange_name,
                                     symbol=symbol_key,
-                                    current_unrealized_pnl=current_unrealized_pnl,
+                                    today_realized_pnl=today_realized_pnl,
+                                    today_unrealized_pnl=today_unrealized_pnl,
                                     end_time=end_time,
                                 )
                                 
@@ -530,41 +533,77 @@ class PositionMetricsScheduler:
         account_id: str,
         exchange: str,
         symbol: str,
-        current_unrealized_pnl: Decimal,
+        today_realized_pnl: Decimal,
+        today_unrealized_pnl: Decimal,
         end_time: datetime,
     ) -> Decimal:
         """从数据库计算累计 PnL.
         
         计算逻辑：
-        - 累计已实现盈亏 = 数据库中该账号/交易所/交易对的所有已实现盈亏总和
-        - 累计 PnL = 累计已实现盈亏 + 当前未实现盈亏
+        - 历史累计已实现盈亏 = 数据库中该账号/交易所/交易对的每天完整一天的已实现盈亏总和（今天之前的所有天）
+        - 注意：realized_pnl 是当日累计值（从当天零点到记录时间点），所以需要按天分组，取每天的最后一条记录
+        - 累计 PnL = 历史累计已实现盈亏 + 今天的已实现盈亏 + 今天的未实现盈亏
         
         Args:
             session: 数据库会话
             account_id: 账号ID
             exchange: 交易所
             symbol: 交易对
-            current_unrealized_pnl: 当前未实现盈亏
-            end_time: 当前时间（用于查询历史数据）
+            today_realized_pnl: 今天的已实现盈亏
+            today_unrealized_pnl: 今天的未实现盈亏
+            end_time: 当前时间（用于查询历史数据，排除今天）
         
         Returns:
             累计 PnL
         """
         try:
-            # 查询该账号/交易所/交易对的所有历史已实现盈亏总和
-            query = (
-                select(func.sum(PositionMetrics.realized_pnl))
+            # 获取今天的日期（UTC 00:00）
+            today_start = datetime(end_time.year, end_time.month, end_time.day)
+            
+            # 查询该账号/交易所/交易对的所有历史已实现盈亏
+            # 由于 realized_pnl 是当日累计值，需要按天分组，取每天的最后一条记录（即完整一天的已实现盈亏）
+            from sqlalchemy import func, cast, Date
+            
+            # 第一步：找到每天的最后一条记录的时间戳
+            daily_max_timestamp = (
+                select(
+                    cast(PositionMetrics.timestamp, Date).label("date"),
+                    func.max(PositionMetrics.timestamp).label("max_timestamp")
+                )
                 .where(PositionMetrics.account_id == account_id)
                 .where(PositionMetrics.exchange == exchange)
                 .where(PositionMetrics.symbol == symbol)
-                .where(PositionMetrics.timestamp < end_time)  # 不包括当前记录
+                .where(PositionMetrics.timestamp < today_start)  # 只包括今天之前的记录
+                .group_by(cast(PositionMetrics.timestamp, Date))
+                .subquery()
             )
             
-            result = await session.execute(query)
-            cumulative_realized_pnl = result.scalar() or Decimal("0")
+            # 第二步：根据每天的最后一条记录的时间戳，获取对应的 realized_pnl
+            daily_realized_pnl = (
+                select(PositionMetrics.realized_pnl)
+                .where(PositionMetrics.account_id == account_id)
+                .where(PositionMetrics.exchange == exchange)
+                .where(PositionMetrics.symbol == symbol)
+                .where(
+                    PositionMetrics.timestamp.in_(
+                        select(daily_max_timestamp.c.max_timestamp)
+                    )
+                )
+                .subquery()
+            )
             
-            # 累计 PnL = 累计已实现盈亏 + 当前未实现盈亏
-            cumulative_pnl = cumulative_realized_pnl + current_unrealized_pnl
+            # 第三步：对每天的完整已实现盈亏求和
+            query = select(func.sum(daily_realized_pnl.c.realized_pnl))
+            
+            result = await session.execute(query)
+            historical_cumulative_realized_pnl = result.scalar() or Decimal("0")
+            
+            # 累计 PnL = 历史累计已实现盈亏 + 今天的已实现盈亏 + 今天的未实现盈亏
+            cumulative_pnl = (
+                historical_cumulative_realized_pnl 
+                + today_realized_pnl 
+                + today_unrealized_pnl
+            )
             
             return cumulative_pnl
         
@@ -577,8 +616,8 @@ class PositionMetricsScheduler:
                 error=str(e),
                 exc_info=True,
             )
-            # 如果查询失败，返回当前未实现盈亏（至少保证有值）
-            return current_unrealized_pnl
+            # 如果查询失败，返回今天的总盈亏（至少保证有值）
+            return today_realized_pnl + today_unrealized_pnl
     
     def _log_metrics_table(
         self,

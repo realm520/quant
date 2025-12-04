@@ -122,7 +122,8 @@ class PositionCalculator:
         initial_long_value = Decimal("0")
         initial_short_value = Decimal("0")
         
-        # 计算初始持仓量和市值（使用开仓均价和合约乘数）
+        # 计算初始持仓量和市值（使用开仓均价）
+        # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
         for symbol_key, pos_data in initial_positions.items():
             # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
             # 需要去掉最后一部分（side）来获取完整的 symbol
@@ -133,18 +134,17 @@ class PositionCalculator:
             else:
                 # 兼容处理：如果格式不对，尝试 split
                 pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
-            contract_multiplier = self._get_contract_multiplier(pos_symbol)
-            quantity = pos_data.get("quantity", Decimal("0"))
+            quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
             entry_price = pos_data.get("entry_price", Decimal("0"))
             
-            # 市值 = 持仓量 × 开仓均价 × 合约乘数
-            position_value = quantity * entry_price * contract_multiplier
+            # 市值 = 币数量 × 开仓均价
+            position_value = quantity_coins * entry_price
             
             if side == "LONG":
-                initial_long_qty += quantity
+                initial_long_qty += quantity_coins  # 币数量
                 initial_long_value += position_value
             elif side == "SHORT":
-                initial_short_qty += quantity
+                initial_short_qty += quantity_coins  # 币数量
                 initial_short_value += position_value
         
         # 2. 统计区间内所有成交记录
@@ -279,6 +279,7 @@ class PositionCalculator:
         initial_positions = await self._get_initial_positions(start_time, symbol)
 
         # 先构建逐 symbol 的初始多空持仓与市值
+        # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
         by_symbol: Dict[str, Dict[str, Decimal]] = {}
         for symbol_key, pos_data in initial_positions.items():
             # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
@@ -291,11 +292,11 @@ class PositionCalculator:
                 # 兼容处理：如果格式不对，尝试 split
                 pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
             
-            contract_multiplier = self._get_contract_multiplier(pos_symbol)
-            quantity = pos_data.get("quantity", Decimal("0"))
+            quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
             entry_price = pos_data.get("entry_price", Decimal("0"))
 
-            position_value = quantity * entry_price * contract_multiplier
+            # 市值 = 币数量 × 价格
+            position_value = quantity_coins * entry_price
 
             s = pos_symbol
             if s not in by_symbol:
@@ -311,10 +312,10 @@ class PositionCalculator:
                 }
 
             if side == "LONG":
-                by_symbol[s]["initial_long_qty"] += quantity
+                by_symbol[s]["initial_long_qty"] += quantity_coins  # 币数量
                 by_symbol[s]["initial_long_value"] += position_value
             elif side == "SHORT":
-                by_symbol[s]["initial_short_qty"] += quantity
+                by_symbol[s]["initial_short_qty"] += quantity_coins  # 币数量
                 by_symbol[s]["initial_short_value"] += position_value
 
         # 2. 统计区间内逐 symbol 的成交量与市值
@@ -349,7 +350,7 @@ class PositionCalculator:
             trade_symbol = row.symbol
             side = row.side.upper()
             price = row.price
-            qty = row.quantity
+            qty_contracts = row.quantity  # 合约张数
 
             if trade_symbol not in by_symbol:
                 by_symbol[trade_symbol] = {
@@ -363,15 +364,18 @@ class PositionCalculator:
                     "sell_trade_value": Decimal("0"),
                 }
 
-            # 成交量
-            if side == "BUY":
-                by_symbol[trade_symbol]["buy_volume"] += qty
-            elif side == "SELL":
-                by_symbol[trade_symbol]["sell_volume"] += qty
-
-            # 成交市值（使用合约乘数）
+            # 获取合约乘数并转换为币的数量
             contract_multiplier = self._get_contract_multiplier(trade_symbol)
-            trade_value = price * qty * contract_multiplier
+            qty_coins = qty_contracts * contract_multiplier  # 币数量
+
+            # 成交量（币数量）
+            if side == "BUY":
+                by_symbol[trade_symbol]["buy_volume"] += qty_coins
+            elif side == "SELL":
+                by_symbol[trade_symbol]["sell_volume"] += qty_coins
+
+            # 成交市值 = 币数量 × 价格
+            trade_value = qty_coins * price
             if side == "BUY":
                 by_symbol[trade_symbol]["buy_trade_value"] += trade_value
             elif side == "SELL":
@@ -658,21 +662,27 @@ class PositionCalculator:
             if self.exchange == "binance":
                 symbol_key = pos.symbol
                 side = pos.position_side.upper()
-                quantity = abs(pos.position_amount)
+                quantity = abs(pos.position_amount)  # Binance 的 position_amount 已经是币数量
                 entry_price = pos.entry_price or Decimal("0")
+                # Binance 不需要合约乘数转换
+                notional = quantity * entry_price if entry_price > 0 else Decimal("0")
             else:  # xt
                 symbol_key = pos.symbol
                 side = pos.side.upper()
-                quantity = pos.quantity
+                quantity_contracts = pos.quantity  # XT 的 quantity 是合约张数
                 entry_price = pos.entry_price or Decimal("0")
+                # 转换为币数量（合约张数 × 合约乘数）
+                contract_multiplier = self._get_contract_multiplier(symbol_key)
+                quantity = quantity_contracts * contract_multiplier  # 币数量
+                # 市值 = 币数量 × 价格
+                notional = quantity * entry_price if entry_price > 0 else Decimal("0")
             
             key = f"{symbol_key}_{side}"
-            notional = quantity * entry_price if entry_price > 0 else Decimal("0")
             
             position_dict[key] = {
-                "quantity": quantity,
+                "quantity": quantity,  # 现在统一为币数量
                 "entry_price": entry_price,
-                "notional": notional,
+                "notional": notional,  # 市值（币数量 × 价格）
                 "side": side,
             }
         
@@ -684,7 +694,7 @@ class PositionCalculator:
         end_time: datetime,
         symbol: Optional[str] = None
     ) -> tuple[Decimal, Decimal]:
-        """统计区间内所有成交记录的成交量.
+        """统计区间内所有成交记录的成交量（币数量）.
         
         Args:
             start_time: 区间开始时间
@@ -692,13 +702,15 @@ class PositionCalculator:
             symbol: 交易对（可选）
         
         Returns:
-            (buy_volume, sell_volume) 元组
+            (buy_volume, sell_volume) 元组，单位为币数量
         """
         # 根据交易所选择时间字段
         time_column = self.TradeModel.transaction_time if self.exchange == "binance" else self.TradeModel.update_time
         
+        # 需要按 symbol 分组，因为不同 symbol 的合约乘数可能不同
         query = (
             select(
+                self.TradeModel.symbol,
                 self.TradeModel.side,
                 func.sum(self.TradeModel.quantity).label('total_quantity')
             )
@@ -713,7 +725,7 @@ class PositionCalculator:
         if symbol:
             query = query.where(self.TradeModel.symbol == symbol)
         
-        query = query.group_by(self.TradeModel.side)
+        query = query.group_by(self.TradeModel.symbol, self.TradeModel.side)
         
         result = await self.db_session.execute(query)
         rows = result.all()
@@ -721,11 +733,15 @@ class PositionCalculator:
         buy_volume = Decimal("0")
         sell_volume = Decimal("0")
         
-        for side, total_quantity in rows:
+        for trade_symbol, side, total_quantity_contracts in rows:
+            # 获取合约乘数并转换为币的数量
+            contract_multiplier = self._get_contract_multiplier(trade_symbol)
+            total_quantity_coins = (total_quantity_contracts or Decimal("0")) * contract_multiplier
+            
             if side.upper() == "BUY":
-                buy_volume += total_quantity or Decimal("0")
+                buy_volume += total_quantity_coins
             elif side.upper() == "SELL":
-                sell_volume += total_quantity or Decimal("0")
+                sell_volume += total_quantity_coins
         
         return buy_volume, sell_volume
     

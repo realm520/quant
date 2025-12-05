@@ -22,6 +22,7 @@ from tri_arb.services.contract_multiplier_service import ContractMultiplierServi
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.position_metrics_models import PositionMetrics
+from typing import List, Tuple
 
 logger = get_logger(__name__)
 # 使用标准输出流，确保表格能在控制台正确显示
@@ -408,10 +409,19 @@ class PositionMetricsScheduler:
                                 # 获取昨日数据
                                 yesterday_m = yesterday_metrics.get(symbol_key, {})
                                 
+                                # 从成交记录计算未实现盈亏（更准确，基于所有历史成交）
+                                today_unrealized_pnl = await self._calculate_unrealized_pnl_from_trades(
+                                    session=session,
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                    symbol=symbol_key,
+                                    current_price=m.get("close_prz", Decimal("0")),
+                                    end_time=end_time,
+                                )
+                                
                                 # 从数据库计算累计 PnL
                                 # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏 + 今天的未实现盈亏
                                 today_realized_pnl = m.get("realized_pnl", Decimal("0"))
-                                today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
                                 cumulative_pnl = await self._calculate_cumulative_pnl_from_db(
                                     session=session,
                                     account_id=account_id,
@@ -618,6 +628,309 @@ class PositionMetricsScheduler:
             )
             # 如果查询失败，返回今天的总盈亏（至少保证有值）
             return today_realized_pnl + today_unrealized_pnl
+    
+    async def _get_last_calc_time(
+        self,
+        session: AsyncSession,
+        account_id: str,
+        exchange: str,
+        symbol: str,
+    ) -> Optional[datetime]:
+        """获取上次计算的时间点（用于增量查询）.
+        
+        Args:
+            session: 数据库会话
+            account_id: 账号ID
+            exchange: 交易所
+            symbol: 交易对
+        
+        Returns:
+            上次计算的时间点，如果没有则返回 None
+        """
+        try:
+            result = await session.execute(
+                select(PositionMetrics.timestamp)
+                .where(PositionMetrics.account_id == account_id)
+                .where(PositionMetrics.exchange == exchange)
+                .where(PositionMetrics.symbol == symbol)
+                .order_by(PositionMetrics.timestamp.desc())
+                .limit(1)
+            )
+            row = result.scalar_one_or_none()
+            return row
+        except Exception as e:
+            logger.warning(
+                f"获取上次计算时间失败",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e),
+            )
+            return None
+    
+    async def _get_initial_positions_from_trades(
+        self,
+        session: AsyncSession,
+        account_id: str,
+        exchange: str,
+        symbol: str,
+        before_time: datetime,
+        contract_multiplier_getter: Callable[[str], Decimal],
+    ) -> Tuple[List[Tuple[Decimal, Decimal]], List[Tuple[Decimal, Decimal]]]:
+        """从成交记录获取指定时间点之前的持仓状态（用于增量计算）.
+        
+        Args:
+            session: 数据库会话
+            account_id: 账号ID
+            exchange: 交易所
+            symbol: 交易对
+            before_time: 时间点
+            contract_multiplier_getter: 获取合约乘数的函数
+        
+        Returns:
+            (long_positions, short_positions) 持仓队列，每个元素是 (数量, 开仓价格)
+        """
+        # 根据交易所选择对应的模型
+        if exchange == "xt":
+            from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+            TradeModel = XTTradeUpdate
+            time_column = XTTradeUpdate.update_time
+        elif exchange == "binance":
+            from tri_arb.storage.models import TradeUpdate
+            TradeModel = TradeUpdate
+            time_column = TradeUpdate.transaction_time
+        else:
+            logger.warning(f"不支持的交易所: {exchange}，返回空持仓")
+            return [], []
+        
+        try:
+            # 查询该时间点之前的所有成交记录（优化：只查询需要的字段）
+            query = (
+                select(TradeModel.side, TradeModel.price, TradeModel.quantity, time_column)
+                .where(time_column < before_time)
+                .where(TradeModel.symbol == symbol)
+                .order_by(time_column.asc())
+            )
+            
+            if exchange == "binance":
+                query = query.where(TradeModel.exchange == "binance_perp")
+            if account_id:
+                query = query.where(TradeModel.account_id == account_id)
+            
+            result = await session.execute(query)
+            rows = result.all()
+            
+            # 获取合约乘数
+            contract_multiplier = contract_multiplier_getter(symbol)
+            
+            # 使用 FIFO 方式处理持仓
+            long_positions: List[Tuple[Decimal, Decimal]] = []
+            short_positions: List[Tuple[Decimal, Decimal]] = []
+            
+            for row in rows:
+                side = row.side.upper()
+                price = Decimal(str(row.price))
+                quantity_contracts = Decimal(str(row.quantity))
+                quantity_coins = quantity_contracts * contract_multiplier
+                
+                if side == "BUY":
+                    remaining = quantity_coins
+                    while remaining > 0 and short_positions:
+                        short_qty, short_price = short_positions[0]
+                        if short_qty <= remaining:
+                            remaining -= short_qty
+                            short_positions.pop(0)
+                        else:
+                            short_positions[0] = (short_qty - remaining, short_price)
+                            remaining = Decimal("0")
+                    if remaining > 0:
+                        long_positions.append((remaining, price))
+                elif side == "SELL":
+                    remaining = quantity_coins
+                    while remaining > 0 and long_positions:
+                        long_qty, long_price = long_positions[0]
+                        if long_qty <= remaining:
+                            remaining -= long_qty
+                            long_positions.pop(0)
+                        else:
+                            long_positions[0] = (long_qty - remaining, long_price)
+                            remaining = Decimal("0")
+                    if remaining > 0:
+                        short_positions.append((remaining, price))
+            
+            return long_positions, short_positions
+            
+        except Exception as e:
+            logger.error(
+                f"从成交记录获取初始持仓失败",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e),
+                exc_info=True,
+            )
+            return [], []
+    
+    async def _calculate_unrealized_pnl_from_trades(
+        self,
+        session: AsyncSession,
+        account_id: str,
+        exchange: str,
+        symbol: str,
+        current_price: Decimal,
+        end_time: datetime,
+    ) -> Decimal:
+        """从成交记录计算未实现盈亏（优化：支持增量查询）.
+        
+        Args:
+            session: 数据库会话
+            account_id: 账号ID
+            exchange: 交易所
+            symbol: 交易对
+            current_price: 当前价格
+            end_time: 计算时间点
+        
+        Returns:
+            未实现盈亏
+        """
+        if current_price <= 0:
+            logger.warning(f"当前价格为 0，无法计算未实现盈亏", symbol=symbol)
+            return Decimal("0")
+        
+        try:
+            # 获取合约乘数
+            contract_multiplier_getter = None
+            if self.contract_multiplier_service:
+                service = self.contract_multiplier_service
+                contract_multiplier_getter = lambda s: service.get_multiplier_sync(exchange, s)
+            else:
+                contract_multiplier_getter = lambda s: Decimal("1")
+            
+            # 获取上次计算时间（用于增量查询）
+            last_calc_time = await self._get_last_calc_time(session, account_id, exchange, symbol)
+            
+            # 根据交易所选择对应的模型
+            if exchange == "xt":
+                from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+                TradeModel = XTTradeUpdate
+                time_column = XTTradeUpdate.update_time
+            elif exchange == "binance":
+                from tri_arb.storage.models import TradeUpdate
+                TradeModel = TradeUpdate
+                time_column = TradeUpdate.transaction_time
+            else:
+                logger.warning(f"不支持的交易所: {exchange}，返回 0")
+                return Decimal("0")
+            
+            # 获取初始持仓（如果有上次计算时间，只查询该时间之后的成交记录）
+            if last_calc_time:
+                logger.debug(
+                    f"增量计算未实现盈亏",
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                    last_calc_time=last_calc_time,
+                )
+                long_positions, short_positions = await self._get_initial_positions_from_trades(
+                    session, account_id, exchange, symbol, last_calc_time, contract_multiplier_getter
+                )
+                
+                # 只查询新成交记录（优化：只查询需要的字段）
+                query = (
+                    select(TradeModel.side, TradeModel.price, TradeModel.quantity, time_column)
+                    .where(time_column >= last_calc_time)
+                    .where(time_column <= end_time)
+                    .where(TradeModel.symbol == symbol)
+                    .order_by(time_column.asc())
+                )
+            else:
+                # 全量计算：查询所有成交记录
+                logger.debug(
+                    f"全量计算未实现盈亏",
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                )
+                long_positions, short_positions = [], []
+                
+                query = (
+                    select(TradeModel.side, TradeModel.price, TradeModel.quantity, time_column)
+                    .where(time_column <= end_time)
+                    .where(TradeModel.symbol == symbol)
+                    .order_by(time_column.asc())
+                )
+            
+            if exchange == "binance":
+                query = query.where(TradeModel.exchange == "binance_perp")
+            if account_id:
+                query = query.where(TradeModel.account_id == account_id)
+            
+            result = await session.execute(query)
+            rows = result.all()
+            
+            # 获取合约乘数
+            contract_multiplier = contract_multiplier_getter(symbol)
+            
+            # 处理新成交记录
+            for row in rows:
+                side = row.side.upper()
+                price = Decimal(str(row.price))
+                quantity_contracts = Decimal(str(row.quantity))
+                quantity_coins = quantity_contracts * contract_multiplier
+                
+                if side == "BUY":
+                    remaining = quantity_coins
+                    while remaining > 0 and short_positions:
+                        short_qty, short_price = short_positions[0]
+                        if short_qty <= remaining:
+                            remaining -= short_qty
+                            short_positions.pop(0)
+                        else:
+                            short_positions[0] = (short_qty - remaining, short_price)
+                            remaining = Decimal("0")
+                    if remaining > 0:
+                        long_positions.append((remaining, price))
+                elif side == "SELL":
+                    remaining = quantity_coins
+                    while remaining > 0 and long_positions:
+                        long_qty, long_price = long_positions[0]
+                        if long_qty <= remaining:
+                            remaining -= long_qty
+                            long_positions.pop(0)
+                        else:
+                            long_positions[0] = (long_qty - remaining, long_price)
+                            remaining = Decimal("0")
+                    if remaining > 0:
+                        short_positions.append((remaining, price))
+            
+            # 计算未实现盈亏
+            long_unrealized = sum(qty * (current_price - price) for qty, price in long_positions)
+            short_unrealized = sum(qty * (price - current_price) for qty, price in short_positions)
+            total_unrealized = long_unrealized + short_unrealized
+            
+            logger.debug(
+                f"从成交记录计算未实现盈亏完成",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                long_qty=sum(qty for qty, _ in long_positions),
+                short_qty=sum(qty for qty, _ in short_positions),
+                unrealized_pnl=total_unrealized,
+            )
+            
+            return total_unrealized
+            
+        except Exception as e:
+            logger.error(
+                f"从成交记录计算未实现盈亏失败",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e),
+                exc_info=True,
+            )
+            # 如果计算失败，返回 0（或者可以回退到原来的计算方法）
+            return Decimal("0")
     
     def _log_metrics_table(
         self,

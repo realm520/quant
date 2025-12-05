@@ -419,6 +419,9 @@ class PositionMetricsScheduler:
                                     end_time=end_time,
                                 )
                                 
+                                # 更新 today_m 中的 unrealized_pnl（用于日志输出）
+                                m["unrealized_pnl"] = today_unrealized_pnl
+                                
                                 # 从数据库计算累计 PnL
                                 # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏 + 今天的未实现盈亏
                                 today_realized_pnl = m.get("realized_pnl", Decimal("0"))
@@ -474,7 +477,7 @@ class PositionMetricsScheduler:
                                     left_long_value=m.get("left_long_value", Decimal("0")),
                                     left_short_value=m.get("left_short_value", Decimal("0")),
                                     close_prz=m.get("close_prz", Decimal("0")),
-                                    unrealized_pnl=m.get("unrealized_pnl", Decimal("0")),
+                                    unrealized_pnl=today_unrealized_pnl,  # 使用从成交记录计算的累积未实现盈亏
                                     
                                     # 5. Pnl 汇总
                                     daily_pnl=m.get("daily_pnl", Decimal("0")),
@@ -997,7 +1000,7 @@ class PositionMetricsScheduler:
         table.add_row("  多头剩余市值 (left_long_value)", _format_decimal(today_m.get("left_long_value", Decimal("0")), 4))
         table.add_row("  空头剩余市值 (left_short_value)", _format_decimal(today_m.get("left_short_value", Decimal("0")), 4))
         table.add_row("  当日最后一笔成交价 (close_prz)", _format_decimal(today_m.get("close_prz", Decimal("0")), 8))
-        table.add_row("  当日未实现盈亏 (unrealized_pnl)", _format_decimal(today_m.get("unrealized_pnl", Decimal("0")), 4))
+        table.add_row("  累积未实现盈亏 (unrealized_pnl)", _format_decimal(today_m.get("unrealized_pnl", Decimal("0")), 4))
         table.add_row("", "")  # 空行
         
         # 5. Pnl 汇总

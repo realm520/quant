@@ -123,8 +123,10 @@
         "enabled": true,
         "channels": ["trade","position"],
         "watch_tasks": {
-          "orders": true,
-          "interval": 5
+          "orders": {
+            "enabled": true,
+            "interval": 5
+          }
         }
       },
       "binance_main_002": {
@@ -133,7 +135,7 @@
         "api_key": "zt6mWuKhEVK9N5TUoelZQaYbplpKae5WAfETltgsUt6vtQeRNA9MlDqrwrijHhfi",
         "api_secret": "EVOO5JrSdy74kMLIjZw9AiNLf42pZoK3X0tftmg2uinlknzdVGyqmrlz0pwNLuo3",
         "enabled": false,
-        "channels": ["account","position",""]
+        "channels": ["account","position"]
       }
     }
   }

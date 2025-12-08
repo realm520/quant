@@ -118,7 +118,7 @@ python -m tri_arb.cli.main account watch-positions --config config/accounts.json
 
 # 直接从 Git 拉取运行（不进入仓库）
 uvx --from git+https://github.com/realm520/quant.git@feat/xt_dev cextools subscribe multi-account --config config/accounts.json
-uvx --from git+https://github.com/realm520/quant.git cextools account watch-account --config config/accounts.json --all-accounts
+uvx --from git+https://github.com/realm520/quant.git@feat/xt_dev cextools account watch-account --config config/accounts.json --all-accounts
 ```
 
 ## 7. Prometheus + Grafana 监控

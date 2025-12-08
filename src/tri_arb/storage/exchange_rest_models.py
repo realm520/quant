@@ -45,6 +45,7 @@ def _create_balance_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
+            {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
             Index(f'idx_{exchange}_balance_type_time', 'exchange_type', 'query_time'),
             Index(f'idx_{exchange}_balance_asset_time', 'asset', 'query_time'),
             Index(f'idx_{exchange}_balance_query_type_time', 'query_type', 'query_time'),
@@ -89,6 +90,7 @@ def _create_position_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
+            {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
             Index(f'idx_{exchange}_position_symbol_time', 'symbol', 'query_time'),
             Index(f'idx_{exchange}_position_side_time', 'position_side', 'query_time'),
             Index(f'idx_{exchange}_position_query_type_time', 'query_type', 'query_time'),
@@ -139,6 +141,7 @@ def _create_order_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
+            {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
             Index(f'idx_{exchange}_order_id_time', 'order_id', 'query_time'),
             Index(f'idx_{exchange}_order_symbol_status_time', 'symbol', 'order_status', 'query_time'),
             Index(f'idx_{exchange}_order_query_type_time', 'query_type', 'query_time'),

@@ -6,7 +6,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, Table
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -49,6 +49,7 @@ class XTSpotBalance(Base):
         Index('idx_xt_account_asset_time', 'asset', 'query_time'),
         Index('idx_xt_account_query_type_time', 'query_type', 'query_time'),
         Index('idx_xt_account_account_time', 'account_id', 'query_time'),
+        {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
     )
 
 
@@ -102,6 +103,7 @@ class XTPerpPosition(Base):
         Index('idx_xt_position_side_time', 'position_side', 'query_time'),
         Index('idx_xt_position_query_type_time', 'query_type', 'query_time'),
         Index('idx_xt_position_account_time', 'account_id', 'query_time'),
+        {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
     )
 
 

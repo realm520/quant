@@ -139,11 +139,40 @@ def ensure_metrics_server(port: int | None = None) -> None:
     If the port is already in use (e.g., by another process), this function
     will skip starting the server and log a warning. This allows multiple
     processes to share the same metrics endpoint.
+    
+    Note: This function uses a global lock to prevent multiple threads from
+    starting the server simultaneously. However, if the server fails to start,
+    it will still mark as started to avoid repeated attempts. In this case,
+    you may need to restart the process or check the logs for errors.
     """
     global _SERVER_STARTED
     if _SERVER_STARTED:
-        return
+        # Double-check if server is actually running by trying to connect
+        # This helps recover from cases where the server was marked as started
+        # but actually failed to start
+        target_port = port or _DEFAULT_PORT
+        try:
+            import socket
+            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_socket.settimeout(0.1)
+            result = test_socket.connect_ex(('localhost', target_port))
+            test_socket.close()
+            if result == 0:
+                # Port is open, server is likely running
+                return
+            else:
+                # Port is not open, but we marked as started - reset and retry
+                logger.warning(
+                    f"Metrics server was marked as started but port {target_port} is not accessible. "
+                    "Resetting state and retrying..."
+                )
+                _SERVER_STARTED = False
+        except Exception:
+            # If check fails, assume server might be running and return
+            pass
+    
     with _SERVER_LOCK:
+        # Check again after acquiring lock
         if _SERVER_STARTED:
             return
         
@@ -163,13 +192,29 @@ def ensure_metrics_server(port: int | None = None) -> None:
             start_http_server(target_port)
             _SERVER_STARTED = True
             logger.info(f"Prometheus metrics server started on port {target_port}")
+            # Verify server is actually accessible
+            try:
+                import socket
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.settimeout(0.5)
+                result = test_socket.connect_ex(('localhost', target_port))
+                test_socket.close()
+                if result == 0:
+                    logger.info(f"Verified: Metrics server is accessible on port {target_port}")
+                else:
+                    logger.warning(f"Metrics server started but port {target_port} is not accessible")
+            except Exception as verify_error:
+                logger.warning(f"Could not verify metrics server accessibility: {verify_error}")
         except OSError as e:
-            logger.warning(
+            logger.error(
                 f"Failed to start Prometheus metrics server on port {target_port}: {e}. "
-                "Another process may already be using this port."
+                "Another process may already be using this port. "
+                "Please check if another instance is running or if the port is blocked."
             )
-            # Mark as started anyway to avoid repeated attempts
-            _SERVER_STARTED = True
+            # Don't mark as started if we failed - allow retry on next call
+            # This helps recover from transient errors
+            _SERVER_STARTED = False
+            raise
 
 
 def _to_float(value: Any) -> float:

@@ -426,25 +426,19 @@ class PositionCalculator:
             sell_trade_value = data["sell_trade_value"]
 
             # 输出详细计算过程日志
-            logger.info(
-                f"[{s}] 开始计算持仓指标",
-                start_time=start_time,
-                end_time=end_time,
-            )
-            logger.info(
-                f"[{s}] 1. 初始持仓（昨收持仓）",
-                initial_long_qty=float(initial_long_qty),
-                initial_short_qty=float(initial_short_qty),
-                initial_long_value=float(initial_long_value),
-                initial_short_value=float(initial_short_value),
-            )
-            logger.info(
-                f"[{s}] 2. 今日交易统计",
-                buy_volume=float(buy_volume),
-                sell_volume=float(sell_volume),
-                buy_trade_value=float(buy_trade_value),
-                sell_trade_value=float(sell_trade_value),
-            )
+            logger.info(f"[{s}] 开始计算持仓指标，时间区间: {start_time} -> {end_time}")
+            
+            logger.info(f"[{s}] 1. 初始持仓（昨收持仓）:")
+            logger.info(f"[{s}]   昨日多头数量 pre_long_qty = {float(initial_long_qty):,.2f}")
+            logger.info(f"[{s}]   昨日空头数量 pre_short_qty = {float(initial_short_qty):,.2f}")
+            logger.info(f"[{s}]   昨日多头市值 pre_long_value = {float(initial_long_value):,.4f}")
+            logger.info(f"[{s}]   昨日空头市值 pre_short_value = {float(initial_short_value):,.4f}")
+            
+            logger.info(f"[{s}] 2. 今日交易统计:")
+            logger.info(f"[{s}]   今日买入总量 sum(buy_vol) = {float(buy_volume):,.2f}")
+            logger.info(f"[{s}]   今日卖出总量 sum(sell_vol) = {float(sell_volume):,.2f}")
+            logger.info(f"[{s}]   今日买入总市值 sum(buy_vol * buy_price) = {float(buy_trade_value):,.4f}")
+            logger.info(f"[{s}]   今日卖出总市值 sum(sell_vol * sell_price) = {float(sell_trade_value):,.4f}")
 
             pre_long_qty = initial_long_qty + buy_volume
             pre_short_qty = initial_short_qty + sell_volume
@@ -459,13 +453,11 @@ class PositionCalculator:
             long_value = pre_long_value  # = initial_long_value + buy_trade_value
             short_value = pre_short_value  # = initial_short_value + sell_trade_value
 
-            logger.info(
-                f"[{s}] 3. 计算总持仓量和市值",
-                long_qty=f"{float(initial_long_qty)} + {float(buy_volume)} = {float(long_qty)}",
-                short_qty=f"{float(initial_short_qty)} + {float(sell_volume)} = {float(short_qty)}",
-                long_value=f"{float(initial_long_value)} + {float(buy_trade_value)} = {float(long_value)}",
-                short_value=f"{float(initial_short_value)} + {float(sell_trade_value)} = {float(short_value)}",
-            )
+            logger.info(f"[{s}] 3. 计算总持仓量和市值:")
+            logger.info(f"[{s}]   多头交易量：long_qty = sum(buy_vol) + pre_long_qty = {float(buy_volume):,.2f} + {float(initial_long_qty):,.2f} = {float(long_qty):,.2f}")
+            logger.info(f"[{s}]   空头交易量：short_qty = sum(sell_vol) + pre_short_qty = {float(sell_volume):,.2f} + {float(initial_short_qty):,.2f} = {float(short_qty):,.2f}")
+            logger.info(f"[{s}]   多头市值：long_value = sum(buy_vol * buy_price) + pre_long_value = {float(buy_trade_value):,.4f} + {float(initial_long_value):,.4f} = {float(long_value):,.4f}")
+            logger.info(f"[{s}]   空头市值：short_value = sum(sell_vol * sell_price) + pre_short_value = {float(sell_trade_value):,.4f} + {float(initial_short_value):,.4f} = {float(short_value):,.4f}")
 
             avg_buy_prz = Decimal("0")
             avg_sell_prz = Decimal("0")
@@ -474,22 +466,18 @@ class PositionCalculator:
             if short_qty > 0:
                 avg_sell_prz = short_value / short_qty
 
-            logger.info(
-                f"[{s}] 4. 计算平均价格",
-                avg_buy_prz=f"{float(long_value)} / {float(long_qty)} = {float(avg_buy_prz)}",
-                avg_sell_prz=f"{float(short_value)} / {float(short_qty)} = {float(avg_sell_prz)}",
-            )
+            logger.info(f"[{s}] 4. 计算平均价格:")
+            logger.info(f"[{s}]   买入平均价格：avg_buy_prz = long_value / long_qty = {float(long_value):,.4f} / {float(long_qty):,.2f} = {float(avg_buy_prz):,.8f}")
+            logger.info(f"[{s}]   卖出平均价格：avg_sell_prz = short_value / short_qty = {float(short_value):,.4f} / {float(short_qty):,.2f} = {float(avg_sell_prz):,.8f}")
 
             matched_qty = min(long_qty, short_qty)
             realized_pnl = Decimal("0")
             if matched_qty > 0:
                 realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
 
-            logger.info(
-                f"[{s}] 5. 计算已实现盈亏",
-                matched_qty=f"min({float(long_qty)}, {float(short_qty)}) = {float(matched_qty)}",
-                realized_pnl=f"{float(matched_qty)} * ({float(avg_sell_prz)} - {float(avg_buy_prz)}) = {float(realized_pnl)}",
-            )
+            logger.info(f"[{s}] 5. 计算已实现盈亏:")
+            logger.info(f"[{s}]   matched_qty = min({float(long_qty):,.2f}, {float(short_qty):,.2f}) = {float(matched_qty):,.2f}")
+            logger.info(f"[{s}]   已实现盈亏 realized_pnl = ({float(avg_sell_prz):,.8f} - {float(avg_buy_prz):,.8f}) * {float(matched_qty):,.2f} = {float(realized_pnl):,.4f}")
 
             # 计算剩余持仓和市值
             left_long_qty = long_qty - matched_qty
@@ -497,13 +485,11 @@ class PositionCalculator:
             left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
             left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
 
-            logger.info(
-                f"[{s}] 6. 计算剩余持仓",
-                left_long_qty=f"{float(long_qty)} - {float(matched_qty)} = {float(left_long_qty)}",
-                left_short_qty=f"{float(short_qty)} - {float(matched_qty)} = {float(left_short_qty)}",
-                left_long_value=f"{float(left_long_qty)} * {float(avg_buy_prz)} = {float(left_long_value)}",
-                left_short_value=f"{float(left_short_qty)} * {float(avg_sell_prz)} = {float(left_short_value)}",
-            )
+            logger.info(f"[{s}] 6. 计算剩余持仓:")
+            logger.info(f"[{s}]   日内多头剩余持仓 left_long_qty = long_qty - matched_qty = {float(long_qty):,.2f} - {float(matched_qty):,.2f} = {float(left_long_qty):,.2f}")
+            logger.info(f"[{s}]   日内空头剩余持仓 left_short_qty = short_qty - matched_qty = {float(short_qty):,.2f} - {float(matched_qty):,.2f} = {float(left_short_qty):,.2f}")
+            logger.info(f"[{s}]   日内多头剩余市值 left_long_value = {float(left_long_qty):,.2f} * {float(avg_buy_prz):,.8f} = {float(left_long_value):,.4f}")
+            logger.info(f"[{s}]   日内空头剩余市值 left_short_value = {float(left_short_qty):,.2f} * {float(avg_sell_prz):,.8f} = {float(left_short_value):,.4f}")
 
             # 获取最后一笔成交价（close_prz）
             close_prz = close_prices.get(s, Decimal("0"))
@@ -515,23 +501,19 @@ class PositionCalculator:
                 short_unrealized = left_short_qty * (avg_sell_prz - close_prz)
                 unrealized_pnl = long_unrealized + short_unrealized
                 
-                logger.info(
-                    f"[{s}] 7. 计算未实现盈亏",
-                    close_prz=float(close_prz),
-                    long_unrealized=f"{float(left_long_qty)} * ({float(close_prz)} - {float(avg_buy_prz)}) = {float(long_unrealized)}",
-                    short_unrealized=f"{float(left_short_qty)} * ({float(avg_sell_prz)} - {float(close_prz)}) = {float(short_unrealized)}",
-                    unrealized_pnl=f"{float(long_unrealized)} + {float(short_unrealized)} = {float(unrealized_pnl)}",
-                )
+                logger.info(f"[{s}] 7. 计算未实现盈亏:")
+                logger.info(f"[{s}]   当前最新价 close_prz = {float(close_prz):,.8f}")
+                logger.info(f"[{s}]   日内未实现盈亏 unrealized_pnl = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)")
+                logger.info(f"[{s}]   = {float(left_long_qty):,.2f} * ({float(close_prz):,.8f} - {float(avg_buy_prz):,.8f}) + {float(left_short_qty):,.2f} * ({float(avg_sell_prz):,.8f} - {float(close_prz):,.8f})")
+                logger.info(f"[{s}]   = {float(long_unrealized):,.4f} + {float(short_unrealized):,.4f} = {float(unrealized_pnl):,.4f}")
             else:
                 logger.warning(f"[{s}] 7. 计算未实现盈亏: close_prz 为 0，无法计算未实现盈亏")
 
             # 计算单日 PnL
             daily_pnl = realized_pnl + unrealized_pnl
             
-            logger.info(
-                f"[{s}] 8. 计算单日 PnL",
-                daily_pnl=f"{float(realized_pnl)} + {float(unrealized_pnl)} = {float(daily_pnl)}",
-            )
+            logger.info(f"[{s}] 8. 计算单日 PnL:")
+            logger.info(f"[{s}]   单日 PnL daily_pnl = realized_pnl + unrealized_pnl = {float(realized_pnl):,.4f} + {float(unrealized_pnl):,.4f} = {float(daily_pnl):,.4f}")
 
             data.update(
                 {

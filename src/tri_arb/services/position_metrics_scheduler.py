@@ -422,18 +422,19 @@ class PositionMetricsScheduler:
                                 # 获取昨日数据
                                 yesterday_m = yesterday_metrics.get(symbol_key, {})
                                 
-                                # 从成交记录计算未实现盈亏（更准确，基于所有历史成交）
-                                today_unrealized_pnl = await self._calculate_unrealized_pnl_from_trades(
-                                    session=session,
-                                    account_id=account_id,
-                                    exchange=exchange_name,
-                                    symbol=symbol_key,
-                                    current_price=m.get("close_prz", Decimal("0")),
-                                    end_time=end_time,
-                                )
-                                
-                                # 更新 today_m 中的 unrealized_pnl（用于日志输出）
-                                m["unrealized_pnl"] = today_unrealized_pnl
+                                # 使用 PositionCalculator 计算的未实现盈亏（基于平均价格和剩余持仓）
+                                # 计算逻辑：
+                                # - long_qty = sum(buy_vol) + pre_long_qty
+                                # - short_qty = sum(sell_vol) + pre_short_qty
+                                # - long_value = sum(buy_vol * buy_price) + pre_long_value
+                                # - short_value = sum(sell_vol * sell_price) + pre_short_value
+                                # - avg_buy_prz = long_value / long_qty
+                                # - avg_sell_prz = short_value / short_qty
+                                # - matched_qty = min(long_qty, short_qty)
+                                # - left_long_qty = long_qty - matched_qty
+                                # - left_short_qty = short_qty - matched_qty
+                                # - unrealized_pnl = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)
+                                today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
                                 
                                 # 从数据库计算累计 PnL
                                 # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏 + 今天的未实现盈亏

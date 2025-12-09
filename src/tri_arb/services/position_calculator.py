@@ -470,27 +470,53 @@ class PositionCalculator:
             # 计算单日 PnL
             daily_pnl = realized_pnl + unrealized_pnl
 
+            # 更新返回结果，包含所有计算过程中的中间变量值（便于调试和验证）
             data.update(
                 {
-                    "pre_long_qty": pre_long_qty,
-                    "pre_short_qty": pre_short_qty,
-                    "pre_long_value": pre_long_value,
-                    "pre_short_value": pre_short_value,
-                    "long_qty": long_qty,
-                    "short_qty": short_qty,
-                    "long_value": long_value,
-                    "short_value": short_value,
-                    "avg_buy_prz": avg_buy_prz,
-                    "avg_sell_prz": avg_sell_prz,
-                    "matched_qty": matched_qty,
-                    "realized_pnl": realized_pnl,
-                    "left_long_qty": left_long_qty,
-                    "left_short_qty": left_short_qty,
-                    "left_long_value": left_long_value,
-                    "left_short_value": left_short_value,
-                    "close_prz": close_prz,
-                    "unrealized_pnl": unrealized_pnl,
-                    "daily_pnl": daily_pnl,
+                    # 1. 初始持仓（昨日剩余持仓或区间开始时的持仓）
+                    "initial_long_qty": initial_long_qty,
+                    "initial_short_qty": initial_short_qty,
+                    "initial_long_value": initial_long_value,
+                    "initial_short_value": initial_short_value,
+                    
+                    # 2. 今日交易统计（区间内的成交记录）
+                    "buy_volume": buy_volume,
+                    "sell_volume": sell_volume,
+                    "buy_trade_value": buy_trade_value,
+                    "sell_trade_value": sell_trade_value,
+                    
+                    # 3. 总持仓量和市值（初始持仓 + 今日交易）
+                    "pre_long_qty": pre_long_qty,  # = initial_long_qty + buy_volume
+                    "pre_short_qty": pre_short_qty,  # = initial_short_qty + sell_volume
+                    "pre_long_value": pre_long_value,  # = initial_long_value + buy_trade_value
+                    "pre_short_value": pre_short_value,  # = initial_short_value + sell_trade_value
+                    
+                    # 4. 多头和空头交易量及市值（与 pre_* 相同，保持命名一致性）
+                    "long_qty": long_qty,  # = pre_long_qty = initial_long_qty + buy_volume
+                    "short_qty": short_qty,  # = pre_short_qty = initial_short_qty + sell_volume
+                    "long_value": long_value,  # = pre_long_value = initial_long_value + buy_trade_value
+                    "short_value": short_value,  # = pre_short_value = initial_short_value + sell_trade_value
+                    
+                    # 5. 平均价格
+                    "avg_buy_prz": avg_buy_prz,  # = long_value / long_qty
+                    "avg_sell_prz": avg_sell_prz,  # = short_value / short_qty
+                    
+                    # 6. 已实现盈亏
+                    "matched_qty": matched_qty,  # = min(long_qty, short_qty)
+                    "realized_pnl": realized_pnl,  # = matched_qty * (avg_sell_prz - avg_buy_prz)
+                    
+                    # 7. 剩余持仓和市值
+                    "left_long_qty": left_long_qty,  # = long_qty - matched_qty
+                    "left_short_qty": left_short_qty,  # = short_qty - matched_qty
+                    "left_long_value": left_long_value,  # = left_long_qty * avg_buy_prz
+                    "left_short_value": left_short_value,  # = left_short_qty * avg_sell_prz
+                    
+                    # 8. 未实现盈亏
+                    "close_prz": close_prz,  # 当日最后一笔成交价
+                    "unrealized_pnl": unrealized_pnl,  # = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)
+                    
+                    # 9. 单日 PnL
+                    "daily_pnl": daily_pnl,  # = realized_pnl + unrealized_pnl
                 }
             )
 

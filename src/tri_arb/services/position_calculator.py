@@ -245,10 +245,24 @@ class PositionCalculator:
         start_time: datetime,
         end_time: datetime,
         symbol: Optional[str] = None,
+        initial_positions_dict: Optional[Dict[str, Dict[str, Decimal]]] = None,
     ) -> Dict[str, Dict[str, Decimal]]:
         """按交易对（symbol）维度计算区间内的持仓与交易指标.
 
         与 ``calculate_position_from_trades`` 类似，但会返回每个 symbol 的独立统计结果。
+
+        Args:
+            start_time: 区间开始时间
+            end_time: 区间结束时间
+            symbol: 交易对（可选）
+            initial_positions_dict: 初始持仓字典，格式为 {
+                "symbol": {
+                    "initial_long_qty": Decimal,
+                    "initial_short_qty": Decimal,
+                    "initial_long_value": Decimal,
+                    "initial_short_value": Decimal,
+                }
+            }。如果提供，将使用此数据作为初始持仓；否则从持仓表查询。
 
         返回结构示例::
 
@@ -276,47 +290,63 @@ class PositionCalculator:
             }
         """
         # 1. 获取区间开始时的逐 symbol 持仓
-        initial_positions = await self._get_initial_positions(start_time, symbol)
-
-        # 先构建逐 symbol 的初始多空持仓与市值
-        # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
         by_symbol: Dict[str, Dict[str, Decimal]] = {}
-        for symbol_key, pos_data in initial_positions.items():
-            # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
-            # 需要去掉最后一部分（side）来获取完整的 symbol
-            side = pos_data.get("side", "").upper()
-            # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
-            if symbol_key.endswith(f"_{side}"):
-                pos_symbol = symbol_key[:-len(f"_{side}")]
-            else:
-                # 兼容处理：如果格式不对，尝试 split
-                pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
-            
-            quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
-            entry_price = pos_data.get("entry_price", Decimal("0"))
-
-            # 市值 = 币数量 × 价格
-            position_value = quantity_coins * entry_price
-
-            s = pos_symbol
-            if s not in by_symbol:
+        
+        if initial_positions_dict is not None:
+            # 使用提供的初始持仓（从昨日剩余持仓获取）
+            for s, pos_data in initial_positions_dict.items():
                 by_symbol[s] = {
-                    "initial_long_qty": Decimal("0"),
-                    "initial_short_qty": Decimal("0"),
-                    "initial_long_value": Decimal("0"),
-                    "initial_short_value": Decimal("0"),
+                    "initial_long_qty": pos_data.get("initial_long_qty", Decimal("0")),
+                    "initial_short_qty": pos_data.get("initial_short_qty", Decimal("0")),
+                    "initial_long_value": pos_data.get("initial_long_value", Decimal("0")),
+                    "initial_short_value": pos_data.get("initial_short_value", Decimal("0")),
                     "buy_volume": Decimal("0"),
                     "sell_volume": Decimal("0"),
                     "buy_trade_value": Decimal("0"),
                     "sell_trade_value": Decimal("0"),
                 }
+        else:
+            # 从持仓表查询初始持仓（兼容旧逻辑）
+            initial_positions = await self._get_initial_positions(start_time, symbol)
+            
+            # 先构建逐 symbol 的初始多空持仓与市值
+            # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
+            for symbol_key, pos_data in initial_positions.items():
+                # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
+                # 需要去掉最后一部分（side）来获取完整的 symbol
+                side = pos_data.get("side", "").upper()
+                # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
+                if symbol_key.endswith(f"_{side}"):
+                    pos_symbol = symbol_key[:-len(f"_{side}")]
+                else:
+                    # 兼容处理：如果格式不对，尝试 split
+                    pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
+                
+                quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
+                entry_price = pos_data.get("entry_price", Decimal("0"))
 
-            if side == "LONG":
-                by_symbol[s]["initial_long_qty"] += quantity_coins  # 币数量
-                by_symbol[s]["initial_long_value"] += position_value
-            elif side == "SHORT":
-                by_symbol[s]["initial_short_qty"] += quantity_coins  # 币数量
-                by_symbol[s]["initial_short_value"] += position_value
+                # 市值 = 币数量 × 价格
+                position_value = quantity_coins * entry_price
+
+                s = pos_symbol
+                if s not in by_symbol:
+                    by_symbol[s] = {
+                        "initial_long_qty": Decimal("0"),
+                        "initial_short_qty": Decimal("0"),
+                        "initial_long_value": Decimal("0"),
+                        "initial_short_value": Decimal("0"),
+                        "buy_volume": Decimal("0"),
+                        "sell_volume": Decimal("0"),
+                        "buy_trade_value": Decimal("0"),
+                        "sell_trade_value": Decimal("0"),
+                    }
+
+                if side == "LONG":
+                    by_symbol[s]["initial_long_qty"] += quantity_coins  # 币数量
+                    by_symbol[s]["initial_long_value"] += position_value
+                elif side == "SHORT":
+                    by_symbol[s]["initial_short_qty"] += quantity_coins  # 币数量
+                    by_symbol[s]["initial_short_value"] += position_value
 
         # 2. 统计区间内逐 symbol 的成交量与市值
         time_column = (

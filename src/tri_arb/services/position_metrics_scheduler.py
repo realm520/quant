@@ -387,11 +387,24 @@ class PositionMetricsScheduler:
                                 end_time=yesterday_end,
                             )
                             
-                            # 计算今日数据
+                            # 构建今日初始持仓（从昨日剩余持仓获取）
+                            initial_positions_dict = {}
+                            for symbol_key, yesterday_m in yesterday_metrics.items():
+                                if symbol_key == "TOTAL":
+                                    continue
+                                initial_positions_dict[symbol_key] = {
+                                    "initial_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
+                                    "initial_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
+                                    "initial_long_value": yesterday_m.get("left_long_value", Decimal("0")),
+                                    "initial_short_value": yesterday_m.get("left_short_value", Decimal("0")),
+                                }
+                            
+                            # 计算今日数据（使用昨日剩余持仓作为初始持仓）
                             logger.debug(f"计算今日数据: {start_time} -> {end_time}")
                             today_metrics = await calc.calculate_positions_by_symbol(
                                 start_time=start_time,
                                 end_time=end_time,
+                                initial_positions_dict=initial_positions_dict if initial_positions_dict else None,
                             )
                             
                             symbol_count = len([k for k in today_metrics.keys() if k != "TOTAL"])
@@ -453,11 +466,11 @@ class PositionMetricsScheduler:
                                     exchange=exchange_name,
                                     symbol=symbol_key,
                                     
-                                    # 1. 昨收持仓（使用昨日的数据）
-                                    pre_long_qty=yesterday_m.get("pre_long_qty", Decimal("0")),
-                                    pre_short_qty=yesterday_m.get("pre_short_qty", Decimal("0")),
-                                    pre_long_value=yesterday_m.get("pre_long_value", Decimal("0")),
-                                    pre_short_value=yesterday_m.get("pre_short_value", Decimal("0")),
+                                    # 1. 昨收持仓（使用昨日剩余持仓）
+                                    pre_long_qty=yesterday_m.get("left_long_qty", Decimal("0")),
+                                    pre_short_qty=yesterday_m.get("left_short_qty", Decimal("0")),
+                                    pre_long_value=yesterday_m.get("left_long_value", Decimal("0")),
+                                    pre_short_value=yesterday_m.get("left_short_value", Decimal("0")),
                                     
                                     # 2. 今日交易
                                     long_qty=m.get("long_qty", Decimal("0")),
@@ -493,10 +506,10 @@ class PositionMetricsScheduler:
                                     "symbol": symbol_key,
                                 }
                                 
-                                position_pre_long_qty.labels(**labels).set(float(yesterday_m.get("pre_long_qty", Decimal("0"))))
-                                position_pre_short_qty.labels(**labels).set(float(yesterday_m.get("pre_short_qty", Decimal("0"))))
-                                position_pre_long_value.labels(**labels).set(float(yesterday_m.get("pre_long_value", Decimal("0"))))
-                                position_pre_short_value.labels(**labels).set(float(yesterday_m.get("pre_short_value", Decimal("0"))))
+                                position_pre_long_qty.labels(**labels).set(float(yesterday_m.get("left_long_qty", Decimal("0"))))
+                                position_pre_short_qty.labels(**labels).set(float(yesterday_m.get("left_short_qty", Decimal("0"))))
+                                position_pre_long_value.labels(**labels).set(float(yesterday_m.get("left_long_value", Decimal("0"))))
+                                position_pre_short_value.labels(**labels).set(float(yesterday_m.get("left_short_value", Decimal("0"))))
                                 
                                 position_long_qty.labels(**labels).set(float(m.get("long_qty", Decimal("0"))))
                                 position_short_qty.labels(**labels).set(float(m.get("short_qty", Decimal("0"))))
@@ -550,11 +563,10 @@ class PositionMetricsScheduler:
         today_unrealized_pnl: Decimal,
         end_time: datetime,
     ) -> Decimal:
-        """从数据库计算累计 PnL.
+        """从成交记录计算累计 PnL（准确，无时间偏差）.
         
         计算逻辑：
-        - 历史累计已实现盈亏 = 数据库中该账号/交易所/交易对的每天完整一天的已实现盈亏总和（今天之前的所有天）
-        - 注意：realized_pnl 是当日累计值（从当天零点到记录时间点），所以需要按天分组，取每天的最后一条记录
+        - 历史累计已实现盈亏 = 从成交记录重新计算今天之前所有天的已实现盈亏总和（每天00:00:00-24:00:00）
         - 累计 PnL = 历史累计已实现盈亏 + 今天的已实现盈亏 + 今天的未实现盈亏
         
         Args:
@@ -573,43 +585,76 @@ class PositionMetricsScheduler:
             # 获取今天的日期（UTC 00:00）
             today_start = datetime(end_time.year, end_time.month, end_time.day)
             
-            # 查询该账号/交易所/交易对的所有历史已实现盈亏
-            # 由于 realized_pnl 是当日累计值，需要按天分组，取每天的最后一条记录（即完整一天的已实现盈亏）
+            # 从成交记录重新计算历史每天的已实现盈亏
+            # 首先找到最早有成交记录的日期
             from sqlalchemy import func, cast, Date
             
-            # 第一步：找到每天的最后一条记录的时间戳
-            daily_max_timestamp = (
-                select(
-                    cast(PositionMetrics.timestamp, Date).label("date"),
-                    func.max(PositionMetrics.timestamp).label("max_timestamp")
-                )
-                .where(PositionMetrics.account_id == account_id)
-                .where(PositionMetrics.exchange == exchange)
-                .where(PositionMetrics.symbol == symbol)
-                .where(PositionMetrics.timestamp < today_start)  # 只包括今天之前的记录
-                .group_by(cast(PositionMetrics.timestamp, Date))
-                .subquery()
+            # 根据交易所选择对应的模型
+            if exchange == "xt":
+                from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+                TradeModel = XTTradeUpdate
+                time_column = XTTradeUpdate.update_time
+            elif exchange == "binance":
+                from tri_arb.storage.models import TradeUpdate
+                TradeModel = TradeUpdate
+                time_column = TradeUpdate.transaction_time
+            else:
+                logger.warning(f"不支持的交易所: {exchange}，返回今天的总盈亏")
+                return today_realized_pnl + today_unrealized_pnl
+            
+            # 查询最早有成交记录的日期
+            earliest_query = (
+                select(func.min(cast(time_column, Date)))
+                .where(TradeModel.symbol == symbol)
+            )
+            if exchange == "binance":
+                earliest_query = earliest_query.where(TradeModel.exchange == "binance_perp")
+            if account_id:
+                earliest_query = earliest_query.where(TradeModel.account_id == account_id)
+            
+            earliest_result = await session.execute(earliest_query)
+            earliest_date = earliest_result.scalar()
+            
+            if not earliest_date:
+                # 如果没有历史成交记录，只返回今天的总盈亏
+                return today_realized_pnl + today_unrealized_pnl
+            
+            # 创建合约乘数 getter
+            contract_multiplier_getter: Optional[Callable[[str], Decimal]] = None
+            if self.contract_multiplier_service:
+                service = self.contract_multiplier_service
+                contract_multiplier_getter = lambda s: service.get_multiplier_sync(exchange, s)
+            else:
+                contract_multiplier_getter = lambda s: Decimal("1")
+            
+            # 创建计算器
+            calc = PositionCalculator(
+                session,
+                exchange=exchange,
+                account_id=account_id,
+                contract_multiplier_getter=contract_multiplier_getter,
             )
             
-            # 第二步：根据每天的最后一条记录的时间戳，获取对应的 realized_pnl
-            daily_realized_pnl = (
-                select(PositionMetrics.realized_pnl)
-                .where(PositionMetrics.account_id == account_id)
-                .where(PositionMetrics.exchange == exchange)
-                .where(PositionMetrics.symbol == symbol)
-                .where(
-                    PositionMetrics.timestamp.in_(
-                        select(daily_max_timestamp.c.max_timestamp)
-                    )
+            # 遍历今天之前的所有天，从成交记录计算每天完整一天的已实现盈亏
+            historical_cumulative_realized_pnl = Decimal("0")
+            current_date = earliest_date
+            
+            while current_date < today_start.date():
+                day_start = datetime(current_date.year, current_date.month, current_date.day)
+                day_end = day_start + timedelta(days=1)
+                
+                # 从成交记录计算这一天的已实现盈亏
+                day_metrics = await calc.calculate_positions_by_symbol(
+                    start_time=day_start,
+                    end_time=day_end,
+                    symbol=symbol,
                 )
-                .subquery()
-            )
-            
-            # 第三步：对每天的完整已实现盈亏求和
-            query = select(func.sum(daily_realized_pnl.c.realized_pnl))
-            
-            result = await session.execute(query)
-            historical_cumulative_realized_pnl = result.scalar() or Decimal("0")
+                
+                # 累加这一天的已实现盈亏
+                day_realized_pnl = day_metrics.get(symbol, {}).get("realized_pnl", Decimal("0"))
+                historical_cumulative_realized_pnl += day_realized_pnl
+                
+                current_date += timedelta(days=1)
             
             # 累计 PnL = 历史累计已实现盈亏 + 今天的已实现盈亏 + 今天的未实现盈亏
             cumulative_pnl = (
@@ -622,7 +667,7 @@ class PositionMetricsScheduler:
         
         except Exception as e:
             logger.error(
-                f"从数据库计算累计 PnL 失败",
+                f"从成交记录计算累计 PnL 失败",
                 account_id=account_id,
                 exchange=exchange,
                 symbol=symbol,

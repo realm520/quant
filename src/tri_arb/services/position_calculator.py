@@ -1,10 +1,10 @@
 """持仓量计算服务（基于成交记录）.
 
-用于计算基于成交记录的持仓量：
-- 多头持仓量 = 区间内所有买单的成交量 + 之前遗留的未平仓的买单
-- 空头持仓量 = 区间内所有卖单的成交量 + 之前遗留的未平仓的卖单
-- 多头市值 = 每笔买单市值累加 + 前日遗留的多头市值
-- 空头市值 = 每笔卖单市值累加 + 前日遗留的空头市值
+用于计算基于成交记录的持仓量（不叠加遗留持仓）：
+- 多头持仓量 = 区间内所有买单的成交量
+- 空头持仓量 = 区间内所有卖单的成交量
+- 多头市值 = 区间内买单市值累加
+- 空头市值 = 区间内卖单市值累加
 
 市值计算：每笔市值 = 成交价格 × 成交数量 × 合约乘数
 """
@@ -115,37 +115,11 @@ class PositionCalculator:
             - matched_qty: 轧差数量 = min(long_qty, short_qty)
             - realized_pnl: 当日已实现盈亏 = matched_qty * (avg_sell_prz - avg_buy_prz)
         """
-        # 1. 获取区间开始时的持仓（之前遗留的未平仓持仓）
-        initial_positions = await self._get_initial_positions(start_time, symbol)
+        # 1. 初始持仓：按需求仅依赖成交，忽略切日前持仓推送，默认 0
         initial_long_qty = Decimal("0")
         initial_short_qty = Decimal("0")
         initial_long_value = Decimal("0")
         initial_short_value = Decimal("0")
-        
-        # 计算初始持仓量和市值（使用开仓均价）
-        # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
-        for symbol_key, pos_data in initial_positions.items():
-            # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
-            # 需要去掉最后一部分（side）来获取完整的 symbol
-            side = pos_data.get("side", "").upper()
-            # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
-            if symbol_key.endswith(f"_{side}"):
-                pos_symbol = symbol_key[:-len(f"_{side}")]
-            else:
-                # 兼容处理：如果格式不对，尝试 split
-                pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
-            quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
-            entry_price = pos_data.get("entry_price", Decimal("0"))
-            
-            # 市值 = 币数量 × 开仓均价
-            position_value = quantity_coins * entry_price
-            
-            if side == "LONG":
-                initial_long_qty += quantity_coins  # 币数量
-                initial_long_value += position_value
-            elif side == "SHORT":
-                initial_short_qty += quantity_coins  # 币数量
-                initial_short_value += position_value
         
         # 2. 统计区间内所有成交记录
         buy_volume, sell_volume = await self._calculate_trade_volumes(start_time, end_time, symbol)
@@ -305,48 +279,6 @@ class PositionCalculator:
                     "buy_trade_value": Decimal("0"),
                     "sell_trade_value": Decimal("0"),
                 }
-        else:
-            # 从持仓表查询初始持仓（兼容旧逻辑）
-            initial_positions = await self._get_initial_positions(start_time, symbol)
-            
-            # 先构建逐 symbol 的初始多空持仓与市值
-            # 注意：_get_initial_positions 返回的 quantity 已经是币数量（对于 XT 已转换）
-            for symbol_key, pos_data in initial_positions.items():
-                # symbol_key 格式是 "symbol_LONG" 或 "symbol_SHORT"
-                # 需要去掉最后一部分（side）来获取完整的 symbol
-                side = pos_data.get("side", "").upper()
-                # 去掉末尾的 "_LONG" 或 "_SHORT" 来获取完整的 symbol
-                if symbol_key.endswith(f"_{side}"):
-                    pos_symbol = symbol_key[:-len(f"_{side}")]
-                else:
-                    # 兼容处理：如果格式不对，尝试 split
-                    pos_symbol = symbol_key.rsplit("_", 1)[0] if "_" in symbol_key else symbol_key
-                
-                quantity_coins = pos_data.get("quantity", Decimal("0"))  # 已经是币数量
-                entry_price = pos_data.get("entry_price", Decimal("0"))
-
-                # 市值 = 币数量 × 价格
-                position_value = quantity_coins * entry_price
-
-                s = pos_symbol
-                if s not in by_symbol:
-                    by_symbol[s] = {
-                        "initial_long_qty": Decimal("0"),
-                        "initial_short_qty": Decimal("0"),
-                        "initial_long_value": Decimal("0"),
-                        "initial_short_value": Decimal("0"),
-                        "buy_volume": Decimal("0"),
-                        "sell_volume": Decimal("0"),
-                        "buy_trade_value": Decimal("0"),
-                        "sell_trade_value": Decimal("0"),
-                    }
-
-                if side == "LONG":
-                    by_symbol[s]["initial_long_qty"] += quantity_coins  # 币数量
-                    by_symbol[s]["initial_long_value"] += position_value
-                elif side == "SHORT":
-                    by_symbol[s]["initial_short_qty"] += quantity_coins  # 币数量
-                    by_symbol[s]["initial_short_value"] += position_value
 
         # 2. 统计区间内逐 symbol 的成交量与市值
         time_column = (
@@ -639,110 +571,8 @@ class PositionCalculator:
                 }
             }
         """
-        if self.exchange == "binance":
-            # 使用 AccountUpdate 表，找到 start_time 之前最后一次持仓更新
-            subquery = (
-                select(
-                    self.PositionModel.symbol,
-                    self.PositionModel.position_side,
-                    func.max(self.PositionModel.event_time).label('max_time')
-                )
-                .where(self.PositionModel.event_time < start_time)
-                .where(self.PositionModel.event_type == 'POSITION_UPDATE')
-                .where(self.PositionModel.exchange == 'binance_perp')
-                .where(self.PositionModel.position_amount != 0)
-            )
-            if self.account_id:
-                subquery = subquery.where(self.PositionModel.account_id == self.account_id)
-            if symbol:
-                subquery = subquery.where(self.PositionModel.symbol == symbol)
-            
-            subquery = subquery.group_by(
-                self.PositionModel.symbol,
-                self.PositionModel.position_side
-            ).subquery()
-            
-            query = (
-                select(self.PositionModel)
-                .join(
-                    subquery,
-                    (self.PositionModel.symbol == subquery.c.symbol) &
-                    (self.PositionModel.position_side == subquery.c.position_side) &
-                    (self.PositionModel.event_time == subquery.c.max_time)
-                )
-                .where(self.PositionModel.event_type == 'POSITION_UPDATE')
-                .where(self.PositionModel.exchange == 'binance_perp')
-            )
-        elif self.exchange == "xt":
-            # 使用 XTPositionUpdate 表
-            subquery = (
-                select(
-                    self.PositionModel.symbol,
-                    self.PositionModel.side,
-                    func.max(self.PositionModel.update_time).label('max_time')
-                )
-                .where(self.PositionModel.update_time < start_time)
-                .where(self.PositionModel.quantity > 0)
-            )
-            if self.account_id:
-                subquery = subquery.where(self.PositionModel.account_id == self.account_id)
-            if symbol:
-                subquery = subquery.where(self.PositionModel.symbol == symbol)
-            
-            subquery = subquery.group_by(
-                self.PositionModel.symbol,
-                self.PositionModel.side
-            ).subquery()
-            
-            query = (
-                select(self.PositionModel)
-                .join(
-                    subquery,
-                    (self.PositionModel.symbol == subquery.c.symbol) &
-                    (self.PositionModel.side == subquery.c.side) &
-                    (self.PositionModel.update_time == subquery.c.max_time)
-                )
-                .where(self.PositionModel.quantity > 0)
-            )
-        else:
-            return {}
-        
-        if self.account_id:
-            query = query.where(self.PositionModel.account_id == self.account_id)
-        
-        result = await self.db_session.execute(query)
-        positions = result.scalars().all()
-        
-        position_dict = {}
-        for pos in positions:
-            if self.exchange == "binance":
-                symbol_key = pos.symbol
-                side = pos.position_side.upper()
-                quantity = abs(pos.position_amount)  # Binance 的 position_amount 已经是币数量
-                entry_price = pos.entry_price or Decimal("0")
-                # Binance 不需要合约乘数转换
-                notional = quantity * entry_price if entry_price > 0 else Decimal("0")
-            else:  # xt
-                symbol_key = pos.symbol
-                side = pos.side.upper()
-                quantity_contracts = pos.quantity  # XT 的 quantity 是合约张数
-                entry_price = pos.entry_price or Decimal("0")
-                # 转换为币数量（合约张数 × 合约乘数）
-                contract_multiplier = self._get_contract_multiplier(symbol_key)
-                quantity = quantity_contracts * contract_multiplier  # 币数量
-                # 市值 = 币数量 × 价格
-                notional = quantity * entry_price if entry_price > 0 else Decimal("0")
-            
-            key = f"{symbol_key}_{side}"
-            
-            position_dict[key] = {
-                "quantity": quantity,  # 现在统一为币数量
-                "entry_price": entry_price,
-                "notional": notional,  # 市值（币数量 × 价格）
-                "side": side,
-            }
-        
-        return position_dict
+        # 按你的要求：仅依赖成交数据，忽略切日前最后一笔持仓推送，初始持仓为空
+        return {}
     
     async def _calculate_trade_volumes(
         self,

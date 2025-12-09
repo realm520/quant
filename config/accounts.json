@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "database_url": "postgresql+asyncpg://postgres@localhost:5432/trading"
+    "database_url": "postgresql+asyncpg://oliver:oliver%230987654321@quant-infra-pg-cluster.cluster-cjhorql2nmcs.ap-southeast-1.rds.amazonaws.com:5432/trading"
   },
   "accounts": {
     "account_001": {
@@ -16,7 +16,7 @@
       "exchange": "xt",
       "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
       "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
-      "enabled": true,
+      "enabled": false,
       "channels": ["order","trade","account","position"],
       "watch_tasks": {
         "balance": {
@@ -78,7 +78,7 @@
       "exchange": "xt",
       "api_key": "b633f68d-89e4-418f-862e-7ca6014e61aa",
       "api_secret": "73c94dfe4418e2360b005fdf6fad32da5a9799d3",
-      "enabled": true,
+      "enabled": false,
       "channels": ["trade","position","order"],
       "watch_tasks": {
         "balance": {
@@ -96,11 +96,11 @@
         }
       }
     },
-    "account_007ktmm2": {
-      "name": "账号7ktmm2",
+    "account_007": {
+      "name": "账号7",
       "exchange": "xt",
-      "api_key": "8cf2cb72-020a-4f9c-9393-54ce0341f36a",
-      "api_secret": "4fab99f61419c32b6a5cc54fbbcc1f258feb1770",
+      "api_key": "52288a62-e308-44cc-9561-212d63611717",
+      "api_secret": "3bd3af4b68a3c87bafba2667f29b88d9dc9c46af",
       "enabled": true,
       "channels": ["position","order","trade"],
       "watch_tasks": {

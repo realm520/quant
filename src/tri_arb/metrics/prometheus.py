@@ -159,7 +159,7 @@ def ensure_metrics_server(port: int | None = None) -> None:
             test_socket.close()
             if result == 0:
                 # Port is open, server is likely running
-        return
+                return
             else:
                 # Port is not open, but we marked as started - reset and retry
                 logger.warning(

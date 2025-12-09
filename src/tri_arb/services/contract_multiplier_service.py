@@ -129,8 +129,27 @@ class ContractMultiplierService:
             
             # 解析所有交易对的配置
             symbols = data.get("result", [])
+            
+            # 类型检查：确保 result 是列表
+            if not isinstance(symbols, list):
+                logger.warning(
+                    f"XT API 返回的 result 不是列表类型，无法加载交易对配置",
+                    result_type=type(symbols).__name__,
+                    result_value=str(symbols)[:100] if isinstance(symbols, str) else symbols,
+                )
+                self._xt_configs_loaded = True
+                return
+            
             loaded_count = 0
             for symbol_config in symbols:
+                # 类型检查：确保每个元素是字典
+                if not isinstance(symbol_config, dict):
+                    logger.debug(
+                        f"跳过非字典类型的交易对配置项",
+                        item_type=type(symbol_config).__name__,
+                    )
+                    continue
+                
                 symbol = symbol_config.get("symbol", "").lower()
                 contract_size = symbol_config.get("contractSize")
                 

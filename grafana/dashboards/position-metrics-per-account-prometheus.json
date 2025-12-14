@@ -41,9 +41,13 @@
       {
         "name": "account_id",
         "label": "账号",
-        "type": "custom",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "hide": 0,
-        "query": "account_002,account_006,account_006ktmm1,account_007,account_007ktmm2,account_008,binance_main_001",
+        "query": "label_values(position_pre_long_qty, account_id)",
         "current": {
           "selected": true,
           "text": "account_006ktmm1",

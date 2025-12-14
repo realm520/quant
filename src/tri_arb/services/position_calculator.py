@@ -80,7 +80,177 @@ class PositionCalculator:
         except Exception as e:
             logger.warning(f"Failed to get contract multiplier for {symbol}, using default 1: {e}")
             return Decimal("1")
-    
+    async def calculate_yesterday_end_left_qty_value(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        symbol: Optional[str] = None,
+        initial_positions_dict: Optional[Dict[str, Dict[str, Decimal]]] = None,
+    ) -> Dict[str, Dict[str, Decimal]]:
+        """计算昨日结束时的剩余持仓量和市值（按 symbol 分组）.
+        
+        根据注释：如果不是第一天计算，那么昨收持仓需要使用昨天的昨收持仓和昨天的成交进行计算。
+        即：初始持仓（昨天的昨收持仓）+ 昨天交易 → 昨天结束时的剩余持仓
+        
+        Args:
+            start_time: 区间开始时间（UTC）
+            end_time: 区间结束时间（UTC）
+            symbol: 交易对（可选），如果不指定则统计所有交易对
+            initial_positions_dict: 初始持仓字典，格式为 {
+                "symbol": {
+                    "initial_long_qty": Decimal,
+                    "initial_short_qty": Decimal,
+                    "initial_long_value": Decimal,
+                    "initial_short_value": Decimal,
+                }
+            }。如果提供，将使用此数据作为初始持仓；否则初始持仓为 0（表示第一天计算）。
+        
+        Returns:
+            字典，格式为 {
+                "symbol": {
+                    "left_long_qty": Decimal,
+                    "left_short_qty": Decimal,
+                    "left_long_value": Decimal,
+                    "left_short_value": Decimal,
+                }
+            }
+        """
+        # 1. 初始化按 symbol 分组的数据结构
+        by_symbol: Dict[str, Dict[str, Decimal]] = {}
+        
+        # 如果有初始持仓，先初始化（表示不是第一天计算）
+        if initial_positions_dict is not None:
+            for s, pos_data in initial_positions_dict.items():
+                by_symbol[s] = {
+                    "initial_long_qty": pos_data.get("initial_long_qty", Decimal("0")),
+                    "initial_short_qty": pos_data.get("initial_short_qty", Decimal("0")),
+                    "initial_long_value": pos_data.get("initial_long_value", Decimal("0")),
+                    "initial_short_value": pos_data.get("initial_short_value", Decimal("0")),
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                }
+        
+        # 2. 统计区间内逐 symbol 的成交量与市值
+        time_column = (
+            self.TradeModel.transaction_time
+            if self.exchange == "binance"
+            else self.TradeModel.update_time
+        )
+
+        query = (
+            select(
+                self.TradeModel.symbol,
+                self.TradeModel.side,
+                self.TradeModel.price,
+                self.TradeModel.quantity,
+            )
+            .where(time_column >= start_time)
+            .where(time_column < end_time)
+        )
+
+        if self.exchange == "binance":
+            query = query.where(self.TradeModel.exchange == "binance_perp")
+        if self.account_id:
+            query = query.where(self.TradeModel.account_id == self.account_id)
+        if symbol:
+            query = query.where(self.TradeModel.symbol == symbol)
+
+        result = await self.db_session.execute(query)
+        rows = result.all()
+
+        for row in rows:
+            trade_symbol = row.symbol
+            side = row.side.upper()
+            price = row.price
+            qty_contracts = row.quantity  # 合约张数
+
+            if trade_symbol not in by_symbol:
+                # 如果没有初始持仓，表示这是第一天计算，初始持仓为 0
+                by_symbol[trade_symbol] = {
+                    "initial_long_qty": Decimal("0"),
+                    "initial_short_qty": Decimal("0"),
+                    "initial_long_value": Decimal("0"),
+                    "initial_short_value": Decimal("0"),
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                }
+
+            # 获取合约乘数并转换为币的数量
+            contract_multiplier = self._get_contract_multiplier(trade_symbol)
+            qty_coins = qty_contracts * contract_multiplier  # 币数量
+
+            # 成交量（币数量）
+            if side == "BUY":
+                by_symbol[trade_symbol]["buy_volume"] += qty_coins
+            elif side == "SELL":
+                by_symbol[trade_symbol]["sell_volume"] += qty_coins
+
+            # 成交市值 = 币数量 × 价格
+            trade_value = qty_coins * price
+            if side == "BUY":
+                by_symbol[trade_symbol]["buy_trade_value"] += trade_value
+            elif side == "SELL":
+                by_symbol[trade_symbol]["sell_trade_value"] += trade_value
+
+        # 3. 计算每个 symbol 的剩余持仓和市值
+        result_dict: Dict[str, Dict[str, Decimal]] = {}
+        
+        for s, data in by_symbol.items():
+            initial_long_qty = data["initial_long_qty"]
+            initial_short_qty = data["initial_short_qty"]
+            initial_long_value = data["initial_long_value"]
+            initial_short_value = data["initial_short_value"]
+            buy_volume = data["buy_volume"]
+            sell_volume = data["sell_volume"]
+            buy_trade_value = data["buy_trade_value"]
+            sell_trade_value = data["sell_trade_value"]
+
+            # 如果没有任何交易且没有初始持仓，表示第一天且无交易，返回 0
+            if buy_volume == 0 and sell_volume == 0 and initial_long_qty == 0 and initial_short_qty == 0:
+                result_dict[s] = {
+                    "left_long_qty": Decimal("0"),
+                    "left_short_qty": Decimal("0"),
+                    "left_long_value": Decimal("0"),
+                    "left_short_value": Decimal("0"),
+                }
+                continue
+
+            # 计算总持仓量和市值：初始持仓 + 今日交易
+            long_qty = initial_long_qty + buy_volume
+            short_qty = initial_short_qty + sell_volume
+            long_value = initial_long_value + buy_trade_value
+            short_value = initial_short_value + sell_trade_value
+
+            # 计算平均价格
+            avg_buy_prz = Decimal("0")
+            avg_sell_prz = Decimal("0")
+            if long_qty > 0:
+                avg_buy_prz = long_value / long_qty
+            if short_qty > 0:
+                avg_sell_prz = short_value / short_qty
+
+            # 计算轧差数量和剩余持仓
+            matched_qty = min(long_qty, short_qty)
+            left_long_qty = long_qty - matched_qty
+            left_short_qty = short_qty - matched_qty
+            
+            # 计算剩余市值
+            left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+            left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+
+            result_dict[s] = {
+                "left_long_qty": left_long_qty,
+                "left_short_qty": left_short_qty,
+                "left_long_value": left_long_value,
+                "left_short_value": left_short_value,
+            }
+
+        return result_dict
+
     async def calculate_position_from_trades(
         self,
         start_time: datetime,

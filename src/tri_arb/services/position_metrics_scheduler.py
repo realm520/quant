@@ -381,22 +381,41 @@ class PositionMetricsScheduler:
                                 contract_multiplier_getter=contract_multiplier_getter,
                             )
                             
+                            # 获取昨日开始时的初始持仓（优先从缓存读取，如果没有则计算并缓存）
+                            initial_positions_yesterday = await self._get_or_calculate_daily_initial_positions(
+                                session=session,
+                                calc=calc,
+                                account_id=account_id,
+                                exchange=exchange_name,
+                                target_date=yesterday_start.date(),  # 昨天的日期
+                            )
+                            
                             # 计算昨日数据（用于获取昨收持仓）
-                            yesterday_metrics = await calc.calculate_positions_by_symbol(
+                            yesterday_metrics = await calc.calculate_yesterday_end_left_qty_value(
                                 start_time=yesterday_start,
                                 end_time=yesterday_end,
+                                initial_positions_dict=initial_positions_yesterday if initial_positions_yesterday else None,
+                            )
+                            
+                            # 将昨天结束时的持仓存储为今天零点的缓存（用于明天使用）
+                            await self._cache_daily_initial_positions(
+                                session=session,
+                                account_id=account_id,
+                                exchange=exchange_name,
+                                target_date=start_time.date(),  # 今天的日期
+                                positions=yesterday_metrics,
                             )
                             
                             # 构建今日初始持仓（从昨日剩余持仓获取）
-                            initial_positions_dict = {}
+                            yesterday_left_qty_value_dict = {}
                             for symbol_key, yesterday_m in yesterday_metrics.items():
                                 if symbol_key == "TOTAL":
                                     continue
-                                initial_positions_dict[symbol_key] = {
-                                    "initial_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
-                                    "initial_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
-                                    "initial_long_value": yesterday_m.get("left_long_value", Decimal("0")),
-                                    "initial_short_value": yesterday_m.get("left_short_value", Decimal("0")),
+                                yesterday_left_qty_value_dict[symbol_key] = {
+                                    "yesterday_left_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
+                                    "yesterday_left_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
+                                    "yesterday_left_long_value": yesterday_m.get("left_long_value", Decimal("0")),
+                                    "yesterday_left_short_value": yesterday_m.get("left_short_value", Decimal("0")),
                                 }
                             
                             # 计算今日数据（使用昨日剩余持仓作为初始持仓）
@@ -404,13 +423,13 @@ class PositionMetricsScheduler:
                             today_metrics = await calc.calculate_positions_by_symbol(
                                 start_time=start_time,
                                 end_time=end_time,
-                                initial_positions_dict=initial_positions_dict if initial_positions_dict else None,
+                                yesterday_left_qty_value_dict=yesterday_left_qty_value_dict if yesterday_left_qty_value_dict else None,
                             )
                             
                             symbol_count = len([k for k in today_metrics.keys() if k != "TOTAL"])
                             logger.info(f"账号 {account_id} 找到 {symbol_count} 个交易对")
                             
-                            if symbol_count == 0:
+                            if symbol_count ==  0:
                                 logger.warning(f"账号 {account_id} 没有找到交易对数据，跳过")
                                 continue
                             
@@ -436,9 +455,23 @@ class PositionMetricsScheduler:
                                 # - unrealized_pnl = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)
                                 today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
                                 
+                                # 计算今日新增的已实现盈亏（仅今日新增的轧差对应的已实现盈亏）
+                                # 今日总轧差 = 包含初始持仓的轧差
+                                total_matched_qty = m.get("matched_qty", Decimal("0"))
+                                # 昨日收盘时的轧差（如果昨日有数据）
+                                yesterday_matched_qty = yesterday_m.get("matched_qty", Decimal("0"))
+                                # 今日新增的轧差数量 = 今日总轧差 - 昨日收盘时的轧差
+                                daily_new_matched_qty = total_matched_qty - yesterday_matched_qty
+                                
+                                # 计算今日新增的已实现盈亏
+                                avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
+                                avg_sell_prz = m.get("avg_sell_prz", Decimal("0"))
+                                today_realized_pnl = Decimal("0")
+                                if daily_new_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
+                                    today_realized_pnl = daily_new_matched_qty * (avg_sell_prz - avg_buy_prz)
+                                
                                 # 从数据库计算累计 PnL
-                                # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏 + 今天的未实现盈亏
-                                today_realized_pnl = m.get("realized_pnl", Decimal("0"))
+                                # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏（仅今日新增） + 今天的未实现盈亏
                                 cumulative_pnl = await self._calculate_cumulative_pnl_from_db(
                                     session=session,
                                     account_id=account_id,
@@ -451,12 +484,16 @@ class PositionMetricsScheduler:
                                 
                                 # 在控制台输出详细指标（使用表格格式）
                                 logger.info(f"计算完成: {account_id} - {exchange_name} - {symbol_key}")
+                                # 创建一个修改后的 today_m，使用正确的今日新增已实现盈亏
+                                today_m_corrected = m.copy()
+                                today_m_corrected["realized_pnl"] = today_realized_pnl
+                                today_m_corrected["daily_pnl"] = today_realized_pnl + today_unrealized_pnl
                                 self._log_metrics_table(
                                     account_id=account_id,
                                     exchange=exchange_name,
                                     symbol=symbol_key,
                                     yesterday_m=yesterday_m,
-                                    today_m=m,
+                                    today_m=today_m_corrected,
                                     cumulative_pnl=cumulative_pnl,
                                 )
                                 
@@ -483,7 +520,8 @@ class PositionMetricsScheduler:
                                     
                                     # 3. 已实现 Pnl
                                     matched_qty=m.get("matched_qty", Decimal("0")),
-                                    realized_pnl=m.get("realized_pnl", Decimal("0")),
+                                    # 使用今日新增的已实现盈亏（而不是包含初始持仓的已实现盈亏）
+                                    realized_pnl=today_realized_pnl,
                                     
                                     # 4. 当日剩余仓位
                                     left_long_qty=m.get("left_long_qty", Decimal("0")),
@@ -494,7 +532,8 @@ class PositionMetricsScheduler:
                                     unrealized_pnl=today_unrealized_pnl,  # 使用从成交记录计算的累积未实现盈亏
                                     
                                     # 5. Pnl 汇总
-                                    daily_pnl=m.get("daily_pnl", Decimal("0")),
+                                    # 单日 PnL = 今日新增的已实现盈亏 + 今日未实现盈亏
+                                    daily_pnl=today_realized_pnl + today_unrealized_pnl,
                                     cumulative_pnl=cumulative_pnl,
                                 )
                                 
@@ -520,7 +559,8 @@ class PositionMetricsScheduler:
                                 position_avg_sell_prz.labels(**labels).set(float(m.get("avg_sell_prz", Decimal("0"))))
                                 
                                 position_matched_qty.labels(**labels).set(float(m.get("matched_qty", Decimal("0"))))
-                                position_realized_pnl.labels(**labels).set(float(m.get("realized_pnl", Decimal("0"))))
+                                # 使用今日新增的已实现盈亏（而不是包含初始持仓的已实现盈亏）
+                                position_realized_pnl.labels(**labels).set(float(today_realized_pnl))
                                 
                                 position_left_long_qty.labels(**labels).set(float(m.get("left_long_qty", Decimal("0"))))
                                 position_left_short_qty.labels(**labels).set(float(m.get("left_short_qty", Decimal("0"))))
@@ -529,7 +569,8 @@ class PositionMetricsScheduler:
                                 position_close_prz.labels(**labels).set(float(m.get("close_prz", Decimal("0"))))
                                 position_unrealized_pnl.labels(**labels).set(float(m.get("unrealized_pnl", Decimal("0"))))
                                 
-                                position_daily_pnl.labels(**labels).set(float(m.get("daily_pnl", Decimal("0"))))
+                                # 使用正确的单日 PnL（今日新增已实现 + 今日未实现）
+                                position_daily_pnl.labels(**labels).set(float(today_realized_pnl + today_unrealized_pnl))
                                 position_cumulative_pnl.labels(**labels).set(float(cumulative_pnl))
                             
                             await session.commit()
@@ -639,21 +680,37 @@ class PositionMetricsScheduler:
             # 遍历今天之前的所有天，从成交记录计算每天完整一天的已实现盈亏
             historical_cumulative_realized_pnl = Decimal("0")
             current_date = earliest_date
+            previous_day_matched_qty = Decimal("0")  # 前一天收盘时的轧差数量
             
             while current_date < today_start.date():
                 day_start = datetime(current_date.year, current_date.month, current_date.day)
                 day_end = day_start + timedelta(days=1)
                 
-                # 从成交记录计算这一天的已实现盈亏
+                # 从成交记录计算这一天的完整数据
                 day_metrics = await calc.calculate_positions_by_symbol(
                     start_time=day_start,
                     end_time=day_end,
                     symbol=symbol,
                 )
                 
-                # 累加这一天的已实现盈亏
-                day_realized_pnl = day_metrics.get(symbol, {}).get("realized_pnl", Decimal("0"))
+                day_data = day_metrics.get(symbol, {})
+                # 今日总轧差数量
+                total_matched_qty = day_data.get("matched_qty", Decimal("0"))
+                # 今日新增的轧差数量 = 今日总轧差 - 昨日收盘时的轧差
+                daily_new_matched_qty = total_matched_qty - previous_day_matched_qty
+                
+                # 计算今日新增的已实现盈亏
+                avg_buy_prz = day_data.get("avg_buy_prz", Decimal("0"))
+                avg_sell_prz = day_data.get("avg_sell_prz", Decimal("0"))
+                day_realized_pnl = Decimal("0")
+                if daily_new_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
+                    day_realized_pnl = daily_new_matched_qty * (avg_sell_prz - avg_buy_prz)
+                
+                # 累加这一天的已实现盈亏（仅今日新增的部分）
                 historical_cumulative_realized_pnl += day_realized_pnl
+                
+                # 更新前一天收盘时的轧差数量（用于下一天的计算）
+                previous_day_matched_qty = total_matched_qty
                 
                 current_date += timedelta(days=1)
             
@@ -716,6 +773,335 @@ class PositionMetricsScheduler:
                 error=str(e),
             )
             return None
+    
+    async def _get_or_calculate_daily_initial_positions(
+        self,
+        session: AsyncSession,
+        calc: PositionCalculator,
+        account_id: str,
+        exchange: str,
+        target_date: datetime.date,
+    ) -> Dict[str, Dict[str, Decimal]]:
+        """获取或计算每日零点的初始持仓（带缓存机制）.
+        
+        第一次运行时，计算从最早时间到目标日期零点的持仓并缓存。
+        之后每天换日时，只需要从缓存读取昨天的持仓即可。
+        
+        Args:
+            session: 数据库会话
+            calc: PositionCalculator 实例
+            account_id: 账号ID
+            exchange: 交易所
+            target_date: 目标日期（例如昨天的日期）
+        
+        Returns:
+            字典，格式为 {
+                "symbol": {
+                    "initial_long_qty": Decimal,
+                    "initial_short_qty": Decimal,
+                    "initial_long_value": Decimal,
+                    "initial_short_value": Decimal,
+                }
+            }
+        """
+        from datetime import timezone
+        
+        # 目标日期的零点时间（UTC）
+        target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        
+        try:
+            # 1. 先检查缓存：查找 PositionMetrics 表中是否有目标日期零点的记录
+            cache_query = (
+                select(PositionMetrics)
+                .where(PositionMetrics.account_id == account_id)
+                .where(PositionMetrics.exchange == exchange)
+                .where(PositionMetrics.timestamp == target_start_time)
+                .limit(1)
+            )
+            cache_result = await session.execute(cache_query)
+            cache_row = cache_result.scalar_one_or_none()
+            
+            if cache_row:
+                # 从缓存中读取所有 symbol 的持仓
+                all_cache_query = (
+                    select(PositionMetrics)
+                    .where(PositionMetrics.account_id == account_id)
+                    .where(PositionMetrics.exchange == exchange)
+                    .where(PositionMetrics.timestamp == target_start_time)
+                )
+                all_cache_result = await session.execute(all_cache_query)
+                cache_rows = all_cache_result.scalars().all()
+                
+                # 构建返回字典
+                cached_positions: Dict[str, Dict[str, Decimal]] = {}
+                for row in cache_rows:
+                    cached_positions[row.symbol] = {
+                        "initial_long_qty": row.left_long_qty or Decimal("0"),
+                        "initial_short_qty": row.left_short_qty or Decimal("0"),
+                        "initial_long_value": row.left_long_value or Decimal("0"),
+                        "initial_short_value": row.left_short_value or Decimal("0"),
+                    }
+                
+                logger.debug(
+                    f"从缓存读取 {target_date} 零点的初始持仓",
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol_count=len(cached_positions),
+                )
+                return cached_positions
+            
+            # 2. 缓存不存在，需要计算
+            logger.info(
+                f"缓存不存在，计算 {target_date} 零点的初始持仓",
+                account_id=account_id,
+                exchange=exchange,
+            )
+            
+            # 计算从最早时间到 target_start_time 的所有交易
+            calculated_positions = await self._get_prior_left_positions_from_trades(
+                calc=calc,
+                target_start_time=target_start_time,
+            )
+            
+            # 3. 将计算结果存储到缓存（插入到 PositionMetrics 表，timestamp 设置为目标日期零点）
+            # 注意：这里只存储 left_* 字段，其他字段可以设为 0
+            if calculated_positions:
+                from sqlalchemy import insert
+                
+                cache_records = []
+                for symbol, positions in calculated_positions.items():
+                    cache_records.append({
+                        "timestamp": target_start_time,
+                        "account_id": account_id,
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "pre_long_qty": Decimal("0"),
+                        "pre_short_qty": Decimal("0"),
+                        "pre_long_value": Decimal("0"),
+                        "pre_short_value": Decimal("0"),
+                        "long_qty": Decimal("0"),
+                        "short_qty": Decimal("0"),
+                        "long_value": Decimal("0"),
+                        "short_value": Decimal("0"),
+                        "avg_buy_prz": Decimal("0"),
+                        "avg_sell_prz": Decimal("0"),
+                        "matched_qty": Decimal("0"),
+                        "realized_pnl": Decimal("0"),
+                        "left_long_qty": positions["initial_long_qty"],
+                        "left_short_qty": positions["initial_short_qty"],
+                        "left_long_value": positions["initial_long_value"],
+                        "left_short_value": positions["initial_short_value"],
+                        "close_prz": Decimal("0"),
+                        "unrealized_pnl": Decimal("0"),
+                        "daily_pnl": Decimal("0"),
+                        "cumulative_pnl": Decimal("0"),
+                    })
+                
+                if cache_records:
+                    await session.execute(insert(PositionMetrics).values(cache_records))
+                    await session.commit()
+                    logger.info(
+                        f"已缓存 {target_date} 零点的初始持仓",
+                        account_id=account_id,
+                        exchange=exchange,
+                        symbol_count=len(cache_records),
+                    )
+            
+            return calculated_positions
+            
+        except Exception as e:
+            logger.warning(
+                f"获取或计算每日初始持仓失败",
+                account_id=account_id,
+                exchange=exchange,
+                target_date=target_date,
+                error=str(e),
+            )
+            # 如果出错，回退到直接计算
+            return await self._get_prior_left_positions_from_trades(
+                calc=calc,
+                target_start_time=target_start_time,
+            )
+    
+    async def _cache_daily_initial_positions(
+        self,
+        session: AsyncSession,
+        account_id: str,
+        exchange: str,
+        target_date: datetime.date,
+        positions: Dict[str, Dict[str, Decimal]],
+    ) -> None:
+        """缓存每日零点的初始持仓（用于明天使用）.
+        
+        将计算出的持仓存储到 PositionMetrics 表，timestamp 设置为目标日期零点。
+        这样明天计算时就可以直接从缓存读取，而不需要重新计算。
+        
+        Args:
+            session: 数据库会话
+            account_id: 账号ID
+            exchange: 交易所
+            target_date: 目标日期（例如今天的日期）
+            positions: 持仓字典，格式为 {
+                "symbol": {
+                    "left_long_qty": Decimal,
+                    "left_short_qty": Decimal,
+                    "left_long_value": Decimal,
+                    "left_short_value": Decimal,
+                }
+            }
+        """
+        from datetime import timezone
+        from sqlalchemy import insert
+        
+        try:
+            # 目标日期的零点时间（UTC）
+            target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+            
+            # 检查是否已经存在缓存
+            check_query = (
+                select(PositionMetrics)
+                .where(PositionMetrics.account_id == account_id)
+                .where(PositionMetrics.exchange == exchange)
+                .where(PositionMetrics.timestamp == target_start_time)
+                .limit(1)
+            )
+            check_result = await session.execute(check_query)
+            existing = check_result.scalar_one_or_none()
+            
+            if existing:
+                # 缓存已存在，跳过
+                logger.debug(
+                    f"缓存已存在，跳过存储 {target_date} 零点的初始持仓",
+                    account_id=account_id,
+                    exchange=exchange,
+                )
+                return
+            
+            # 构建缓存记录
+            cache_records = []
+            for symbol, pos_data in positions.items():
+                if symbol == "TOTAL":
+                    continue
+                cache_records.append({
+                    "timestamp": target_start_time,
+                    "account_id": account_id,
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "pre_long_qty": Decimal("0"),
+                    "pre_short_qty": Decimal("0"),
+                    "pre_long_value": Decimal("0"),
+                    "pre_short_value": Decimal("0"),
+                    "long_qty": Decimal("0"),
+                    "short_qty": Decimal("0"),
+                    "long_value": Decimal("0"),
+                    "short_value": Decimal("0"),
+                    "avg_buy_prz": Decimal("0"),
+                    "avg_sell_prz": Decimal("0"),
+                    "matched_qty": Decimal("0"),
+                    "realized_pnl": Decimal("0"),
+                    "left_long_qty": pos_data.get("left_long_qty", Decimal("0")),
+                    "left_short_qty": pos_data.get("left_short_qty", Decimal("0")),
+                    "left_long_value": pos_data.get("left_long_value", Decimal("0")),
+                    "left_short_value": pos_data.get("left_short_value", Decimal("0")),
+                    "close_prz": Decimal("0"),
+                    "unrealized_pnl": Decimal("0"),
+                    "daily_pnl": Decimal("0"),
+                    "cumulative_pnl": Decimal("0"),
+                })
+            
+            if cache_records:
+                await session.execute(insert(PositionMetrics).values(cache_records))
+                await session.commit()
+                logger.info(
+                    f"已缓存 {target_date} 零点的初始持仓（用于明天使用）",
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol_count=len(cache_records),
+                )
+        except Exception as e:
+            logger.warning(
+                f"缓存每日初始持仓失败",
+                account_id=account_id,
+                exchange=exchange,
+                target_date=target_date,
+                error=str(e),
+            )
+            # 不抛出异常，允许继续执行
+    
+    async def _get_prior_left_positions_from_trades(
+        self,
+        calc: PositionCalculator,
+        target_start_time: datetime,
+    ) -> Dict[str, Dict[str, Decimal]]:
+        """从 xt_trade_update 表计算某时间点之前的剩余持仓（用于作为下一天的初始持仓）.
+        
+        通过计算 target_start_time 之前的所有交易数据，得到每个 symbol 的剩余持仓。
+        这样完全基于原始交易数据，不依赖 PositionMetrics 表中的历史计算结果。
+        
+        Args:
+            calc: PositionCalculator 实例（已初始化好 session、account_id、exchange）
+            target_start_time: 目标开始时间（例如昨日 00:00）
+        
+        Returns:
+            字典，格式为 {
+                "symbol": {
+                    "initial_long_qty": Decimal,
+                    "initial_short_qty": Decimal,
+                    "initial_long_value": Decimal,
+                    "initial_short_value": Decimal,
+                }
+            }
+        """
+        try:
+            # 从数据库中查询最早的一条交易记录的时间
+            from sqlalchemy import func
+            
+            time_column = (
+                calc.TradeModel.transaction_time
+                if calc.exchange == "binance"
+                else calc.TradeModel.update_time
+            )
+            
+            # 查询最早的一条交易记录
+            query = select(func.min(time_column))
+            if calc.exchange == "binance":
+                query = query.where(calc.TradeModel.exchange == "binance_perp")
+            if calc.account_id:
+                query = query.where(calc.TradeModel.account_id == calc.account_id)
+            query = query.where(time_column < target_start_time)
+            
+            result = await calc.db_session.execute(query)
+            earliest_time = result.scalar_one_or_none()
+            
+            # 如果数据库中没有交易记录，返回空字典（表示没有初始持仓）
+            if earliest_time is None:
+                return {}
+            
+            # 计算从最早时间到 target_start_time 的所有交易，得到剩余持仓
+            prior_metrics = await calc.calculate_yesterday_end_left_qty_value(
+                start_time=earliest_time,
+                end_time=target_start_time,
+                initial_positions_dict=None,  # 从最早开始计算，没有初始持仓
+            )
+            
+            # 转换为返回格式
+            prior: Dict[str, Dict[str, Decimal]] = {}
+            for symbol, metrics in prior_metrics.items():
+                prior[symbol] = {
+                    "initial_long_qty": metrics.get("left_long_qty", Decimal("0")),
+                    "initial_short_qty": metrics.get("left_short_qty", Decimal("0")),
+                    "initial_long_value": metrics.get("left_long_value", Decimal("0")),
+                    "initial_short_value": metrics.get("left_short_value", Decimal("0")),
+                }
+            
+            return prior
+        except Exception as e:
+            logger.warning(
+                f"从交易数据计算历史剩余持仓失败",
+                target_start_time=target_start_time,
+                error=str(e),
+            )
+            return {}
     
     async def _get_initial_positions_from_trades(
         self,
@@ -1129,7 +1515,11 @@ class PositionMetricsScheduler:
         
         # 5. Pnl 汇总
         table.add_row("[bold yellow]--- 5. Pnl 汇总 ---[/bold yellow]", "")
-        table.add_row("  单日 PnL (daily_pnl)", _format_decimal(today_m.get("daily_pnl", Decimal("0")), 4))
+        # 单日 PnL = 今日新增的已实现盈亏 + 今日未实现盈亏
+        today_realized = today_m.get("realized_pnl", Decimal("0"))
+        today_unrealized = today_m.get("unrealized_pnl", Decimal("0"))
+        daily_pnl = today_realized + today_unrealized
+        table.add_row("  单日 PnL (今日新增已实现 + 今日未实现)", _format_decimal(daily_pnl, 4))
         table.add_row("  累计盈亏: accum_pnl = 历史已实现盈亏加总 + 当日已实现盈亏 + 当日未实现盈亏", _format_decimal(cumulative_pnl, 4))
         
         # 输出表格到控制台（使用标准输出，确保在控制台可见）

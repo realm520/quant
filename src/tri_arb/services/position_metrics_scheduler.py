@@ -423,7 +423,7 @@ class PositionMetricsScheduler:
                             today_metrics = await calc.calculate_positions_by_symbol(
                                 start_time=start_time,
                                 end_time=end_time,
-                                yesterday_left_qty_value_dict=yesterday_left_qty_value_dict if yesterday_left_qty_value_dict else None,
+                                initial_positions_dict=yesterday_left_qty_value_dict if yesterday_left_qty_value_dict else None,
                             )
                             
                             symbol_count = len([k for k in today_metrics.keys() if k != "TOTAL"])
@@ -804,10 +804,8 @@ class PositionMetricsScheduler:
                 }
             }
         """
-        from datetime import timezone
-        
-        # 目标日期的零点时间（UTC）
-        target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        # 目标日期的零点时间（UTC，但使用 naive datetime 因为数据库是 TIMESTAMP WITHOUT TIME ZONE）
+        target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=None)
         
         try:
             # 1. 先检查缓存：查找 PositionMetrics 表中是否有目标日期零点的记录
@@ -950,12 +948,11 @@ class PositionMetricsScheduler:
                 }
             }
         """
-        from datetime import timezone
         from sqlalchemy import insert
         
         try:
-            # 目标日期的零点时间（UTC）
-            target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+            # 目标日期的零点时间（UTC，但使用 naive datetime 因为数据库是 TIMESTAMP WITHOUT TIME ZONE）
+            target_start_time = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=None)
             
             # 检查是否已经存在缓存
             check_query = (

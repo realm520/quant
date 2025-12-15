@@ -1076,24 +1076,35 @@ class PositionMetricsScheduler:
             if earliest_time is None:
                 return {}
             
-            # 计算从最早时间到 target_start_time 的所有交易，得到剩余持仓和累积已实现盈亏
+            # 计算从最早时间到 target_start_time 的所有交易，得到剩余持仓
             prior_metrics = await calc.calculate_yesterday_end_left_qty_value(
                 start_time=earliest_time,
                 end_time=target_start_time,
                 initial_positions_dict=None,  # 从最早开始计算，没有初始持仓
             )
             
+            # 计算从最早时间到 target_start_time 的“累积已实现盈亏”
+            # 使用 PositionCalculator.calculate_cumulative_pnl，内部已经按天切分并累加 realized_pnl
+            cumulative_pnl_by_symbol = await calc.calculate_cumulative_pnl(
+                start_date=earliest_time,
+                end_date=target_start_time,
+                symbol=None,  # 计算所有 symbol
+            )
+
             # 转换为返回格式：
-            # - initial_* 用于下一段计算的初始持仓
+            # - initial_* 用于下一段计算的初始持仓（= 此时刻的剩余持仓）
             # - cumulative_realized_pnl 表示从最早成交到 target_start_time 的累积已实现盈亏
             prior: Dict[str, Dict[str, Decimal]] = {}
             for symbol, metrics in prior_metrics.items():
+                cum_data = cumulative_pnl_by_symbol.get(symbol, {})
+                cumulative_realized_pnl = cum_data.get("cumulative_realized_pnl", Decimal("0"))
+
                 prior[symbol] = {
                     "initial_long_qty": metrics.get("left_long_qty", Decimal("0")),
                     "initial_short_qty": metrics.get("left_short_qty", Decimal("0")),
                     "initial_long_value": metrics.get("left_long_value", Decimal("0")),
                     "initial_short_value": metrics.get("left_short_value", Decimal("0")),
-                    "cumulative_realized_pnl": metrics.get("realized_pnl", Decimal("0")),
+                    "cumulative_realized_pnl": cumulative_realized_pnl,
                 }
             
             return prior

@@ -412,10 +412,11 @@ class PositionMetricsScheduler:
                                 if symbol_key == "TOTAL":
                                     continue
                                 yesterday_left_qty_value_dict[symbol_key] = {
-                                    "yesterday_left_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
-                                    "yesterday_left_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
-                                    "yesterday_left_long_value": yesterday_m.get("left_long_value", Decimal("0")),
-                                    "yesterday_left_short_value": yesterday_m.get("left_short_value", Decimal("0")),
+                                    # 作为今日初始持仓传入 PositionCalculator
+                                    "initial_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
+                                    "initial_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
+                                    "initial_long_value": yesterday_m.get("left_long_value", Decimal("0")),
+                                    "initial_short_value": yesterday_m.get("left_short_value", Decimal("0")),
                                 }
                             
                             # 计算今日数据（使用昨日剩余持仓作为初始持仓）

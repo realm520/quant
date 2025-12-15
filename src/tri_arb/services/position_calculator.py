@@ -976,7 +976,7 @@ class PositionCalculator:
             else self.TradeModel.update_time
         )
         
-        # 构建查询：按日期分组，统计买卖量和市值
+        # 构建查询：按日期分组，统计买卖量和“基础市值”（未乘合约乘数）
         query = (
             select(
                 cast(time_column, Date).label("trade_date"),
@@ -997,24 +997,20 @@ class PositionCalculator:
                     case(
                         (
                             self.TradeModel.side.in_(["BUY", "buy"]),
-                            self.TradeModel.quantity
-                            * self.TradeModel.price
-                            * self._get_contract_multiplier(self.TradeModel.symbol),
+                            self.TradeModel.quantity * self.TradeModel.price,
                         ),
                         else_=0,
                     )
-                ).label("buy_trade_value"),
+                ).label("buy_trade_value_base"),
                 func.sum(
                     case(
                         (
                             self.TradeModel.side.in_(["SELL", "sell"]),
-                            self.TradeModel.quantity
-                            * self.TradeModel.price
-                            * self._get_contract_multiplier(self.TradeModel.symbol),
+                            self.TradeModel.quantity * self.TradeModel.price,
                         ),
                         else_=0,
                     )
-                ).label("sell_trade_value"),
+                ).label("sell_trade_value_base"),
             )
             .where(time_column >= datetime.combine(start_date, datetime.min.time()))
             .where(time_column < datetime.combine(end_date, datetime.min.time()) + timedelta(days=1))
@@ -1031,18 +1027,25 @@ class PositionCalculator:
         result = await self.db_session.execute(query)
         rows = result.all()
         
-        # 按日期和 symbol 组织数据
+        # 按日期和 symbol 组织数据，并在 Python 侧应用合约乘数
         daily_stats: Dict[date, Dict[str, Dict[str, Decimal]]] = {}
         for row in rows:
             trade_date = row.trade_date
             sym = row.symbol
+            # 获取该 symbol 的合约乘数（这里是普通的 Python 调用，不会再传入列对象）
+            multiplier = self._get_contract_multiplier(sym)
+
+            buy_value_base = row.buy_trade_value_base or Decimal("0")
+            sell_value_base = row.sell_trade_value_base or Decimal("0")
+
             if trade_date not in daily_stats:
                 daily_stats[trade_date] = {}
             daily_stats[trade_date][sym] = {
                 "buy_volume": row.buy_volume or Decimal("0"),
                 "sell_volume": row.sell_volume or Decimal("0"),
-                "buy_trade_value": row.buy_trade_value or Decimal("0"),
-                "sell_trade_value": row.sell_trade_value or Decimal("0"),
+                # 最终的买入/卖出市值 = 基础市值 * 合约乘数
+                "buy_trade_value": buy_value_base * multiplier,
+                "sell_trade_value": sell_value_base * multiplier,
             }
         
         # 如果指定了 symbol，只返回该 symbol 的数据；否则返回所有 symbol

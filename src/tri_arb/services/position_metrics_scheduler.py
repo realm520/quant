@@ -975,7 +975,7 @@ class PositionMetricsScheduler:
                 )
                 return
             
-            # 构建缓存记录
+            # 构建缓存记录（使用当时完整的指标，而不是全部填 0）
             cache_records = []
             for symbol, pos_data in positions.items():
                 if symbol == "TOTAL":
@@ -985,26 +985,27 @@ class PositionMetricsScheduler:
                     "account_id": account_id,
                     "exchange": exchange,
                     "symbol": symbol,
-                    "pre_long_qty": Decimal("0"),
-                    "pre_short_qty": Decimal("0"),
-                    "pre_long_value": Decimal("0"),
-                    "pre_short_value": Decimal("0"),
-                    "long_qty": Decimal("0"),
-                    "short_qty": Decimal("0"),
-                    "long_value": Decimal("0"),
-                    "short_value": Decimal("0"),
-                    "avg_buy_prz": Decimal("0"),
-                    "avg_sell_prz": Decimal("0"),
-                    "matched_qty": Decimal("0"),
-                    "realized_pnl": Decimal("0"),
+                    # 昨日完整指标在 target_start_time 时刻的快照
+                    "pre_long_qty": pos_data.get("pre_long_qty", Decimal("0")),
+                    "pre_short_qty": pos_data.get("pre_short_qty", Decimal("0")),
+                    "pre_long_value": pos_data.get("pre_long_value", Decimal("0")),
+                    "pre_short_value": pos_data.get("pre_short_value", Decimal("0")),
+                    "long_qty": pos_data.get("long_qty", Decimal("0")),
+                    "short_qty": pos_data.get("short_qty", Decimal("0")),
+                    "long_value": pos_data.get("long_value", Decimal("0")),
+                    "short_value": pos_data.get("short_value", Decimal("0")),
+                    "avg_buy_prz": pos_data.get("avg_buy_prz", Decimal("0")),
+                    "avg_sell_prz": pos_data.get("avg_sell_prz", Decimal("0")),
+                    "matched_qty": pos_data.get("matched_qty", Decimal("0")),
+                    "realized_pnl": pos_data.get("realized_pnl", Decimal("0")),
                     "left_long_qty": pos_data.get("left_long_qty", Decimal("0")),
                     "left_short_qty": pos_data.get("left_short_qty", Decimal("0")),
                     "left_long_value": pos_data.get("left_long_value", Decimal("0")),
                     "left_short_value": pos_data.get("left_short_value", Decimal("0")),
-                    "close_prz": Decimal("0"),
-                    "unrealized_pnl": Decimal("0"),
-                    "daily_pnl": Decimal("0"),
-                    "cumulative_pnl": Decimal("0"),
+                    "close_prz": pos_data.get("close_prz", Decimal("0")),
+                    "unrealized_pnl": pos_data.get("unrealized_pnl", Decimal("0")),
+                    "daily_pnl": pos_data.get("daily_pnl", Decimal("0")),
+                    "cumulative_pnl": pos_data.get("cumulative_pnl", Decimal("0")),
                 })
             
             if cache_records:
@@ -1517,6 +1518,7 @@ class PositionMetricsScheduler:
         today_realized = today_m.get("realized_pnl", Decimal("0"))
         today_unrealized = today_m.get("unrealized_pnl", Decimal("0"))
         daily_pnl = today_realized + today_unrealized
+        table.add_row("  单日已实现盈亏 (realized_pnl)", _format_decimal(today_realized, 4))
         table.add_row("  单日 PnL (今日新增已实现 + 今日未实现)", _format_decimal(daily_pnl, 4))
         table.add_row("  累计盈亏: accum_pnl = 历史已实现盈亏加总 + 当日已实现盈亏 + 当日未实现盈亏", _format_decimal(cumulative_pnl, 4))
         

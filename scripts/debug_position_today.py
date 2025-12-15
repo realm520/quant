@@ -94,7 +94,7 @@ async def main() -> None:
         f"[cyan]统计区间 (UTC+0): {start_time.isoformat()} -> {end_time.isoformat()}[/cyan]"
     )
     console.print(f"[cyan]账号: {args.account_id}, 交易所: {args.exchange}[/cyan]")
-    
+
     # 计算多日 PnL 的起始日期（从月初开始，或从30天前开始）
     month_start = datetime(today.year, today.month, 1).replace(tzinfo=None)  # 本月1日（naive）
     # 如果本月1日早于今日，则从本月1日开始；否则从30天前开始

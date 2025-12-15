@@ -577,7 +577,7 @@ class PositionMetricsScheduler:
                                     # 3. 已实现 Pnl
                                     matched_qty=m.get("matched_qty", Decimal("0")),
                                     # 使用今日新增的已实现盈亏（而不是包含初始持仓的已实现盈亏）
-                                    realized_pnl=today_realized_pnl,
+                                    daily_realized_pnl=today_realized_pnl,
                                     
                                     # 4. 当日剩余仓位
                                     left_long_qty=m.get("left_long_qty", Decimal("0")),

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, date
 from decimal import Decimal
 from typing import Dict, Optional, Callable, Any
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tri_arb.config.logging import get_logger
@@ -982,29 +982,37 @@ class PositionCalculator:
                 cast(time_column, Date).label("trade_date"),
                 self.TradeModel.symbol,
                 func.sum(
-                    func.case(
+                    case(
                         (self.TradeModel.side.in_(["BUY", "buy"]), self.TradeModel.quantity),
-                        else_=0
+                        else_=0,
                     )
                 ).label("buy_volume"),
                 func.sum(
-                    func.case(
+                    case(
                         (self.TradeModel.side.in_(["SELL", "sell"]), self.TradeModel.quantity),
-                        else_=0
+                        else_=0,
                     )
                 ).label("sell_volume"),
                 func.sum(
-                    func.case(
-                        (self.TradeModel.side.in_(["BUY", "buy"]), 
-                         self.TradeModel.quantity * self.TradeModel.price * self._get_contract_multiplier(self.TradeModel.symbol)),
-                        else_=0
+                    case(
+                        (
+                            self.TradeModel.side.in_(["BUY", "buy"]),
+                            self.TradeModel.quantity
+                            * self.TradeModel.price
+                            * self._get_contract_multiplier(self.TradeModel.symbol),
+                        ),
+                        else_=0,
                     )
                 ).label("buy_trade_value"),
                 func.sum(
-                    func.case(
-                        (self.TradeModel.side.in_(["SELL", "sell"]), 
-                         self.TradeModel.quantity * self.TradeModel.price * self._get_contract_multiplier(self.TradeModel.symbol)),
-                        else_=0
+                    case(
+                        (
+                            self.TradeModel.side.in_(["SELL", "sell"]),
+                            self.TradeModel.quantity
+                            * self.TradeModel.price
+                            * self._get_contract_multiplier(self.TradeModel.symbol),
+                        ),
+                        else_=0,
                     )
                 ).label("sell_trade_value"),
             )

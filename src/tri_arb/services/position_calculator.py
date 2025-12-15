@@ -9,7 +9,7 @@
 市值计算：每笔市值 = 成交价格 × 成交数量 × 合约乘数
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from decimal import Decimal
 from typing import Dict, Optional, Callable, Any
 
@@ -943,4 +943,283 @@ class PositionCalculator:
                 seen_symbols.add(row.symbol)
         
         return close_prices
+
+    async def get_daily_trade_stats(
+        self,
+        start_date: date,
+        end_date: date,
+        symbol: Optional[str] = None,
+    ) -> Dict[date, Dict[str, Decimal]]:
+        """按日汇总成交数据（等价于 SQL 的 daily_trades CTE）.
+        
+        Args:
+            start_date: 起始日期（包含）
+            end_date: 结束日期（包含）
+            symbol: 交易对（可选），如果不指定则统计所有交易对
+        
+        Returns:
+            {
+                trade_date: {
+                    "buy_volume": Decimal,
+                    "sell_volume": Decimal,
+                    "buy_trade_value": Decimal,
+                    "sell_trade_value": Decimal,
+                },
+                ...
+            }
+        """
+        from sqlalchemy import cast, Date
+        
+        time_column = (
+            self.TradeModel.transaction_time
+            if self.exchange == "binance"
+            else self.TradeModel.update_time
+        )
+        
+        # 构建查询：按日期分组，统计买卖量和市值
+        query = (
+            select(
+                cast(time_column, Date).label("trade_date"),
+                self.TradeModel.symbol,
+                func.sum(
+                    func.case(
+                        (self.TradeModel.side.in_(["BUY", "buy"]), self.TradeModel.quantity),
+                        else_=0
+                    )
+                ).label("buy_volume"),
+                func.sum(
+                    func.case(
+                        (self.TradeModel.side.in_(["SELL", "sell"]), self.TradeModel.quantity),
+                        else_=0
+                    )
+                ).label("sell_volume"),
+                func.sum(
+                    func.case(
+                        (self.TradeModel.side.in_(["BUY", "buy"]), 
+                         self.TradeModel.quantity * self.TradeModel.price * self._get_contract_multiplier(self.TradeModel.symbol)),
+                        else_=0
+                    )
+                ).label("buy_trade_value"),
+                func.sum(
+                    func.case(
+                        (self.TradeModel.side.in_(["SELL", "sell"]), 
+                         self.TradeModel.quantity * self.TradeModel.price * self._get_contract_multiplier(self.TradeModel.symbol)),
+                        else_=0
+                    )
+                ).label("sell_trade_value"),
+            )
+            .where(time_column >= datetime.combine(start_date, datetime.min.time()))
+            .where(time_column < datetime.combine(end_date, datetime.min.time()) + timedelta(days=1))
+            .group_by(cast(time_column, Date), self.TradeModel.symbol)
+        )
+        
+        if self.exchange == "binance":
+            query = query.where(self.TradeModel.exchange == "binance_perp")
+        if self.account_id:
+            query = query.where(self.TradeModel.account_id == self.account_id)
+        if symbol:
+            query = query.where(self.TradeModel.symbol == symbol)
+        
+        result = await self.db_session.execute(query)
+        rows = result.all()
+        
+        # 按日期和 symbol 组织数据
+        daily_stats: Dict[date, Dict[str, Dict[str, Decimal]]] = {}
+        for row in rows:
+            trade_date = row.trade_date
+            sym = row.symbol
+            if trade_date not in daily_stats:
+                daily_stats[trade_date] = {}
+            daily_stats[trade_date][sym] = {
+                "buy_volume": row.buy_volume or Decimal("0"),
+                "sell_volume": row.sell_volume or Decimal("0"),
+                "buy_trade_value": row.buy_trade_value or Decimal("0"),
+                "sell_trade_value": row.sell_trade_value or Decimal("0"),
+            }
+        
+        # 如果指定了 symbol，只返回该 symbol 的数据；否则返回所有 symbol
+        if symbol:
+            return {
+                d: {symbol: stats.get(symbol, {
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                })}
+                for d, stats in daily_stats.items()
+            }
+        else:
+            return daily_stats
+
+    def calc_daily_realized_series(
+        self,
+        daily_stats: Dict[date, Dict[str, Dict[str, Decimal]]],
+    ) -> Dict[date, Dict[str, Dict[str, Decimal]]]:
+        """按日度逻辑计算每日和累积已实现盈亏（等价于你 SQL 的完整逻辑）.
+        
+        输入: 从最早日期开始的 daily_stats，格式为 {
+            trade_date: {
+                symbol: {
+                    "buy_volume", "sell_volume", "buy_trade_value", "sell_trade_value"
+                }
+            }
+        }
+        
+        输出: 每个 trade_date 的完整指标，格式为 {
+            trade_date: {
+                symbol: {
+                    "open_left_long_qty", "open_left_short_qty",
+                    "open_left_long_value", "open_left_short_value",
+                    "daily_buy_volume", "daily_sell_volume",
+                    "daily_buy_value", "daily_sell_value",
+                    "total_long_qty", "total_short_qty",
+                    "total_long_value", "total_short_value",
+                    "avg_buy_prz", "avg_sell_prz",
+                    "matched_qty", "daily_matched_qty",
+                    "daily_realized_pnl",
+                    "cumulative_realized_pnl",
+                    "close_left_long_qty", "close_left_short_qty",
+                    "close_left_long_value", "close_left_short_value",
+                }
+            }
+        }
+        """
+        if not daily_stats:
+            return {}
+        
+        # 按日期排序
+        sorted_dates = sorted(daily_stats.keys())
+        if not sorted_dates:
+            return {}
+        
+        # 收集所有 symbol
+        all_symbols = set()
+        for day_stats in daily_stats.values():
+            all_symbols.update(day_stats.keys())
+        
+        result: Dict[date, Dict[str, Dict[str, Decimal]]] = {}
+        
+        # 为每个 symbol 维护累计值
+        cumulative_by_symbol: Dict[str, Dict[str, Decimal]] = {
+            sym: {
+                "cumulative_buy_volume": Decimal("0"),
+                "cumulative_sell_volume": Decimal("0"),
+                "cumulative_buy_value": Decimal("0"),
+                "cumulative_sell_value": Decimal("0"),
+                "cumulative_realized_pnl": Decimal("0"),
+                "prev_matched_qty": Decimal("0"),
+            }
+            for sym in all_symbols
+        }
+        
+        # 逐日计算
+        for trade_date in sorted_dates:
+            day_data = daily_stats.get(trade_date, {})
+            result[trade_date] = {}
+            
+            for symbol in all_symbols:
+                sym_stats = day_data.get(symbol, {
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                })
+                
+                cum = cumulative_by_symbol[symbol]
+                
+                # 更新累计值
+                cum["cumulative_buy_volume"] += sym_stats["buy_volume"]
+                cum["cumulative_sell_volume"] += sym_stats["sell_volume"]
+                cum["cumulative_buy_value"] += sym_stats["buy_trade_value"]
+                cum["cumulative_sell_value"] += sym_stats["sell_trade_value"]
+                
+                # 前一日累计值（用于计算开盘持仓）
+                prev_cum_buy_vol = cum["cumulative_buy_volume"] - sym_stats["buy_volume"]
+                prev_cum_sell_vol = cum["cumulative_sell_volume"] - sym_stats["sell_volume"]
+                prev_cum_buy_val = cum["cumulative_buy_value"] - sym_stats["buy_trade_value"]
+                prev_cum_sell_val = cum["cumulative_sell_value"] - sym_stats["sell_trade_value"]
+                
+                # 前一日平均价和轧差
+                prev_avg_buy_prz = (
+                    prev_cum_buy_val / prev_cum_buy_vol
+                    if prev_cum_buy_vol > 0 else Decimal("0")
+                )
+                prev_avg_sell_prz = (
+                    prev_cum_sell_val / prev_cum_sell_vol
+                    if prev_cum_sell_vol > 0 else Decimal("0")
+                )
+                prev_matched_qty = min(prev_cum_buy_vol, prev_cum_sell_vol)
+                
+                # 今日开盘持仓（= 昨日收盘持仓）
+                open_left_long_qty = prev_cum_buy_vol - prev_matched_qty
+                open_left_short_qty = prev_cum_sell_vol - prev_matched_qty
+                open_left_long_value = open_left_long_qty * prev_avg_buy_prz if prev_avg_buy_prz > 0 else Decimal("0")
+                open_left_short_value = open_left_short_qty * prev_avg_sell_prz if prev_avg_sell_prz > 0 else Decimal("0")
+                
+                # 今日累计（包含当日交易）
+                total_long_qty = cum["cumulative_buy_volume"]
+                total_short_qty = cum["cumulative_sell_volume"]
+                total_long_value = cum["cumulative_buy_value"]
+                total_short_value = cum["cumulative_sell_value"]
+                
+                # 今日累计平均价
+                avg_buy_prz = (
+                    total_long_value / total_long_qty
+                    if total_long_qty > 0 else Decimal("0")
+                )
+                avg_sell_prz = (
+                    total_short_value / total_short_qty
+                    if total_short_qty > 0 else Decimal("0")
+                )
+                
+                # 今日累计轧差
+                matched_qty = min(total_long_qty, total_short_qty)
+                
+                # 昨日累计轧差（用于计算今日新增）
+                prev_matched_qty_calc = cum["prev_matched_qty"]
+                
+                # 今日新增轧差
+                daily_matched_qty = matched_qty - prev_matched_qty_calc
+                
+                # 今日已实现盈亏
+                daily_realized_pnl = Decimal("0")
+                if daily_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
+                    daily_realized_pnl = daily_matched_qty * (avg_sell_prz - avg_buy_prz)
+                
+                # 更新累积已实现盈亏
+                cum["cumulative_realized_pnl"] += daily_realized_pnl
+                cum["prev_matched_qty"] = matched_qty
+                
+                # 今日收盘持仓
+                close_left_long_qty = total_long_qty - matched_qty
+                close_left_short_qty = total_short_qty - matched_qty
+                close_left_long_value = close_left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+                close_left_short_value = close_left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+                
+                result[trade_date][symbol] = {
+                    "open_left_long_qty": open_left_long_qty,
+                    "open_left_short_qty": open_left_short_qty,
+                    "open_left_long_value": open_left_long_value,
+                    "open_left_short_value": open_left_short_value,
+                    "daily_buy_volume": sym_stats["buy_volume"],
+                    "daily_sell_volume": sym_stats["sell_volume"],
+                    "daily_buy_value": sym_stats["buy_trade_value"],
+                    "daily_sell_value": sym_stats["sell_trade_value"],
+                    "total_long_qty": total_long_qty,
+                    "total_short_qty": total_short_qty,
+                    "total_long_value": total_long_value,
+                    "total_short_value": total_short_value,
+                    "avg_buy_prz": avg_buy_prz,
+                    "avg_sell_prz": avg_sell_prz,
+                    "matched_qty": matched_qty,
+                    "daily_matched_qty": daily_matched_qty,
+                    "daily_realized_pnl": daily_realized_pnl,
+                    "cumulative_realized_pnl": cum["cumulative_realized_pnl"],
+                    "close_left_long_qty": close_left_long_qty,
+                    "close_left_short_qty": close_left_short_qty,
+                    "close_left_long_value": close_left_long_value,
+                    "close_left_short_value": close_left_short_value,
+                }
+        
+        return result
 

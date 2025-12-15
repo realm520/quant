@@ -5,7 +5,7 @@
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
@@ -341,6 +341,9 @@ class PositionMetricsScheduler:
             yesterday_start = datetime(yesterday.year, yesterday.month, yesterday.day)  # 昨日 00:00 UTC
             yesterday_end = datetime(today.year, today.month, today.day)  # 昨日 24:00 UTC
             
+            # 检查是否换日（如果当前时间已经跨过今天 00:00，需要计算今天零点快照）
+            # 这个检查在每次定时任务运行时都会执行，如果发现今天零点快照不存在，会自动重建
+            
             async with self.db_manager.session() as session:
                 # 遍历所有交易所
                 for exchange_name in ["binance", "xt"]:
@@ -381,7 +384,21 @@ class PositionMetricsScheduler:
                                 contract_multiplier_getter=contract_multiplier_getter,
                             )
                             
-                            # 获取昨日开始时的初始持仓（优先从缓存读取，如果没有则计算并缓存）
+                            # 每次启动/运行都重建所有零点快照（覆盖写入）
+                            logger.info(
+                                f"重建账号所有零点快照",
+                                account_id=account_id,
+                                exchange=exchange_name,
+                            )
+                            await self._rebuild_midnight_snapshots(
+                                session=session,
+                                calc=calc,
+                                account_id=account_id,
+                                exchange=exchange_name,
+                                symbol=None,  # 所有 symbol
+                            )
+                            
+                            # 获取昨日开始时的初始持仓（从 position_metrics 表读取）
                             initial_positions_yesterday = await self._get_or_calculate_daily_initial_positions(
                                 session=session,
                                 calc=calc,
@@ -390,21 +407,42 @@ class PositionMetricsScheduler:
                                 target_date=yesterday_start.date(),  # 昨天的日期
                             )
                             
-                            # 计算昨日数据（用于获取昨收持仓）
+                            # 计算昨日数据（用于获取昨收持仓，用于显示）
                             yesterday_metrics = await calc.calculate_yesterday_end_left_qty_value(
                                 start_time=yesterday_start,
                                 end_time=yesterday_end,
                                 initial_positions_dict=initial_positions_yesterday if initial_positions_yesterday else None,
                             )
                             
-                            # 将昨天结束时的持仓存储为今天零点的缓存（用于明天使用）
-                            await self._cache_daily_initial_positions(
-                                session=session,
-                                account_id=account_id,
-                                exchange=exchange_name,
-                                target_date=start_time.date(),  # 今天的日期
-                                positions=yesterday_metrics,
+                            # 检查今天零点快照是否存在，如果不存在则计算并写入
+                            today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
+                            today_snapshot_query = (
+                                select(PositionMetrics)
+                                .where(PositionMetrics.account_id == account_id)
+                                .where(PositionMetrics.exchange == exchange_name)
+                                .where(PositionMetrics.timestamp == today_midnight)
+                                .limit(1)
                             )
+                            today_snapshot_result = await session.execute(today_snapshot_query)
+                            today_snapshot = today_snapshot_result.scalar_one_or_none()
+                            
+                            if not today_snapshot:
+                                # 今天零点快照不存在，需要计算并写入
+                                # 使用昨天收盘持仓 + 今天成交来计算今天零点快照
+                                logger.info(
+                                    f"计算并写入今天零点快照",
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                )
+                                # 这里可以调用 _rebuild_midnight_snapshots 只重建到今天，或者单独计算今天
+                                # 为了简化，我们直接调用一次重建（会覆盖所有，但确保今天有数据）
+                                await self._rebuild_midnight_snapshots(
+                                    session=session,
+                                    calc=calc,
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                    symbol=None,
+                                )
                             
                             # 构建今日初始持仓（从昨日剩余持仓获取）
                             yesterday_left_qty_value_dict = {}
@@ -471,17 +509,34 @@ class PositionMetricsScheduler:
                                 if daily_new_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
                                     today_realized_pnl = daily_new_matched_qty * (avg_sell_prz - avg_buy_prz)
                                 
-                                # 从数据库计算累计 PnL
-                                # 累计 PnL = 历史累计已实现盈亏（今天之前的所有天） + 今天的已实现盈亏（仅今日新增） + 今天的未实现盈亏
-                                cumulative_pnl = await self._calculate_cumulative_pnl_from_db(
-                                    session=session,
-                                    account_id=account_id,
-                                    exchange=exchange_name,
-                                    symbol=symbol_key,
-                                    today_realized_pnl=today_realized_pnl,
-                                    today_unrealized_pnl=today_unrealized_pnl,
-                                    end_time=end_time,
+                                # 从 position_metrics 表读取今天零点快照的 cumulative_realized_pnl
+                                today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
+                                midnight_snapshot_query = (
+                                    select(PositionMetrics.cumulative_realized_pnl)
+                                    .where(PositionMetrics.account_id == account_id)
+                                    .where(PositionMetrics.exchange == exchange_name)
+                                    .where(PositionMetrics.symbol == symbol_key)
+                                    .where(PositionMetrics.timestamp == today_midnight)
+                                    .limit(1)
                                 )
+                                midnight_result = await session.execute(midnight_snapshot_query)
+                                cumulative_realized_pnl_at_midnight = midnight_result.scalar()
+                                
+                                if cumulative_realized_pnl_at_midnight is None:
+                                    # 如果今天零点快照不存在，使用 0（理论上不应该发生，因为前面已经重建了）
+                                    logger.warning(
+                                        f"今天零点快照不存在，使用 0 作为累积已实现盈亏",
+                                        account_id=account_id,
+                                        exchange=exchange_name,
+                                        symbol=symbol_key,
+                                    )
+                                    cumulative_realized_pnl_at_midnight = Decimal("0")
+                                
+                                # 当前时刻的累积已实现盈亏 = 零点快照的累积已实现 + 今日新增的已实现
+                                cumulative_realized_pnl_now = cumulative_realized_pnl_at_midnight + today_realized_pnl
+                                
+                                # 累计 PnL = 累积已实现盈亏 + 当前未实现盈亏
+                                cumulative_pnl = cumulative_realized_pnl_now + today_unrealized_pnl
                                 
                                 # 在控制台输出详细指标（使用表格格式）
                                 logger.info(f"计算完成: {account_id} - {exchange_name} - {symbol_key}")
@@ -536,6 +591,7 @@ class PositionMetricsScheduler:
                                     # 单日 PnL = 今日新增的已实现盈亏 + 今日未实现盈亏
                                     daily_pnl=today_realized_pnl + today_unrealized_pnl,
                                     cumulative_pnl=cumulative_pnl,
+                                    cumulative_realized_pnl=cumulative_realized_pnl_now,
                                 )
                                 
                                 session.add(metrics_record)
@@ -573,6 +629,7 @@ class PositionMetricsScheduler:
                                 # 使用正确的单日 PnL（今日新增已实现 + 今日未实现）
                                 position_daily_pnl.labels(**labels).set(float(today_realized_pnl + today_unrealized_pnl))
                                 position_cumulative_pnl.labels(**labels).set(float(cumulative_pnl))
+                                # 注意：Prometheus 指标里没有 cumulative_realized_pnl，如果需要可以添加
                             
                             await session.commit()
                             
@@ -774,6 +831,212 @@ class PositionMetricsScheduler:
                 error=str(e),
             )
             return None
+
+    async def _rebuild_midnight_snapshots(
+        self,
+        session: AsyncSession,
+        calc: PositionCalculator,
+        account_id: str,
+        exchange: str,
+        symbol: Optional[str] = None,
+    ) -> None:
+        """从成交表重算所有零点快照并写入/覆盖 position_metrics.
+        
+        流程：
+        1. 查出该账号最早和最后成交日期
+        2. 用 PositionCalculator.get_daily_trade_stats 获取日度成交统计
+        3. 用 PositionCalculator.calc_daily_realized_series 计算每日和累积已实现盈亏
+        4. 对每个 trade_date，构造零点 timestamp = (trade_date + 1天) 00:00，
+           然后 INSERT ... ON CONFLICT DO UPDATE 覆盖写入 position_metrics
+        
+        Args:
+            session: 数据库会话
+            calc: PositionCalculator 实例
+            account_id: 账号ID
+            exchange: 交易所
+            symbol: 交易对（可选），如果不指定则处理所有交易对
+        """
+        from sqlalchemy import insert, cast, Date
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        
+        try:
+            # 1. 查出最早和最后成交日期
+            time_column = (
+                calc.TradeModel.transaction_time
+                if calc.exchange == "binance"
+                else calc.TradeModel.update_time
+            )
+            
+            earliest_query = select(func.min(cast(time_column, Date)))
+            latest_query = select(func.max(cast(time_column, Date)))
+            
+            if calc.exchange == "binance":
+                earliest_query = earliest_query.where(calc.TradeModel.exchange == "binance_perp")
+                latest_query = latest_query.where(calc.TradeModel.exchange == "binance_perp")
+            if calc.account_id:
+                earliest_query = earliest_query.where(calc.TradeModel.account_id == calc.account_id)
+                latest_query = latest_query.where(calc.TradeModel.account_id == calc.account_id)
+            if symbol:
+                earliest_query = earliest_query.where(calc.TradeModel.symbol == symbol)
+                latest_query = latest_query.where(calc.TradeModel.symbol == symbol)
+            
+            earliest_result = await session.execute(earliest_query)
+            latest_result = await session.execute(latest_query)
+            earliest_date = earliest_result.scalar()
+            latest_date = latest_result.scalar()
+            
+            if not earliest_date or not latest_date:
+                logger.warning(
+                    "没有找到成交记录，跳过重建零点快照",
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                )
+                return
+            
+            # 2. 获取日度成交统计
+            logger.info(
+                f"开始重建零点快照: {earliest_date} -> {latest_date}",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+            )
+            
+            daily_stats = await calc.get_daily_trade_stats(
+                start_date=earliest_date,
+                end_date=latest_date,
+                symbol=symbol,
+            )
+            
+            if not daily_stats:
+                logger.warning("日度成交统计为空，跳过重建")
+                return
+            
+            # 3. 计算每日和累积已实现盈亏
+            daily_series = calc.calc_daily_realized_series(daily_stats)
+            
+            if not daily_series:
+                logger.warning("日度计算结果为空，跳过重建")
+                return
+            
+            # 4. 对每个 trade_date，构造零点快照并写入/覆盖 position_metrics
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            
+            for trade_date, day_data in sorted(daily_series.items()):
+                # 零点 timestamp = trade_date 的下一天 00:00（即该日结束时的快照）
+                midnight_timestamp = datetime.combine(trade_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
+                
+                for sym, metrics in day_data.items():
+                    # 获取前一日收盘持仓（作为今日开盘持仓）
+                    prev_date = trade_date - timedelta(days=1)
+                    prev_day_data = daily_series.get(prev_date, {})
+                    prev_metrics = prev_day_data.get(sym, {})
+                    
+                    # 获取当日最后一笔成交价（用于未实现盈亏）
+                    day_end = datetime.combine(trade_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
+                    day_start = datetime.combine(trade_date, datetime.min.time()).replace(tzinfo=None)
+                    close_prices = await calc._get_close_prices(day_start, day_end, sym)
+                    close_prz = close_prices.get(sym, Decimal("0"))
+                    
+                    # 计算未实现盈亏（用收盘持仓 + 最后成交价）
+                    unrealized_pnl = Decimal("0")
+                    if close_prz > 0:
+                        close_left_long_qty = metrics.get("close_left_long_qty", Decimal("0"))
+                        close_left_short_qty = metrics.get("close_left_short_qty", Decimal("0"))
+                        avg_buy_prz = metrics.get("avg_buy_prz", Decimal("0"))
+                        avg_sell_prz = metrics.get("avg_sell_prz", Decimal("0"))
+                        unrealized_pnl = (
+                            close_left_long_qty * (close_prz - avg_buy_prz) +
+                            close_left_short_qty * (avg_sell_prz - close_prz)
+                        )
+                    
+                    # 构造要插入/更新的记录
+                    daily_realized_pnl = metrics.get("daily_realized_pnl", Decimal("0"))
+                    cumulative_realized_pnl = metrics.get("cumulative_realized_pnl", Decimal("0"))
+                    daily_pnl = daily_realized_pnl + unrealized_pnl
+                    cumulative_pnl = cumulative_realized_pnl + unrealized_pnl
+                    
+                    # 使用 PostgreSQL 的 ON CONFLICT DO UPDATE 实现覆盖写入
+                    stmt = pg_insert(PositionMetrics).values(
+                        timestamp=midnight_timestamp,
+                        account_id=account_id,
+                        exchange=exchange,
+                        symbol=sym,
+                        pre_long_qty=metrics.get("open_left_long_qty", Decimal("0")),
+                        pre_short_qty=metrics.get("open_left_short_qty", Decimal("0")),
+                        pre_long_value=metrics.get("open_left_long_value", Decimal("0")),
+                        pre_short_value=metrics.get("open_left_short_value", Decimal("0")),
+                        long_qty=metrics.get("total_long_qty", Decimal("0")),
+                        short_qty=metrics.get("total_short_qty", Decimal("0")),
+                        long_value=metrics.get("total_long_value", Decimal("0")),
+                        short_value=metrics.get("total_short_value", Decimal("0")),
+                        avg_buy_prz=metrics.get("avg_buy_prz", Decimal("0")),
+                        avg_sell_prz=metrics.get("avg_sell_prz", Decimal("0")),
+                        matched_qty=metrics.get("matched_qty", Decimal("0")),
+                        daily_realized_pnl=daily_realized_pnl,
+                        left_long_qty=metrics.get("close_left_long_qty", Decimal("0")),
+                        left_short_qty=metrics.get("close_left_short_qty", Decimal("0")),
+                        left_long_value=metrics.get("close_left_long_value", Decimal("0")),
+                        left_short_value=metrics.get("close_left_short_value", Decimal("0")),
+                        close_prz=close_prz,
+                        unrealized_pnl=unrealized_pnl,
+                        daily_pnl=daily_pnl,
+                        cumulative_pnl=cumulative_pnl,
+                        cumulative_realized_pnl=cumulative_realized_pnl,
+                        created_at=datetime.utcnow(),
+                    )
+                    
+                    # ON CONFLICT: 如果 (timestamp, account_id, exchange, symbol) 已存在，则更新所有字段
+                    # 使用 index_elements 指定唯一索引的列
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["timestamp", "account_id", "exchange", "symbol"],
+                        set_={
+                            "pre_long_qty": stmt.excluded.pre_long_qty,
+                            "pre_short_qty": stmt.excluded.pre_short_qty,
+                            "pre_long_value": stmt.excluded.pre_long_value,
+                            "pre_short_value": stmt.excluded.pre_short_value,
+                            "long_qty": stmt.excluded.long_qty,
+                            "short_qty": stmt.excluded.short_qty,
+                            "long_value": stmt.excluded.long_value,
+                            "short_value": stmt.excluded.short_value,
+                            "avg_buy_prz": stmt.excluded.avg_buy_prz,
+                            "avg_sell_prz": stmt.excluded.avg_sell_prz,
+                            "matched_qty": stmt.excluded.matched_qty,
+                            "daily_realized_pnl": stmt.excluded.daily_realized_pnl,
+                            "left_long_qty": stmt.excluded.left_long_qty,
+                            "left_short_qty": stmt.excluded.left_short_qty,
+                            "left_long_value": stmt.excluded.left_long_value,
+                            "left_short_value": stmt.excluded.left_short_value,
+                            "close_prz": stmt.excluded.close_prz,
+                            "unrealized_pnl": stmt.excluded.unrealized_pnl,
+                            "daily_pnl": stmt.excluded.daily_pnl,
+                            "cumulative_pnl": stmt.excluded.cumulative_pnl,
+                            "cumulative_realized_pnl": stmt.excluded.cumulative_realized_pnl,
+                            "created_at": stmt.excluded.created_at,
+                        }
+                    )
+                    
+                    await session.execute(stmt)
+            
+            await session.commit()
+            logger.info(
+                f"完成重建零点快照",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                date_range=f"{earliest_date} -> {latest_date}",
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"重建零点快照失败",
+                account_id=account_id,
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e),
+            )
+            await session.rollback()
+            raise
     
     async def _get_or_calculate_daily_initial_positions(
         self,
@@ -783,10 +1046,9 @@ class PositionMetricsScheduler:
         exchange: str,
         target_date: datetime.date,
     ) -> Dict[str, Dict[str, Decimal]]:
-        """获取或计算每日零点的初始持仓（带缓存机制）.
+        """获取每日零点的初始持仓（从 position_metrics 表读取）.
         
-        第一次运行时，计算从最早时间到目标日期零点的持仓并缓存。
-        之后每天换日时，只需要从缓存读取昨天的持仓即可。
+        如果缓存不存在，会调用 _rebuild_midnight_snapshots 重建所有零点快照。
         
         Args:
             session: 数据库会话
@@ -815,23 +1077,12 @@ class PositionMetricsScheduler:
                 .where(PositionMetrics.account_id == account_id)
                 .where(PositionMetrics.exchange == exchange)
                 .where(PositionMetrics.timestamp == target_start_time)
-                .limit(1)
             )
             cache_result = await session.execute(cache_query)
-            cache_row = cache_result.scalar_one_or_none()
+            cache_rows = cache_result.scalars().all()
             
-            if cache_row:
+            if cache_rows:
                 # 从缓存中读取所有 symbol 的持仓
-                all_cache_query = (
-                    select(PositionMetrics)
-                    .where(PositionMetrics.account_id == account_id)
-                    .where(PositionMetrics.exchange == exchange)
-                    .where(PositionMetrics.timestamp == target_start_time)
-                )
-                all_cache_result = await session.execute(all_cache_query)
-                cache_rows = all_cache_result.scalars().all()
-                
-                # 构建返回字典
                 cached_positions: Dict[str, Dict[str, Decimal]] = {}
                 for row in cache_rows:
                     cached_positions[row.symbol] = {
@@ -849,78 +1100,54 @@ class PositionMetricsScheduler:
                 )
                 return cached_positions
             
-            # 2. 缓存不存在，需要计算
+            # 2. 缓存不存在，重建所有零点快照
             logger.info(
-                f"缓存不存在，计算 {target_date} 零点的初始持仓",
+                f"缓存不存在，重建所有零点快照",
+                account_id=account_id,
+                exchange=exchange,
+                target_date=target_date,
+            )
+            
+            await self._rebuild_midnight_snapshots(
+                session=session,
+                calc=calc,
+                account_id=account_id,
+                exchange=exchange,
+                symbol=None,  # 重建所有 symbol
+            )
+            
+            # 3. 重建后再次读取
+            cache_result = await session.execute(cache_query)
+            cache_rows = cache_result.scalars().all()
+            
+            if cache_rows:
+                cached_positions: Dict[str, Dict[str, Decimal]] = {}
+                for row in cache_rows:
+                    cached_positions[row.symbol] = {
+                        "initial_long_qty": row.left_long_qty or Decimal("0"),
+                        "initial_short_qty": row.left_short_qty or Decimal("0"),
+                        "initial_long_value": row.left_long_value or Decimal("0"),
+                        "initial_short_value": row.left_short_value or Decimal("0"),
+                    }
+                return cached_positions
+            
+            # 如果重建后还是没有，返回空字典
+            logger.warning(
+                f"重建零点快照后仍未找到 {target_date} 的数据",
                 account_id=account_id,
                 exchange=exchange,
             )
-            
-            # 计算从最早时间到 target_start_time 的所有交易
-            calculated_positions = await self._get_prior_left_positions_from_trades(
-                calc=calc,
-                target_start_time=target_start_time,
-            )
-            
-            # 3. 将计算结果存储到缓存（插入到 PositionMetrics 表，timestamp 设置为目标日期零点）
-            # 注意：这里只存储 left_* 字段，其他字段可以设为 0
-            if calculated_positions:
-                from sqlalchemy import insert
-                
-                cache_records = []
-                for symbol, positions in calculated_positions.items():
-                    cache_records.append({
-                        "timestamp": target_start_time,
-                        "account_id": account_id,
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "pre_long_qty": Decimal("0"),
-                        "pre_short_qty": Decimal("0"),
-                        "pre_long_value": Decimal("0"),
-                        "pre_short_value": Decimal("0"),
-                        "long_qty": Decimal("0"),
-                        "short_qty": Decimal("0"),
-                        "long_value": Decimal("0"),
-                        "short_value": Decimal("0"),
-                        "avg_buy_prz": Decimal("0"),
-                        "avg_sell_prz": Decimal("0"),
-                        "matched_qty": Decimal("0"),
-                        "realized_pnl": Decimal("0"),
-                        "left_long_qty": positions["initial_long_qty"],
-                        "left_short_qty": positions["initial_short_qty"],
-                        "left_long_value": positions["initial_long_value"],
-                        "left_short_value": positions["initial_short_value"],
-                        "close_prz": Decimal("0"),
-                        "unrealized_pnl": Decimal("0"),
-                        "daily_pnl": Decimal("0"),
-                        "cumulative_pnl": Decimal("0"),
-                    })
-                
-                if cache_records:
-                    await session.execute(insert(PositionMetrics).values(cache_records))
-                    await session.commit()
-                    logger.info(
-                        f"已缓存 {target_date} 零点的初始持仓",
-                        account_id=account_id,
-                        exchange=exchange,
-                        symbol_count=len(cache_records),
-                    )
-            
-            return calculated_positions
+            return {}
             
         except Exception as e:
-            logger.warning(
-                f"获取或计算每日初始持仓失败",
+            logger.error(
+                f"获取每日初始持仓失败",
                 account_id=account_id,
                 exchange=exchange,
                 target_date=target_date,
                 error=str(e),
             )
-            # 如果出错，回退到直接计算
-            return await self._get_prior_left_positions_from_trades(
-                calc=calc,
-                target_start_time=target_start_time,
-            )
+            return {}
     
     async def _cache_daily_initial_positions(
         self,

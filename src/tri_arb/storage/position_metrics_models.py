@@ -52,7 +52,8 @@ class PositionMetrics(Base):
     
     # 3. 已实现 Pnl
     matched_qty = Column(Numeric(30, 10), nullable=False)  # 轧差数量
-    realized_pnl = Column(Numeric(30, 10), nullable=False)  # 当日已实现盈亏
+    daily_realized_pnl = Column(Numeric(30, 10), nullable=False)  # 当日已实现盈亏
+    cumulative_realized_pnl = Column(Numeric(30, 10), nullable=False)  # 累积已实现盈亏（从最早成交到当前时刻）
     
     # 4. 当日剩余仓位
     left_long_qty = Column(Numeric(30, 10), nullable=False)  # 多头剩余持仓
@@ -75,5 +76,7 @@ class PositionMetrics(Base):
         Index('idx_position_metrics_symbol', 'symbol'),
         Index('idx_position_metrics_account_symbol_time', 'account_id', 'symbol', 'timestamp'),
         Index('idx_position_metrics_exchange_symbol_time', 'exchange', 'symbol', 'timestamp'),
+        # 唯一约束：用于 ON CONFLICT DO UPDATE
+        Index('idx_position_metrics_unique', 'timestamp', 'account_id', 'exchange', 'symbol', unique=True),
     )
 

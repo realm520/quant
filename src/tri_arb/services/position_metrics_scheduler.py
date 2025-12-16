@@ -648,11 +648,17 @@ class PositionMetricsScheduler:
                                 
                                 # 在控制台输出详细指标（使用表格格式）
                                 logger.info(f"计算完成: {account_id} - {exchange_name} - {symbol_key}")
-                                # 创建一个修改后的 today_m，使用正确的今日新增已实现盈亏
+                                # 创建一个修改后的 today_m，使用正确的今日新增已实现盈亏和开盘初始仓位
                                 today_m_corrected = m.copy()
                                 today_m_corrected["realized_pnl"] = today_realized_pnl
                                 today_m_corrected["daily_pnl"] = today_realized_pnl + today_unrealized_pnl
                                 today_m_corrected["cumulative_realized_pnl"] = cumulative_realized_pnl_now  # 累计已实现盈亏
+                                if midnight_snapshot:
+                                    # 今日的初始仓位 = 今日零点快照的收盘仓位（昨日收盘）
+                                    today_m_corrected["initial_long_qty"] = midnight_snapshot.left_long_qty or Decimal("0")
+                                    today_m_corrected["initial_short_qty"] = midnight_snapshot.left_short_qty or Decimal("0")
+                                    today_m_corrected["initial_long_value"] = midnight_snapshot.left_long_value or Decimal("0")
+                                    today_m_corrected["initial_short_value"] = midnight_snapshot.left_short_value or Decimal("0")
                                 
                                 # 从今日零点快照构建昨日数据显示（用于日志）
                                 yesterday_m_for_display = {}
@@ -1181,19 +1187,22 @@ class PositionMetricsScheduler:
                 return "0.00"
             return f"{float(value):.{precision}f}"
         
-        # 获取计算过程中的中间变量
-        initial_long_qty = today_m.get("initial_long_qty", Decimal("0"))
-        initial_short_qty = today_m.get("initial_short_qty", Decimal("0"))
+        # 获取计算过程中的中间变量（部分字段在不同计算路径下可能不存在，这里做兼容处理）
         buy_volume = today_m.get("buy_volume", Decimal("0"))
         sell_volume = today_m.get("sell_volume", Decimal("0"))
         buy_trade_value = today_m.get("buy_trade_value", Decimal("0"))
         sell_trade_value = today_m.get("sell_trade_value", Decimal("0"))
-        initial_long_value = today_m.get("initial_long_value", Decimal("0"))
-        initial_short_value = today_m.get("initial_short_value", Decimal("0"))
         long_qty = today_m.get("long_qty", Decimal("0"))
         short_qty = today_m.get("short_qty", Decimal("0"))
         long_value = today_m.get("long_value", Decimal("0"))
         short_value = today_m.get("short_value", Decimal("0"))
+
+        # initial_* 在部分调用路径中不会显式下发，这里用反推方式补全，确保日志中的等式成立
+        initial_long_qty = today_m.get("initial_long_qty", long_qty - buy_volume)
+        initial_short_qty = today_m.get("initial_short_qty", short_qty - sell_volume)
+        initial_long_value = today_m.get("initial_long_value", long_value - buy_trade_value)
+        initial_short_value = today_m.get("initial_short_value", short_value - sell_trade_value)
+
         avg_buy_prz = today_m.get("avg_buy_prz", Decimal("0"))
         avg_sell_prz = today_m.get("avg_sell_prz", Decimal("0"))
         matched_qty = today_m.get("matched_qty", Decimal("0"))

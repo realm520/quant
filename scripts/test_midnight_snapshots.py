@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""测试零点快照功能
+"""测试零点快照功能（只计算，不写入数据库）
 
 用途：
-    - 重建指定账号/交易所/日期的零点快照
-    - 从 position_metrics 表查询并显示零点快照结果
+    - 使用 PositionCalculator 的日度逻辑计算零点快照
+    - 直接显示计算结果，不写入数据库
     - 用于验证零点快照的计算是否正确
 """
 
@@ -25,8 +25,6 @@ from typing import Optional, Dict, List, Any
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.services.contract_multiplier_service import ContractMultiplierService
-from tri_arb.services.position_metrics_scheduler import PositionMetricsScheduler
-from tri_arb.storage.position_metrics_models import PositionMetrics
 
 # 数据库地址
 DATABASE_URL = "postgresql+asyncpg://oliver:oliver%230987654321@quant-infra-pg-cluster.cluster-cjhorql2nmcs.ap-southeast-1.rds.amazonaws.com:5432/trading"
@@ -62,11 +60,6 @@ async def main() -> None:
         required=False,
         help="结束日期（包含），格式 YYYY-MM-DD；不填则默认昨天",
     )
-    parser.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="是否先重建零点快照（默认：只查询，不重建）",
-    )
 
     args = parser.parse_args()
 
@@ -82,6 +75,32 @@ async def main() -> None:
     scheduler = PositionMetricsScheduler(db_manager=db_manager)
 
     async with db_manager.session() as session:
+        # 先检查表结构是否存在新列
+        from sqlalchemy import text
+        check_query = text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'position_metrics'
+        """)
+        result = await session.execute(check_query)
+        columns = [row[0] for row in result.fetchall()]
+        
+        required_columns = ["open_left_long_qty", "daily_sum_buy_qty", "long_qty", "left_long_qty"]
+        missing_columns = [col for col in required_columns if col not in columns]
+        
+        if missing_columns:
+            console.print(
+                f"[red]错误：数据库表 position_metrics 缺少以下列：{', '.join(missing_columns)}[/red]"
+            )
+            console.print(
+                "[yellow]请先执行 scripts/rebuild_position_metrics_table.sql 重建表结构[/yellow]"
+            )
+            console.print(
+                "[cyan]执行方式：在数据库客户端中运行 scripts/rebuild_position_metrics_table.sql[/cyan]"
+            )
+            await db_manager.close()
+            return
+
         # 合约乘数服务
         contract_multiplier_service = ContractMultiplierService()
 
@@ -113,16 +132,14 @@ async def main() -> None:
             f"symbol={args.symbol or 'ALL'}[/cyan]\n"
         )
 
+        # 构建查询：只查询零点快照（小时、分钟、秒都是 0）
         query = (
             select(PositionMetrics)
             .where(PositionMetrics.account_id == args.account_id)
             .where(PositionMetrics.exchange == args.exchange)
-            .where(
-                # 只查询零点快照：小时、分钟、秒都是 0
-                func.extract("hour", PositionMetrics.timestamp) == 0,
-                func.extract("minute", PositionMetrics.timestamp) == 0,
-                func.extract("second", PositionMetrics.timestamp) == 0,
-            )
+            .where(func.extract("hour", PositionMetrics.timestamp) == 0)
+            .where(func.extract("minute", PositionMetrics.timestamp) == 0)
+            .where(func.extract("second", PositionMetrics.timestamp) == 0)
             .order_by(PositionMetrics.timestamp, PositionMetrics.symbol)
         )
 

@@ -1119,6 +1119,8 @@ class PositionCalculator:
                 "cumulative_sell_value": Decimal("0"),
                 "cumulative_realized_pnl": Decimal("0"),
                 "prev_matched_qty": Decimal("0"),
+                "prev_avg_buy_prz": Decimal("0"),  # 前一日收盘时的平均买价
+                "prev_avg_sell_prz": Decimal("0"),  # 前一日收盘时的平均卖价
             }
             for sym in all_symbols
         }
@@ -1144,26 +1146,18 @@ class PositionCalculator:
                 cum["cumulative_buy_value"] += sym_stats["buy_trade_value"]
                 cum["cumulative_sell_value"] += sym_stats["sell_trade_value"]
                 
-                # 前一日累计值（用于计算开盘持仓）
+                # 前一日累计值（用于计算开盘持仓数量）
                 prev_cum_buy_vol = cum["cumulative_buy_volume"] - sym_stats["buy_volume"]
                 prev_cum_sell_vol = cum["cumulative_sell_volume"] - sym_stats["sell_volume"]
-                prev_cum_buy_val = cum["cumulative_buy_value"] - sym_stats["buy_trade_value"]
-                prev_cum_sell_val = cum["cumulative_sell_value"] - sym_stats["sell_trade_value"]
-                
-                # 前一日平均价和轧差
-                prev_avg_buy_prz = (
-                    prev_cum_buy_val / prev_cum_buy_vol
-                    if prev_cum_buy_vol > 0 else Decimal("0")
-                )
-                prev_avg_sell_prz = (
-                    prev_cum_sell_val / prev_cum_sell_vol
-                    if prev_cum_sell_vol > 0 else Decimal("0")
-                )
                 prev_matched_qty = min(prev_cum_buy_vol, prev_cum_sell_vol)
                 
-                # 今日开盘持仓（= 昨日收盘持仓）
+                # 今日开盘持仓数量（= 昨日收盘持仓数量）
                 open_left_long_qty = prev_cum_buy_vol - prev_matched_qty
                 open_left_short_qty = prev_cum_sell_vol - prev_matched_qty
+                
+                # 使用前一日收盘时的平均价格计算开盘持仓市值（而不是累计平均价格）
+                prev_avg_buy_prz = cum["prev_avg_buy_prz"]  # 前一日收盘时的平均买价
+                prev_avg_sell_prz = cum["prev_avg_sell_prz"]  # 前一日收盘时的平均卖价
                 open_left_long_value = open_left_long_qty * prev_avg_buy_prz if prev_avg_buy_prz > 0 else Decimal("0")
                 open_left_short_value = open_left_short_qty * prev_avg_sell_prz if prev_avg_sell_prz > 0 else Decimal("0")
                 
@@ -1210,6 +1204,9 @@ class PositionCalculator:
                 # 更新累积已实现盈亏
                 cum["cumulative_realized_pnl"] += daily_realized_pnl
                 cum["prev_matched_qty"] = matched_qty
+                # 保存当日的平均价格，供下一日计算开盘持仓市值使用
+                cum["prev_avg_buy_prz"] = avg_buy_prz
+                cum["prev_avg_sell_prz"] = avg_sell_prz
                 
                 # 今日收盘持仓
                 left_long_qty = total_long_qty - matched_qty

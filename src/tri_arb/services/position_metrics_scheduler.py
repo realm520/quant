@@ -560,13 +560,18 @@ class PositionMetricsScheduler:
                                     exchange=exchange_name,
                                     symbol=symbol_key,
                                     
-                                    # 1. 昨收持仓（使用昨日剩余持仓）
-                                    pre_long_qty=yesterday_m.get("left_long_qty", Decimal("0")),
-                                    pre_short_qty=yesterday_m.get("left_short_qty", Decimal("0")),
-                                    pre_long_value=yesterday_m.get("left_long_value", Decimal("0")),
-                                    pre_short_value=yesterday_m.get("left_short_value", Decimal("0")),
+                                    # 1. 开盘持仓（使用昨日收盘持仓）
+                                    open_left_long_qty=yesterday_m.get("left_long_qty", Decimal("0")),
+                                    open_left_short_qty=yesterday_m.get("left_short_qty", Decimal("0")),
+                                    open_left_long_value=yesterday_m.get("left_long_value", Decimal("0")),
+                                    open_left_short_value=yesterday_m.get("left_short_value", Decimal("0")),
                                     
-                                    # 2. 今日交易
+                                    # 2. 当日成交量
+                                    daily_sum_buy_qty=m.get("buy_volume", Decimal("0")),
+                                    daily_sum_sell_qty=m.get("sell_volume", Decimal("0")),
+                                    daily_sum_buy_value=m.get("buy_trade_value", Decimal("0")),
+                                    daily_sum_sell_value=m.get("sell_trade_value", Decimal("0")),
+                                    # 3. 总持仓（初始持仓 + 当日成交量）
                                     long_qty=m.get("long_qty", Decimal("0")),
                                     short_qty=m.get("short_qty", Decimal("0")),
                                     long_value=m.get("long_value", Decimal("0")),
@@ -574,24 +579,22 @@ class PositionMetricsScheduler:
                                     avg_buy_prz=m.get("avg_buy_prz", Decimal("0")),
                                     avg_sell_prz=m.get("avg_sell_prz", Decimal("0")),
                                     
-                                    # 3. 已实现 Pnl
+                                    # 4. 轧差和已实现盈亏
                                     matched_qty=m.get("matched_qty", Decimal("0")),
-                                    # 使用今日新增的已实现盈亏（而不是包含初始持仓的已实现盈亏）
                                     daily_realized_pnl=today_realized_pnl,
+                                    cumulative_realized_pnl=cumulative_realized_pnl_now,
                                     
-                                    # 4. 当日剩余仓位
+                                    # 5. 收盘持仓（当日剩余仓位）
                                     left_long_qty=m.get("left_long_qty", Decimal("0")),
                                     left_short_qty=m.get("left_short_qty", Decimal("0")),
                                     left_long_value=m.get("left_long_value", Decimal("0")),
                                     left_short_value=m.get("left_short_value", Decimal("0")),
                                     close_prz=m.get("close_prz", Decimal("0")),
-                                    unrealized_pnl=today_unrealized_pnl,  # 使用从成交记录计算的累积未实现盈亏
+                                    unrealized_pnl=today_unrealized_pnl,
                                     
-                                    # 5. Pnl 汇总
-                                    # 单日 PnL = 今日新增的已实现盈亏 + 今日未实现盈亏
+                                    # 6. PnL 汇总
                                     daily_pnl=today_realized_pnl + today_unrealized_pnl,
                                     cumulative_pnl=cumulative_pnl,
-                                    cumulative_realized_pnl=cumulative_realized_pnl_now,
                                 )
                                 
                                 session.add(metrics_record)
@@ -941,13 +944,13 @@ class PositionMetricsScheduler:
                     # 计算未实现盈亏（用收盘持仓 + 最后成交价）
                     unrealized_pnl = Decimal("0")
                     if close_prz > 0:
-                        close_left_long_qty = metrics.get("close_left_long_qty", Decimal("0"))
-                        close_left_short_qty = metrics.get("close_left_short_qty", Decimal("0"))
+                        left_long_qty = metrics.get("close_left_long_qty", Decimal("0"))
+                        left_short_qty = metrics.get("close_left_short_qty", Decimal("0"))
                         avg_buy_prz = metrics.get("avg_buy_prz", Decimal("0"))
                         avg_sell_prz = metrics.get("avg_sell_prz", Decimal("0"))
                         unrealized_pnl = (
-                            close_left_long_qty * (close_prz - avg_buy_prz) +
-                            close_left_short_qty * (avg_sell_prz - close_prz)
+                            left_long_qty * (close_prz - avg_buy_prz) +
+                            left_short_qty * (avg_sell_prz - close_prz)
                         )
                     
                     # 构造要插入/更新的记录
@@ -962,27 +965,39 @@ class PositionMetricsScheduler:
                         account_id=account_id,
                         exchange=exchange,
                         symbol=sym,
-                        pre_long_qty=metrics.get("open_left_long_qty", Decimal("0")),
-                        pre_short_qty=metrics.get("open_left_short_qty", Decimal("0")),
-                        pre_long_value=metrics.get("open_left_long_value", Decimal("0")),
-                        pre_short_value=metrics.get("open_left_short_value", Decimal("0")),
+                        # 1. 开盘持仓（昨收持仓）
+                        open_left_long_qty=metrics.get("open_left_long_qty", Decimal("0")),
+                        open_left_short_qty=metrics.get("open_left_short_qty", Decimal("0")),
+                        open_left_long_value=metrics.get("open_left_long_value", Decimal("0")),
+                        open_left_short_value=metrics.get("open_left_short_value", Decimal("0")),
+                        # 2. 当日成交量
+                        daily_sum_buy_qty=metrics.get("daily_buy_volume", Decimal("0")),
+                        daily_sum_sell_qty=metrics.get("daily_sell_volume", Decimal("0")),
+                        daily_sum_buy_value=metrics.get("daily_buy_value", Decimal("0")),
+                        daily_sum_sell_value=metrics.get("daily_sell_value", Decimal("0")),
+                        # 3. 总持仓（初始持仓 + 当日成交量）
                         long_qty=metrics.get("total_long_qty", Decimal("0")),
                         short_qty=metrics.get("total_short_qty", Decimal("0")),
                         long_value=metrics.get("total_long_value", Decimal("0")),
                         short_value=metrics.get("total_short_value", Decimal("0")),
+                        # 4. 平均价格
                         avg_buy_prz=metrics.get("avg_buy_prz", Decimal("0")),
                         avg_sell_prz=metrics.get("avg_sell_prz", Decimal("0")),
+                        # 5. 轧差和已实现盈亏
                         matched_qty=metrics.get("matched_qty", Decimal("0")),
                         daily_realized_pnl=daily_realized_pnl,
-                        left_long_qty=metrics.get("close_left_long_qty", Decimal("0")),
+                        cumulative_realized_pnl=cumulative_realized_pnl,
+                        # 6. 收盘持仓
+                        left_long_qty=metrics.get("close_left_long_qty", Decimal("0")),  # 从 calc_daily_realized_series 返回的 close_left_* key 获取
                         left_short_qty=metrics.get("close_left_short_qty", Decimal("0")),
                         left_long_value=metrics.get("close_left_long_value", Decimal("0")),
                         left_short_value=metrics.get("close_left_short_value", Decimal("0")),
+                        # 7. 收盘价和未实现盈亏
                         close_prz=close_prz,
                         unrealized_pnl=unrealized_pnl,
+                        # 8. PnL 汇总
                         daily_pnl=daily_pnl,
                         cumulative_pnl=cumulative_pnl,
-                        cumulative_realized_pnl=cumulative_realized_pnl,
                         created_at=datetime.utcnow(),
                     )
                     
@@ -991,10 +1006,14 @@ class PositionMetricsScheduler:
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["timestamp", "account_id", "exchange", "symbol"],
                         set_={
-                            "pre_long_qty": stmt.excluded.pre_long_qty,
-                            "pre_short_qty": stmt.excluded.pre_short_qty,
-                            "pre_long_value": stmt.excluded.pre_long_value,
-                            "pre_short_value": stmt.excluded.pre_short_value,
+                            "open_left_long_qty": stmt.excluded.open_left_long_qty,
+                            "open_left_short_qty": stmt.excluded.open_left_short_qty,
+                            "open_left_long_value": stmt.excluded.open_left_long_value,
+                            "open_left_short_value": stmt.excluded.open_left_short_value,
+                            "daily_sum_buy_qty": stmt.excluded.daily_sum_buy_qty,
+                            "daily_sum_sell_qty": stmt.excluded.daily_sum_sell_qty,
+                            "daily_sum_buy_value": stmt.excluded.daily_sum_buy_value,
+                            "daily_sum_sell_value": stmt.excluded.daily_sum_sell_value,
                             "long_qty": stmt.excluded.long_qty,
                             "short_qty": stmt.excluded.short_qty,
                             "long_value": stmt.excluded.long_value,
@@ -1003,6 +1022,7 @@ class PositionMetricsScheduler:
                             "avg_sell_prz": stmt.excluded.avg_sell_prz,
                             "matched_qty": stmt.excluded.matched_qty,
                             "daily_realized_pnl": stmt.excluded.daily_realized_pnl,
+                            "cumulative_realized_pnl": stmt.excluded.cumulative_realized_pnl,
                             "left_long_qty": stmt.excluded.left_long_qty,
                             "left_short_qty": stmt.excluded.left_short_qty,
                             "left_long_value": stmt.excluded.left_long_value,
@@ -1011,7 +1031,6 @@ class PositionMetricsScheduler:
                             "unrealized_pnl": stmt.excluded.unrealized_pnl,
                             "daily_pnl": stmt.excluded.daily_pnl,
                             "cumulative_pnl": stmt.excluded.cumulative_pnl,
-                            "cumulative_realized_pnl": stmt.excluded.cumulative_realized_pnl,
                             "created_at": stmt.excluded.created_at,
                         }
                     )

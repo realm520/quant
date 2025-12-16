@@ -1167,45 +1167,55 @@ class PositionCalculator:
                 open_left_long_value = open_left_long_qty * prev_avg_buy_prz if prev_avg_buy_prz > 0 else Decimal("0")
                 open_left_short_value = open_left_short_qty * prev_avg_sell_prz if prev_avg_sell_prz > 0 else Decimal("0")
                 
-                # 今日累计（包含当日交易）
-                total_long_qty = cum["cumulative_buy_volume"]
-                total_short_qty = cum["cumulative_sell_volume"]
-                total_long_value = cum["cumulative_buy_value"]
-                total_short_value = cum["cumulative_sell_value"]
+                # 当日成交量和市值
+                daily_buy_volume = sym_stats["buy_volume"]
+                daily_sell_volume = sym_stats["sell_volume"]
+                daily_buy_value = sym_stats["buy_trade_value"]
+                daily_sell_value = sym_stats["sell_trade_value"]
                 
-                # 今日累计平均价
+                # 总持仓量 = 初始持仓 + 当日成交量
+                total_long_qty = open_left_long_qty + daily_buy_volume
+                total_short_qty = open_left_short_qty + daily_sell_volume
+                
+                # 总持仓市值 = 初始市值 + 当日成交市值
+                total_long_value = open_left_long_value + daily_buy_value
+                total_short_value = open_left_short_value + daily_sell_value
+                
+                # 平均买价 = 总多头市值 / 总多头持仓量
                 avg_buy_prz = (
                     total_long_value / total_long_qty
                     if total_long_qty > 0 else Decimal("0")
                 )
+                # 平均卖价 = 当日卖市值 / 当日卖量（不是累计平均）
                 avg_sell_prz = (
-                    total_short_value / total_short_qty
-                    if total_short_qty > 0 else Decimal("0")
+                    daily_sell_value / daily_sell_volume
+                    if daily_sell_volume > 0 else Decimal("0")
                 )
                 
-                # 今日累计轧差
+                # 轧差数量 = min(总多头持仓, 总空头持仓)
                 matched_qty = min(total_long_qty, total_short_qty)
                 
-                # 昨日累计轧差（用于计算今日新增）
+                # 昨日累计轧差（用于记录）
                 prev_matched_qty_calc = cum["prev_matched_qty"]
                 
-                # 今日新增轧差
+                # 今日新增轧差（用于记录，但计算已实现盈亏时用总轧差）
                 daily_matched_qty = matched_qty - prev_matched_qty_calc
                 
-                # 今日已实现盈亏
+                # 今日已实现盈亏 = (平均卖价 - 平均买价) * 总轧差数量
+                # 按照你的计算方式：用当天的 matched_qty（总轧差）来计算
                 daily_realized_pnl = Decimal("0")
-                if daily_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
-                    daily_realized_pnl = daily_matched_qty * (avg_sell_prz - avg_buy_prz)
+                if matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
+                    daily_realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
                 
                 # 更新累积已实现盈亏
                 cum["cumulative_realized_pnl"] += daily_realized_pnl
                 cum["prev_matched_qty"] = matched_qty
                 
                 # 今日收盘持仓
-                close_left_long_qty = total_long_qty - matched_qty
-                close_left_short_qty = total_short_qty - matched_qty
-                close_left_long_value = close_left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
-                close_left_short_value = close_left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+                left_long_qty = total_long_qty - matched_qty
+                left_short_qty = total_short_qty - matched_qty
+                left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+                left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
                 
                 result[trade_date][symbol] = {
                     "open_left_long_qty": open_left_long_qty,
@@ -1226,10 +1236,10 @@ class PositionCalculator:
                     "daily_matched_qty": daily_matched_qty,
                     "daily_realized_pnl": daily_realized_pnl,
                     "cumulative_realized_pnl": cum["cumulative_realized_pnl"],
-                    "close_left_long_qty": close_left_long_qty,
-                    "close_left_short_qty": close_left_short_qty,
-                    "close_left_long_value": close_left_long_value,
-                    "close_left_short_value": close_left_short_value,
+                    "close_left_long_qty": left_long_qty,  # 返回时 key 保持 close_left_* 用于兼容，但值来自 left_*
+                    "close_left_short_qty": left_short_qty,
+                    "close_left_long_value": left_long_value,
+                    "close_left_short_value": left_short_value,
                 }
         
         return result

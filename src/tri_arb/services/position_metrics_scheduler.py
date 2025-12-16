@@ -398,22 +398,6 @@ class PositionMetricsScheduler:
                                 symbol=None,  # 所有 symbol
                             )
                             
-                            # 获取昨日开始时的初始持仓（从 position_metrics 表读取）
-                            initial_positions_yesterday = await self._get_or_calculate_daily_initial_positions(
-                                session=session,
-                                calc=calc,
-                                account_id=account_id,
-                                exchange=exchange_name,
-                                target_date=yesterday_start.date(),  # 昨天的日期
-                            )
-                            
-                            # 计算昨日数据（用于获取昨收持仓，用于显示）
-                            yesterday_metrics = await calc.calculate_yesterday_end_left_qty_value(
-                                start_time=yesterday_start,
-                                end_time=yesterday_end,
-                                initial_positions_dict=initial_positions_yesterday if initial_positions_yesterday else None,
-                            )
-                            
                             # 检查今天零点快照是否存在，如果不存在则计算并写入
                             today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
                             today_snapshot_query = (
@@ -428,14 +412,12 @@ class PositionMetricsScheduler:
                             
                             if not today_snapshot:
                                 # 今天零点快照不存在，需要计算并写入
-                                # 使用昨天收盘持仓 + 今天成交来计算今天零点快照
                                 logger.info(
                                     f"计算并写入今天零点快照",
                                     account_id=account_id,
                                     exchange=exchange_name,
                                 )
-                                # 这里可以调用 _rebuild_midnight_snapshots 只重建到今天，或者单独计算今天
-                                # 为了简化，我们直接调用一次重建（会覆盖所有，但确保今天有数据）
+                                # 重建所有零点快照（会覆盖所有，但确保今天有数据）
                                 await self._rebuild_midnight_snapshots(
                                     session=session,
                                     calc=calc,
@@ -443,27 +425,154 @@ class PositionMetricsScheduler:
                                     exchange=exchange_name,
                                     symbol=None,
                                 )
+                                # 重建后重新查询今日零点快照
+                                today_snapshot_result = await session.execute(today_snapshot_query)
+                                today_snapshot = today_snapshot_result.scalar_one_or_none()
                             
-                            # 构建今日初始持仓（从昨日剩余持仓获取）
-                            yesterday_left_qty_value_dict = {}
-                            for symbol_key, yesterday_m in yesterday_metrics.items():
-                                if symbol_key == "TOTAL":
-                                    continue
-                                yesterday_left_qty_value_dict[symbol_key] = {
-                                    # 作为今日初始持仓传入 PositionCalculator
-                                    "initial_long_qty": yesterday_m.get("left_long_qty", Decimal("0")),
-                                    "initial_short_qty": yesterday_m.get("left_short_qty", Decimal("0")),
-                                    "initial_long_value": yesterday_m.get("left_long_value", Decimal("0")),
-                                    "initial_short_value": yesterday_m.get("left_short_value", Decimal("0")),
-                                }
+                            # 从今日零点快照读取初始持仓（作为今日计算的起点）
+                            today_initial_positions_dict = {}
+                            if today_snapshot:
+                                # 如果只有一个 symbol 的快照，直接读取
+                                # 但通常会有多个 symbol，需要查询所有 symbol 的快照
+                                all_today_snapshots_query = (
+                                    select(PositionMetrics)
+                                    .where(PositionMetrics.account_id == account_id)
+                                    .where(PositionMetrics.exchange == exchange_name)
+                                    .where(PositionMetrics.timestamp == today_midnight)
+                                )
+                                all_snapshots_result = await session.execute(all_today_snapshots_query)
+                                all_snapshots = all_snapshots_result.scalars().all()
+                                
+                                for snapshot in all_snapshots:
+                                    today_initial_positions_dict[snapshot.symbol] = {
+                                        # 从今日零点快照读取收盘持仓，作为今日的初始持仓
+                                        "initial_long_qty": snapshot.left_long_qty or Decimal("0"),
+                                        "initial_short_qty": snapshot.left_short_qty or Decimal("0"),
+                                        "initial_long_value": snapshot.left_long_value or Decimal("0"),
+                                        "initial_short_value": snapshot.left_short_value or Decimal("0"),
+                                    }
+                                
+                                logger.debug(
+                                    f"从今日零点快照读取初始持仓",
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                    symbol_count=len(today_initial_positions_dict),
+                                )
+                            else:
+                                logger.warning(
+                                    f"今日零点快照不存在，使用空初始持仓",
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                )
                             
-                            # 计算今日数据（使用昨日剩余持仓作为初始持仓）
+                            # 计算今日数据（使用与零点快照相同的逻辑）
                             logger.debug(f"计算今日数据: {start_time} -> {end_time}")
-                            today_metrics = await calc.calculate_positions_by_symbol(
-                                start_time=start_time,
-                                end_time=end_time,
-                                initial_positions_dict=yesterday_left_qty_value_dict if yesterday_left_qty_value_dict else None,
+                            
+                            # 1. 获取今日的成交统计（使用与零点快照相同的方法，但只查询到当前时间）
+                            today_date = start_time.date()
+                            today_daily_stats = await calc.get_daily_trade_stats(
+                                start_date=today_date,
+                                end_date=today_date,
+                                symbol=None,  # 所有 symbol
+                                end_time=end_time,  # 只查询到当前时间，而不是到 24:00
                             )
+                            
+                            # 2. 如果今日有成交数据，使用 calc_daily_realized_series 的逻辑计算
+                            # 但需要从今日零点快照的状态初始化
+                            if today_daily_stats and today_date in today_daily_stats:
+                                # 获取今日零点快照的所有 symbol 数据，用于初始化累计值
+                                all_today_snapshots_query = (
+                                    select(PositionMetrics)
+                                    .where(PositionMetrics.account_id == account_id)
+                                    .where(PositionMetrics.exchange == exchange_name)
+                                    .where(PositionMetrics.timestamp == today_midnight)
+                                )
+                                all_snapshots_result = await session.execute(all_today_snapshots_query)
+                                all_snapshots = all_snapshots_result.scalars().all()
+                                
+                                # 构建初始累计值（从今日零点快照读取）
+                                initial_cumulative = {}
+                                for snapshot in all_snapshots:
+                                    # 从零点快照反推累计值
+                                    # 零点快照的 matched_qty 就是昨日收盘时的轧差
+                                    # 零点快照的 left_* 就是昨日收盘持仓
+                                    midnight_matched_qty = snapshot.matched_qty or Decimal("0")
+                                    midnight_left_long_qty = snapshot.left_long_qty or Decimal("0")
+                                    midnight_left_short_qty = snapshot.left_short_qty or Decimal("0")
+                                    
+                                    # 反推累计买入量和卖出量
+                                    # left_long_qty = cumulative_buy_vol - matched_qty
+                                    # left_short_qty = cumulative_sell_vol - matched_qty
+                                    cumulative_buy_vol = midnight_left_long_qty + midnight_matched_qty
+                                    cumulative_sell_vol = midnight_left_short_qty + midnight_matched_qty
+                                    
+                                    # 从零点快照读取累计市值和平均价格
+                                    midnight_long_value = snapshot.long_value or Decimal("0")
+                                    midnight_short_value = snapshot.short_value or Decimal("0")
+                                    midnight_avg_buy_prz = snapshot.avg_buy_prz or Decimal("0")
+                                    midnight_avg_sell_prz = snapshot.avg_sell_prz or Decimal("0")
+                                    
+                                    initial_cumulative[snapshot.symbol] = {
+                                        "cumulative_buy_volume": cumulative_buy_vol,
+                                        "cumulative_sell_volume": cumulative_sell_vol,
+                                        "cumulative_buy_value": midnight_long_value,
+                                        "cumulative_sell_value": midnight_short_value,
+                                        "cumulative_realized_pnl": snapshot.cumulative_realized_pnl or Decimal("0"),
+                                        "prev_matched_qty": midnight_matched_qty,
+                                        "prev_avg_buy_prz": midnight_avg_buy_prz,
+                                        "prev_avg_sell_prz": midnight_avg_sell_prz,
+                                    }
+                                
+                                # 使用 calc_daily_realized_series 的逻辑，但从初始累计值开始
+                                today_series_result = calc._calc_daily_realized_series_with_initial(
+                                    daily_stats={today_date: today_daily_stats.get(today_date, {})},
+                                    initial_cumulative=initial_cumulative,
+                                )
+                                
+                                # 转换为与 calculate_positions_by_symbol 相同的格式
+                                today_metrics = {}
+                                if today_date in today_series_result:
+                                    for symbol, metrics in today_series_result[today_date].items():
+                                        # 获取收盘价
+                                        close_prices = await calc._get_close_prices(start_time, end_time, symbol)
+                                        close_prz = close_prices.get(symbol, Decimal("0"))
+                                        
+                                        # 计算未实现盈亏
+                                        left_long_qty = metrics.get("close_left_long_qty", Decimal("0"))
+                                        left_short_qty = metrics.get("close_left_short_qty", Decimal("0"))
+                                        avg_buy_prz = metrics.get("avg_buy_prz", Decimal("0"))
+                                        avg_sell_prz = metrics.get("avg_sell_prz", Decimal("0"))
+                                        unrealized_pnl = Decimal("0")
+                                        if close_prz > 0:
+                                            unrealized_pnl = (
+                                                left_long_qty * (close_prz - avg_buy_prz) +
+                                                left_short_qty * (avg_sell_prz - close_prz)
+                                            )
+                                        
+                                        today_metrics[symbol] = {
+                                            "buy_volume": metrics.get("daily_buy_volume", Decimal("0")),
+                                            "sell_volume": metrics.get("daily_sell_volume", Decimal("0")),
+                                            "buy_trade_value": metrics.get("daily_buy_value", Decimal("0")),
+                                            "sell_trade_value": metrics.get("daily_sell_value", Decimal("0")),
+                                            "long_qty": metrics.get("total_long_qty", Decimal("0")),
+                                            "short_qty": metrics.get("total_short_qty", Decimal("0")),
+                                            "long_value": metrics.get("total_long_value", Decimal("0")),
+                                            "short_value": metrics.get("total_short_value", Decimal("0")),
+                                            "avg_buy_prz": avg_buy_prz,
+                                            "avg_sell_prz": avg_sell_prz,
+                                            "matched_qty": metrics.get("matched_qty", Decimal("0")),
+                                            "left_long_qty": left_long_qty,
+                                            "left_short_qty": left_short_qty,
+                                            "left_long_value": metrics.get("close_left_long_value", Decimal("0")),
+                                            "left_short_value": metrics.get("close_left_short_value", Decimal("0")),
+                                            "close_prz": close_prz,
+                                            "unrealized_pnl": unrealized_pnl,
+                                            "daily_realized_pnl": metrics.get("daily_realized_pnl", Decimal("0")),
+                                            "cumulative_realized_pnl": metrics.get("cumulative_realized_pnl", Decimal("0")),
+                                        }
+                            else:
+                                # 如果今日没有成交数据，使用空结果
+                                today_metrics = {}
                             
                             symbol_count = len([k for k in today_metrics.keys() if k != "TOTAL"])
                             logger.info(f"账号 {account_id} 找到 {symbol_count} 个交易对")
@@ -477,8 +586,32 @@ class PositionMetricsScheduler:
                                 if symbol_key == "TOTAL":
                                     continue
                                 
-                                # 获取昨日数据
-                                yesterday_m = yesterday_metrics.get(symbol_key, {})
+                                # 从今日零点快照读取昨日收盘时的数据（作为计算基准和显示）
+                                today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
+                                midnight_snapshot_query = (
+                                    select(PositionMetrics)
+                                    .where(PositionMetrics.account_id == account_id)
+                                    .where(PositionMetrics.exchange == exchange_name)
+                                    .where(PositionMetrics.symbol == symbol_key)
+                                    .where(PositionMetrics.timestamp == today_midnight)
+                                    .limit(1)
+                                )
+                                midnight_result = await session.execute(midnight_snapshot_query)
+                                midnight_snapshot = midnight_result.scalar_one_or_none()
+                                
+                                # 从今日零点快照读取昨日收盘时的轧差和累计已实现盈亏
+                                midnight_matched_qty = Decimal("0")
+                                cumulative_realized_pnl_at_midnight = Decimal("0")
+                                if midnight_snapshot:
+                                    midnight_matched_qty = midnight_snapshot.matched_qty or Decimal("0")
+                                    cumulative_realized_pnl_at_midnight = midnight_snapshot.cumulative_realized_pnl or Decimal("0")
+                                else:
+                                    logger.warning(
+                                        f"今日零点快照不存在，使用 0 作为基准值",
+                                        account_id=account_id,
+                                        exchange=exchange_name,
+                                        symbol=symbol_key,
+                                    )
                                 
                                 # 使用 PositionCalculator 计算的未实现盈亏（基于平均价格和剩余持仓）
                                 # 计算逻辑：
@@ -497,10 +630,8 @@ class PositionMetricsScheduler:
                                 # 计算今日新增的已实现盈亏（仅今日新增的轧差对应的已实现盈亏）
                                 # 今日总轧差 = 包含初始持仓的轧差
                                 total_matched_qty = m.get("matched_qty", Decimal("0"))
-                                # 昨日收盘时的轧差（如果昨日有数据）
-                                yesterday_matched_qty = yesterday_m.get("matched_qty", Decimal("0"))
-                                # 今日新增的轧差数量 = 今日总轧差 - 昨日收盘时的轧差
-                                daily_new_matched_qty = total_matched_qty - yesterday_matched_qty
+                                # 今日新增的轧差数量 = 今日总轧差 - 今日零点快照的轧差（即昨日收盘时的轧差）
+                                daily_new_matched_qty = total_matched_qty - midnight_matched_qty
                                 
                                 # 计算今日新增的已实现盈亏
                                 avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
@@ -508,29 +639,6 @@ class PositionMetricsScheduler:
                                 today_realized_pnl = Decimal("0")
                                 if daily_new_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
                                     today_realized_pnl = daily_new_matched_qty * (avg_sell_prz - avg_buy_prz)
-                                
-                                # 从 position_metrics 表读取今天零点快照的 cumulative_realized_pnl
-                                today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
-                                midnight_snapshot_query = (
-                                    select(PositionMetrics.cumulative_realized_pnl)
-                                    .where(PositionMetrics.account_id == account_id)
-                                    .where(PositionMetrics.exchange == exchange_name)
-                                    .where(PositionMetrics.symbol == symbol_key)
-                                    .where(PositionMetrics.timestamp == today_midnight)
-                                    .limit(1)
-                                )
-                                midnight_result = await session.execute(midnight_snapshot_query)
-                                cumulative_realized_pnl_at_midnight = midnight_result.scalar()
-                                
-                                if cumulative_realized_pnl_at_midnight is None:
-                                    # 如果今天零点快照不存在，使用 0（理论上不应该发生，因为前面已经重建了）
-                                    logger.warning(
-                                        f"今天零点快照不存在，使用 0 作为累积已实现盈亏",
-                                        account_id=account_id,
-                                        exchange=exchange_name,
-                                        symbol=symbol_key,
-                                    )
-                                    cumulative_realized_pnl_at_midnight = Decimal("0")
                                 
                                 # 当前时刻的累积已实现盈亏 = 零点快照的累积已实现 + 今日新增的已实现
                                 cumulative_realized_pnl_now = cumulative_realized_pnl_at_midnight + today_realized_pnl
@@ -544,27 +652,44 @@ class PositionMetricsScheduler:
                                 today_m_corrected = m.copy()
                                 today_m_corrected["realized_pnl"] = today_realized_pnl
                                 today_m_corrected["daily_pnl"] = today_realized_pnl + today_unrealized_pnl
+                                
+                                # 从今日零点快照构建昨日数据显示（用于日志）
+                                yesterday_m_for_display = {}
+                                if midnight_snapshot:
+                                    yesterday_m_for_display = {
+                                        "left_long_qty": midnight_snapshot.left_long_qty or Decimal("0"),
+                                        "left_short_qty": midnight_snapshot.left_short_qty or Decimal("0"),
+                                        "left_long_value": midnight_snapshot.left_long_value or Decimal("0"),
+                                        "left_short_value": midnight_snapshot.left_short_value or Decimal("0"),
+                                    }
+                                
                                 self._log_metrics_table(
                                     account_id=account_id,
                                     exchange=exchange_name,
                                     symbol=symbol_key,
-                                    yesterday_m=yesterday_m,
+                                    yesterday_m=yesterday_m_for_display,
                                     today_m=today_m_corrected,
                                     cumulative_pnl=cumulative_pnl,
                                 )
                                 
                                 # 创建指标记录
+                                # 开盘持仓从今日零点快照读取（今日零点快照的 left_* 就是昨日收盘持仓，即今日开盘持仓）
+                                open_left_long_qty_from_snapshot = midnight_snapshot.left_long_qty if midnight_snapshot else Decimal("0")
+                                open_left_short_qty_from_snapshot = midnight_snapshot.left_short_qty if midnight_snapshot else Decimal("0")
+                                open_left_long_value_from_snapshot = midnight_snapshot.left_long_value if midnight_snapshot else Decimal("0")
+                                open_left_short_value_from_snapshot = midnight_snapshot.left_short_value if midnight_snapshot else Decimal("0")
+                                
                                 metrics_record = PositionMetrics(
                                     timestamp=end_time,
                                     account_id=account_id,
                                     exchange=exchange_name,
                                     symbol=symbol_key,
                                     
-                                    # 1. 开盘持仓（使用昨日收盘持仓）
-                                    open_left_long_qty=yesterday_m.get("left_long_qty", Decimal("0")),
-                                    open_left_short_qty=yesterday_m.get("left_short_qty", Decimal("0")),
-                                    open_left_long_value=yesterday_m.get("left_long_value", Decimal("0")),
-                                    open_left_short_value=yesterday_m.get("left_short_value", Decimal("0")),
+                                    # 1. 开盘持仓（从今日零点快照读取，即昨日收盘持仓）
+                                    open_left_long_qty=open_left_long_qty_from_snapshot,
+                                    open_left_short_qty=open_left_short_qty_from_snapshot,
+                                    open_left_long_value=open_left_long_value_from_snapshot,
+                                    open_left_short_value=open_left_short_value_from_snapshot,
                                     
                                     # 2. 当日成交量
                                     daily_sum_buy_qty=m.get("buy_volume", Decimal("0")),
@@ -606,10 +731,11 @@ class PositionMetricsScheduler:
                                     "symbol": symbol_key,
                                 }
                                 
-                                position_pre_long_qty.labels(**labels).set(float(yesterday_m.get("left_long_qty", Decimal("0"))))
-                                position_pre_short_qty.labels(**labels).set(float(yesterday_m.get("left_short_qty", Decimal("0"))))
-                                position_pre_long_value.labels(**labels).set(float(yesterday_m.get("left_long_value", Decimal("0"))))
-                                position_pre_short_value.labels(**labels).set(float(yesterday_m.get("left_short_value", Decimal("0"))))
+                                # 从今日零点快照读取昨日收盘持仓（用于 Prometheus metrics）
+                                position_pre_long_qty.labels(**labels).set(float(open_left_long_qty_from_snapshot))
+                                position_pre_short_qty.labels(**labels).set(float(open_left_short_qty_from_snapshot))
+                                position_pre_long_value.labels(**labels).set(float(open_left_long_value_from_snapshot))
+                                position_pre_short_value.labels(**labels).set(float(open_left_short_value_from_snapshot))
                                 
                                 position_long_qty.labels(**labels).set(float(m.get("long_qty", Decimal("0"))))
                                 position_short_qty.labels(**labels).set(float(m.get("short_qty", Decimal("0"))))

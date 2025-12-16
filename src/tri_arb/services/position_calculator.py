@@ -949,6 +949,7 @@ class PositionCalculator:
         start_date: date,
         end_date: date,
         symbol: Optional[str] = None,
+        end_time: Optional[datetime] = None,
     ) -> Dict[date, Dict[str, Decimal]]:
         """按日汇总成交数据（等价于 SQL 的 daily_trades CTE）.
         
@@ -956,6 +957,7 @@ class PositionCalculator:
             start_date: 起始日期（包含）
             end_date: 结束日期（包含）
             symbol: 交易对（可选），如果不指定则统计所有交易对
+            end_time: 结束时间（可选），如果不指定则使用 end_date 的 24:00
         
         Returns:
             {
@@ -1013,9 +1015,15 @@ class PositionCalculator:
                 ).label("sell_trade_value_base"),
             )
             .where(time_column >= datetime.combine(start_date, datetime.min.time()))
-            .where(time_column < datetime.combine(end_date, datetime.min.time()) + timedelta(days=1))
-            .group_by(cast(time_column, Date), self.TradeModel.symbol)
         )
+        
+        # 确定结束时间
+        if end_time is not None:
+            query = query.where(time_column < end_time)
+        else:
+            query = query.where(time_column < datetime.combine(end_date, datetime.min.time()) + timedelta(days=1))
+        
+        query = query.group_by(cast(time_column, Date), self.TradeModel.symbol)
         
         if self.exchange == "binance":
             query = query.where(self.TradeModel.exchange == "binance_perp")
@@ -1234,6 +1242,183 @@ class PositionCalculator:
                     "daily_realized_pnl": daily_realized_pnl,
                     "cumulative_realized_pnl": cum["cumulative_realized_pnl"],
                     "close_left_long_qty": left_long_qty,  # 返回时 key 保持 close_left_* 用于兼容，但值来自 left_*
+                    "close_left_short_qty": left_short_qty,
+                    "close_left_long_value": left_long_value,
+                    "close_left_short_value": left_short_value,
+                }
+        
+        return result
+    
+    def _calc_daily_realized_series_with_initial(
+        self,
+        daily_stats: Dict[date, Dict[str, Dict[str, Decimal]]],
+        initial_cumulative: Dict[str, Dict[str, Decimal]],
+    ) -> Dict[date, Dict[str, Dict[str, Decimal]]]:
+        """使用与 calc_daily_realized_series 相同的逻辑，但从指定的初始累计值开始计算.
+        
+        用于日内实时计算，从今日零点快照的状态开始计算今日的指标。
+        
+        Args:
+            daily_stats: 日度成交统计，格式与 calc_daily_realized_series 相同
+            initial_cumulative: 初始累计值，格式为 {
+                symbol: {
+                    "cumulative_buy_volume": Decimal,
+                    "cumulative_sell_volume": Decimal,
+                    "cumulative_buy_value": Decimal,
+                    "cumulative_sell_value": Decimal,
+                    "cumulative_realized_pnl": Decimal,
+                    "prev_matched_qty": Decimal,
+                    "prev_avg_buy_prz": Decimal,
+                    "prev_avg_sell_prz": Decimal,
+                }
+            }
+        
+        Returns:
+            与 calc_daily_realized_series 相同格式的结果
+        """
+        if not daily_stats:
+            return {}
+        
+        # 按日期排序
+        sorted_dates = sorted(daily_stats.keys())
+        if not sorted_dates:
+            return {}
+        
+        # 收集所有 symbol
+        all_symbols = set()
+        for day_stats in daily_stats.values():
+            all_symbols.update(day_stats.keys())
+        all_symbols.update(initial_cumulative.keys())
+        
+        result: Dict[date, Dict[str, Dict[str, Decimal]]] = {}
+        
+        # 为每个 symbol 初始化累计值（从初始累计值开始）
+        cumulative_by_symbol: Dict[str, Dict[str, Decimal]] = {}
+        for sym in all_symbols:
+            if sym in initial_cumulative:
+                # 使用传入的初始累计值
+                cumulative_by_symbol[sym] = initial_cumulative[sym].copy()
+            else:
+                # 如果没有初始值，使用 0
+                cumulative_by_symbol[sym] = {
+                    "cumulative_buy_volume": Decimal("0"),
+                    "cumulative_sell_volume": Decimal("0"),
+                    "cumulative_buy_value": Decimal("0"),
+                    "cumulative_sell_value": Decimal("0"),
+                    "cumulative_realized_pnl": Decimal("0"),
+                    "prev_matched_qty": Decimal("0"),
+                    "prev_avg_buy_prz": Decimal("0"),
+                    "prev_avg_sell_prz": Decimal("0"),
+                }
+        
+        # 逐日计算（使用与 calc_daily_realized_series 完全相同的逻辑）
+        for trade_date in sorted_dates:
+            day_data = daily_stats.get(trade_date, {})
+            result[trade_date] = {}
+            
+            for symbol in all_symbols:
+                sym_stats = day_data.get(symbol, {
+                    "buy_volume": Decimal("0"),
+                    "sell_volume": Decimal("0"),
+                    "buy_trade_value": Decimal("0"),
+                    "sell_trade_value": Decimal("0"),
+                })
+                
+                cum = cumulative_by_symbol[symbol]
+                
+                # 更新累计值
+                cum["cumulative_buy_volume"] += sym_stats["buy_volume"]
+                cum["cumulative_sell_volume"] += sym_stats["sell_volume"]
+                cum["cumulative_buy_value"] += sym_stats["buy_trade_value"]
+                cum["cumulative_sell_value"] += sym_stats["sell_trade_value"]
+                
+                # 前一日累计值（用于计算开盘持仓数量）
+                prev_cum_buy_vol = cum["cumulative_buy_volume"] - sym_stats["buy_volume"]
+                prev_cum_sell_vol = cum["cumulative_sell_volume"] - sym_stats["sell_volume"]
+                prev_matched_qty = min(prev_cum_buy_vol, prev_cum_sell_vol)
+                
+                # 今日开盘持仓数量（= 昨日收盘持仓数量）
+                open_left_long_qty = prev_cum_buy_vol - prev_matched_qty
+                open_left_short_qty = prev_cum_sell_vol - prev_matched_qty
+                
+                # 使用前一日收盘时的平均价格计算开盘持仓市值
+                prev_avg_buy_prz = cum["prev_avg_buy_prz"]
+                prev_avg_sell_prz = cum["prev_avg_sell_prz"]
+                open_left_long_value = open_left_long_qty * prev_avg_buy_prz if prev_avg_buy_prz > 0 else Decimal("0")
+                open_left_short_value = open_left_short_qty * prev_avg_sell_prz if prev_avg_sell_prz > 0 else Decimal("0")
+                
+                # 当日成交量和市值
+                daily_buy_volume = sym_stats["buy_volume"]
+                daily_sell_volume = sym_stats["sell_volume"]
+                daily_buy_value = sym_stats["buy_trade_value"]
+                daily_sell_value = sym_stats["sell_trade_value"]
+                
+                # 总持仓量 = 初始持仓 + 当日成交量
+                total_long_qty = open_left_long_qty + daily_buy_volume
+                total_short_qty = open_left_short_qty + daily_sell_volume
+                
+                # 总持仓市值 = 初始市值 + 当日成交市值
+                total_long_value = open_left_long_value + daily_buy_value
+                total_short_value = open_left_short_value + daily_sell_value
+                
+                # 平均买价 = 总多头市值 / 总多头持仓量
+                avg_buy_prz = (
+                    total_long_value / total_long_qty
+                    if total_long_qty > 0 else Decimal("0")
+                )
+                # 平均卖价 = 当日卖市值 / 当日卖量（不是累计平均）
+                avg_sell_prz = (
+                    daily_sell_value / daily_sell_volume
+                    if daily_sell_volume > 0 else Decimal("0")
+                )
+                
+                # 轧差数量 = min(总多头持仓, 总空头持仓)
+                matched_qty = min(total_long_qty, total_short_qty)
+                
+                # 昨日累计轧差（用于记录）
+                prev_matched_qty_calc = cum["prev_matched_qty"]
+                
+                # 今日新增轧差（用于记录，但计算已实现盈亏时用总轧差）
+                daily_matched_qty = matched_qty - prev_matched_qty_calc
+                
+                # 今日已实现盈亏 = (平均卖价 - 平均买价) * 总轧差数量
+                daily_realized_pnl = Decimal("0")
+                if matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
+                    daily_realized_pnl = matched_qty * (avg_sell_prz - avg_buy_prz)
+                
+                # 更新累积已实现盈亏
+                cum["cumulative_realized_pnl"] += daily_realized_pnl
+                cum["prev_matched_qty"] = matched_qty
+                # 保存当日的平均价格，供下一日计算开盘持仓市值使用
+                cum["prev_avg_buy_prz"] = avg_buy_prz
+                cum["prev_avg_sell_prz"] = avg_sell_prz
+                
+                # 今日收盘持仓
+                left_long_qty = total_long_qty - matched_qty
+                left_short_qty = total_short_qty - matched_qty
+                left_long_value = left_long_qty * avg_buy_prz if avg_buy_prz > 0 else Decimal("0")
+                left_short_value = left_short_qty * avg_sell_prz if avg_sell_prz > 0 else Decimal("0")
+                
+                result[trade_date][symbol] = {
+                    "open_left_long_qty": open_left_long_qty,
+                    "open_left_short_qty": open_left_short_qty,
+                    "open_left_long_value": open_left_long_value,
+                    "open_left_short_value": open_left_short_value,
+                    "daily_buy_volume": sym_stats["buy_volume"],
+                    "daily_sell_volume": sym_stats["sell_volume"],
+                    "daily_buy_value": sym_stats["buy_trade_value"],
+                    "daily_sell_value": sym_stats["sell_trade_value"],
+                    "total_long_qty": total_long_qty,
+                    "total_short_qty": total_short_qty,
+                    "total_long_value": total_long_value,
+                    "total_short_value": total_short_value,
+                    "avg_buy_prz": avg_buy_prz,
+                    "avg_sell_prz": avg_sell_prz,
+                    "matched_qty": matched_qty,
+                    "daily_matched_qty": daily_matched_qty,
+                    "daily_realized_pnl": daily_realized_pnl,
+                    "cumulative_realized_pnl": cum["cumulative_realized_pnl"],
+                    "close_left_long_qty": left_long_qty,
                     "close_left_short_qty": left_short_qty,
                     "close_left_long_value": left_long_value,
                     "close_left_short_value": left_short_value,

@@ -626,20 +626,7 @@ class PositionMetricsScheduler:
                                 # - left_short_qty = short_qty - matched_qty
                                 # - unrealized_pnl = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)
                                 today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
-                                
-                                # 计算今日新增的已实现盈亏（仅今日新增的轧差对应的已实现盈亏）
-                                # 今日总轧差 = 包含初始持仓的轧差
-                                total_matched_qty = m.get("matched_qty", Decimal("0"))
-                                # 今日新增的轧差数量 = 今日总轧差 - 今日零点快照的轧差（即昨日收盘时的轧差）
-                                daily_new_matched_qty = total_matched_qty - midnight_matched_qty
-                                
-                                # 计算今日新增的已实现盈亏
-                                avg_buy_prz = m.get("avg_buy_prz", Decimal("0"))
-                                avg_sell_prz = m.get("avg_sell_prz", Decimal("0"))
-                                today_realized_pnl = Decimal("0")
-                                if daily_new_matched_qty > 0 and avg_sell_prz > 0 and avg_buy_prz > 0:
-                                    today_realized_pnl = daily_new_matched_qty * (avg_sell_prz - avg_buy_prz)
-                                
+                                today_realized_pnl = m.get("daily_realized_pnl", Decimal("0"))
                                 # 当前时刻的累积已实现盈亏 = 零点快照的累积已实现 + 今日新增的已实现
                                 cumulative_realized_pnl_now = cumulative_realized_pnl_at_midnight + today_realized_pnl
                                 
@@ -673,14 +660,7 @@ class PositionMetricsScheduler:
                                         "cumulative_realized_pnl": cumulative_realized_pnl_at_midnight,  # 昨日累计已实现盈亏
                                     }
                                 
-                                self._log_metrics_table(
-                                    account_id=account_id,
-                                    exchange=exchange_name,
-                                    symbol=symbol_key,
-                                    yesterday_m=yesterday_m_for_display,
-                                    today_m=today_m_corrected,
-                                    cumulative_pnl=cumulative_pnl,
-                                )
+                                
                                 
                                 # 创建指标记录
                                 # 开盘持仓从今日零点快照读取（今日零点快照的 left_* 就是昨日收盘持仓，即今日开盘持仓）
@@ -731,7 +711,15 @@ class PositionMetricsScheduler:
                                     daily_pnl=today_realized_pnl + today_unrealized_pnl,
                                     cumulative_pnl=cumulative_pnl,
                                 )
-                                
+
+                                self._log_metrics_table(
+                                    account_id=account_id,
+                                    exchange=exchange_name,
+                                    symbol=symbol_key,
+                                    yesterday_m=yesterday_m_for_display,
+                                    today_m=today_m_corrected,
+                                    cumulative_pnl=cumulative_pnl,
+                                )
                                 session.add(metrics_record)
                                 
                                 # 更新 Prometheus metrics
@@ -1188,6 +1176,10 @@ class PositionMetricsScheduler:
             return f"{float(value):.{precision}f}"
         
         # 获取计算过程中的中间变量（部分字段在不同计算路径下可能不存在，这里做兼容处理）
+        initial_long_qty = today_m.get("initial_long_qty", Decimal("0"))
+        initial_short_qty = today_m.get("initial_short_qty", Decimal("0"))
+        initial_long_value = today_m.get("initial_long_value", Decimal("0"))
+        initial_short_value = today_m.get("initial_short_value", Decimal("0"))
         buy_volume = today_m.get("buy_volume", Decimal("0"))
         sell_volume = today_m.get("sell_volume", Decimal("0"))
         buy_trade_value = today_m.get("buy_trade_value", Decimal("0"))
@@ -1197,21 +1189,26 @@ class PositionMetricsScheduler:
         long_value = today_m.get("long_value", Decimal("0"))
         short_value = today_m.get("short_value", Decimal("0"))
 
-        # initial_* 在部分调用路径中不会显式下发，这里用反推方式补全，确保日志中的等式成立
-        initial_long_qty = today_m.get("initial_long_qty", long_qty - buy_volume)
-        initial_short_qty = today_m.get("initial_short_qty", short_qty - sell_volume)
-        initial_long_value = today_m.get("initial_long_value", long_value - buy_trade_value)
-        initial_short_value = today_m.get("initial_short_value", short_value - sell_trade_value)
-
         avg_buy_prz = today_m.get("avg_buy_prz", Decimal("0"))
         avg_sell_prz = today_m.get("avg_sell_prz", Decimal("0"))
         matched_qty = today_m.get("matched_qty", Decimal("0"))
+        daily_realized_pnl = today_m.get("daily_realized_pnl", Decimal("0"))
         realized_pnl = today_m.get("realized_pnl", Decimal("0"))
         left_long_qty = today_m.get("left_long_qty", Decimal("0"))
         left_short_qty = today_m.get("left_short_qty", Decimal("0"))
         close_prz = today_m.get("close_prz", Decimal("0"))
         unrealized_pnl = today_m.get("unrealized_pnl", Decimal("0"))
-        
+        daily_pnl = today_m.get("daily_pnl", daily_realized_pnl + unrealized_pnl)
+
+        # 昨日数据（来自零点快照）
+        yesterday_left_long_qty = yesterday_m.get("left_long_qty", Decimal("0"))
+        yesterday_left_short_qty = yesterday_m.get("left_short_qty", Decimal("0"))
+        yesterday_left_long_value = yesterday_m.get("left_long_value", Decimal("0"))
+        yesterday_left_short_value = yesterday_m.get("left_short_value", Decimal("0"))
+        yesterday_avg_buy_prz = yesterday_m.get("avg_buy_prz", Decimal("0"))
+        yesterday_avg_sell_prz = yesterday_m.get("avg_sell_prz", Decimal("0"))
+        yesterday_cumulative_realized_pnl = yesterday_m.get("cumulative_realized_pnl", Decimal("0"))
+
         table = Table(
             title=f"持仓指标计算结果 [{account_id} - {exchange} - {symbol}]",
             show_header=True,
@@ -1220,170 +1217,131 @@ class PositionMetricsScheduler:
         )
         table.add_column("指标", justify="left", style="cyan")
         table.add_column("数值", justify="right", style="green")
-        
+
         # 1. 昨收持仓
         table.add_row("[bold yellow]--- 1. 昨收持仓 ---[/bold yellow]", "")
-        yesterday_left_long_qty = yesterday_m.get("left_long_qty", Decimal("0"))
-        yesterday_left_short_qty = yesterday_m.get("left_short_qty", Decimal("0"))
-        yesterday_left_long_value = yesterday_m.get("left_long_value", Decimal("0"))
-        yesterday_left_short_value = yesterday_m.get("left_short_value", Decimal("0"))
-        yesterday_avg_buy_prz = yesterday_m.get("avg_buy_prz", Decimal("0"))
-        yesterday_avg_sell_prz = yesterday_m.get("avg_sell_prz", Decimal("0"))
-        yesterday_cumulative_realized_pnl = yesterday_m.get("cumulative_realized_pnl", Decimal("0"))
-        
         table.add_row("  昨日多头持仓量 (pre_long_qty)", _format_decimal(yesterday_left_long_qty, 2))
         table.add_row("  昨日空头持仓量 (pre_short_qty)", _format_decimal(yesterday_left_short_qty, 2))
-        if yesterday_avg_buy_prz > 0 and yesterday_left_long_qty > 0:
-            table.add_row(
-                f"  昨日多头市值 (pre_long_value) = pre_long_qty * 昨日avg_buy_prz",
-                f"{_format_decimal_no_comma(yesterday_left_long_qty, 2)} * {_format_decimal_no_comma(yesterday_avg_buy_prz, 8)} = {_format_decimal(yesterday_left_long_value, 4)}"
-            )
-        else:
-            table.add_row("  昨日多头市值 (pre_long_value)", _format_decimal(yesterday_left_long_value, 4))
-        if yesterday_avg_sell_prz > 0 and yesterday_left_short_qty > 0:
-            table.add_row(
-                f"  昨日空头市值 (pre_short_value) = pre_short_qty * 昨日avg_sell_prz",
-                f"{_format_decimal_no_comma(yesterday_left_short_qty, 2)} * {_format_decimal_no_comma(yesterday_avg_sell_prz, 8)} = {_format_decimal(yesterday_left_short_value, 4)}"
-            )
-        else:
-            table.add_row("  昨日空头市值 (pre_short_value)", _format_decimal(yesterday_left_short_value, 4))
+        table.add_row("  昨日多头市值 (pre_long_value)", _format_decimal(yesterday_left_long_value, 4))
+        table.add_row("  昨日空头市值 (pre_short_value)", _format_decimal(yesterday_left_short_value, 4))
         if yesterday_avg_buy_prz > 0:
             table.add_row("  昨日平均买价 (昨日avg_buy_prz)", _format_decimal(yesterday_avg_buy_prz, 8))
         if yesterday_avg_sell_prz > 0:
             table.add_row("  昨日平均卖价 (昨日avg_sell_prz)", _format_decimal(yesterday_avg_sell_prz, 8))
-        table.add_row("", "")  # 空行
-        
+        table.add_row("", "")
+
         # 2. 今日交易
         table.add_row("[bold yellow]--- 2. 今日交易 ---[/bold yellow]", "")
         table.add_row(
-            f"  多头交易量: long_qty = sum(buy_vol) + pre_long_qty",
-            f"{_format_decimal_no_comma(buy_volume, 2)} + {_format_decimal_no_comma(initial_long_qty, 2)} = {_format_decimal_no_comma(long_qty, 2)}"
+            "  买入成交量 (sum(buy_vol))",
+            _format_decimal(buy_volume, 2),
         )
         table.add_row(
-            f"  空头交易量: short_qty = sum(sell_vol) + pre_short_qty",
-            f"{_format_decimal_no_comma(sell_volume, 2)} + {_format_decimal_no_comma(initial_short_qty, 2)} = {_format_decimal_no_comma(short_qty, 2)}"
+            "  卖出成交量 (sum(sell_vol))",
+            _format_decimal(sell_volume, 2),
         )
-        # 显示初始持仓市值的计算方式（使用昨日的avg_buy_prz）
-        if yesterday_avg_buy_prz > 0 and initial_long_qty > 0:
-            calculated_initial_long_value = initial_long_qty * yesterday_avg_buy_prz
-            table.add_row(
-                f"  初始多头市值: pre_long_value = pre_long_qty * 昨日avg_buy_prz",
-                f"{_format_decimal_no_comma(initial_long_qty, 2)} * {_format_decimal_no_comma(yesterday_avg_buy_prz, 8)} = {_format_decimal_no_comma(calculated_initial_long_value, 4)}"
-            )
         table.add_row(
-            f"  多头市值: long_value = sum(buy_vol * buy_price) + pre_long_value",
-            f"{_format_decimal_no_comma(buy_trade_value, 4)} + {_format_decimal_no_comma(initial_long_value, 4)} = {_format_decimal_no_comma(long_value, 4)}"
+            "  初始多头持仓量 (initial_long_qty)",
+            _format_decimal(initial_long_qty, 2),
         )
-        # 显示初始空头市值的计算方式（使用昨日的avg_sell_prz）
-        if yesterday_avg_sell_prz > 0 and initial_short_qty > 0:
-            calculated_initial_short_value = initial_short_qty * yesterday_avg_sell_prz
-            table.add_row(
-                f"  初始空头市值: pre_short_value = pre_short_qty * 昨日avg_sell_prz",
-                f"{_format_decimal_no_comma(initial_short_qty, 2)} * {_format_decimal_no_comma(yesterday_avg_sell_prz, 8)} = {_format_decimal_no_comma(calculated_initial_short_value, 4)}"
-            )
         table.add_row(
-            f"  空头市值: short_value = sum(sell_vol * sell_price) + pre_short_value",
-            f"{_format_decimal_no_comma(sell_trade_value, 4)} + {_format_decimal_no_comma(initial_short_value, 4)} = {_format_decimal_no_comma(short_value, 4)}"
+            "  初始空头持仓量 (initial_short_qty)",
+            _format_decimal(initial_short_qty, 2),
         )
-        if long_qty > 0:
-            table.add_row(
-                f"  买入平均价格: avg_buy_prz = long_value / long_qty",
-                f"{_format_decimal_no_comma(long_value, 4)} / {_format_decimal_no_comma(long_qty, 2)} = {_format_decimal_no_comma(avg_buy_prz, 8)}"
-            )
-        else:
-            table.add_row("  买入平均价格 (avg_buy_prz)", _format_decimal(avg_buy_prz, 8))
-        if short_qty > 0:
-            table.add_row(
-                f"  卖出平均价格: avg_sell_prz = short_value / short_qty",
-                f"{_format_decimal_no_comma(short_value, 4)} / {_format_decimal_no_comma(short_qty, 2)} = {_format_decimal_no_comma(avg_sell_prz, 8)}"
-            )
-        else:
-            table.add_row("  卖出平均价格 (avg_sell_prz)", _format_decimal(avg_sell_prz, 8))
-        table.add_row("", "")  # 空行
-        
-        # 3. 已实现 Pnl
-        table.add_row("[bold yellow]--- 3. 已实现 Pnl ---[/bold yellow]", "")
         table.add_row(
-            f"  轧差数量: matched_qty = min(long_qty, short_qty)",
-            f"min({_format_decimal_no_comma(long_qty, 2)}, {_format_decimal_no_comma(short_qty, 2)}) = {_format_decimal_no_comma(matched_qty, 2)}"
+            "  多头总持仓量 long_qty = initial_long_qty + buy_volume",
+            f"{_format_decimal_no_comma(initial_long_qty, 2)} + {_format_decimal_no_comma(buy_volume, 2)} = {_format_decimal_no_comma(long_qty, 2)}",
         )
-        if matched_qty > 0:
+        table.add_row(
+            "  空头总持仓量 short_qty = initial_short_qty + sell_volume",
+            f"{_format_decimal_no_comma(initial_short_qty, 2)} + {_format_decimal_no_comma(sell_volume, 2)} = {_format_decimal_no_comma(short_qty, 2)}",
+        )
+        table.add_row(
+            "  买入成交市值 (sum(buy_vol * buy_price))",
+            _format_decimal(buy_trade_value, 4),
+        )
+        table.add_row(
+            "  卖出成交市值 (sum(sell_vol * sell_price))",
+            _format_decimal(sell_trade_value, 4),
+        )
+        table.add_row(
+            "  多头总市值 long_value",
+            _format_decimal(long_value, 4),
+        )
+        table.add_row(
+            "  空头总市值 short_value",
+            _format_decimal(short_value, 4),
+        )
+        table.add_row(
+            "  买入平均价格 avg_buy_prz = long_value / long_qty",
+            _format_decimal(avg_buy_prz, 8),
+        )
+        table.add_row(
+            "  卖出平均价格 avg_sell_prz = short_value / short_qty",
+            _format_decimal(avg_sell_prz, 8),
+        )
+        table.add_row("", "")
+
+        # 3. 已实现 PnL
+        table.add_row("[bold yellow]--- 3. 已实现 PnL ---[/bold yellow]", "")
+        table.add_row(
+            "  轧差数量 matched_qty = min(long_qty, short_qty)",
+            _format_decimal(matched_qty, 2),
+        )
+        table.add_row(
+            "  当日已实现盈亏 (daily_realized_pnl)",
+            _format_decimal(daily_realized_pnl, 4),
+        )
+        if matched_qty > 0 and avg_buy_prz > 0 and avg_sell_prz > 0:
             table.add_row(
-                f"  已实现盈亏: realized_pnl = (avg_sell_prz - avg_buy_prz) * matched_qty",
-                f"({_format_decimal_no_comma(avg_sell_prz, 8)} - {_format_decimal_no_comma(avg_buy_prz, 8)}) * {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(realized_pnl, 4)}"
+                "  公式: daily_realized_pnl = (avg_sell_prz - avg_buy_prz) * matched_qty",
+                f"({_format_decimal_no_comma(avg_sell_prz, 8)} - {_format_decimal_no_comma(avg_buy_prz, 8)}) * {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(daily_realized_pnl, 4)}",
             )
-        else:
-            table.add_row("  当日已实现盈亏 (realized_pnl)", _format_decimal(realized_pnl, 4))
-        table.add_row("", "")  # 空行
-        
+        table.add_row("", "")
+
         # 4. 当日剩余仓位
         table.add_row("[bold yellow]--- 4. 当日剩余仓位 ---[/bold yellow]", "")
         table.add_row(
-            f"  日内多头剩余持仓: left_long_qty = long_qty - matched_qty",
-            f"{_format_decimal_no_comma(long_qty, 2)} - {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(left_long_qty, 2)}"
+            "  日内多头剩余持仓 left_long_qty = long_qty - matched_qty",
+            f"{_format_decimal_no_comma(long_qty, 2)} - {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(left_long_qty, 2)}",
         )
         table.add_row(
-            f"  日内空头剩余持仓: left_short_qty = short_qty - matched_qty",
-            f"{_format_decimal_no_comma(short_qty, 2)} - {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(left_short_qty, 2)}"
+            "  日内空头剩余持仓 left_short_qty = short_qty - matched_qty",
+            f"{_format_decimal_no_comma(short_qty, 2)} - {_format_decimal_no_comma(matched_qty, 2)} = {_format_decimal_no_comma(left_short_qty, 2)}",
         )
-        left_long_value = today_m.get("left_long_value", Decimal("0"))
-        left_short_value = today_m.get("left_short_value", Decimal("0"))
-        if left_long_qty > 0 and avg_buy_prz > 0:
-            calculated_left_long_value = left_long_qty * avg_buy_prz
-            table.add_row(
-                f"  多头剩余市值: left_long_value = left_long_qty * avg_buy_prz",
-                f"{_format_decimal_no_comma(left_long_qty, 2)} * {_format_decimal_no_comma(avg_buy_prz, 8)} = {_format_decimal(left_long_value, 4)}"
-            )
-        else:
-            table.add_row("  多头剩余市值 (left_long_value)", _format_decimal(left_long_value, 4))
-        if left_short_qty > 0 and avg_sell_prz > 0:
-            calculated_left_short_value = left_short_qty * avg_sell_prz
-            table.add_row(
-                f"  空头剩余市值: left_short_value = left_short_qty * avg_sell_prz",
-                f"{_format_decimal_no_comma(left_short_qty, 2)} * {_format_decimal_no_comma(avg_sell_prz, 8)} = {_format_decimal(left_short_value, 4)}"
-            )
-        else:
-            table.add_row("  空头剩余市值 (left_short_value)", _format_decimal(left_short_value, 4))
-        table.add_row("  当日最后一笔成交价 (close_prz)", _format_decimal(close_prz, 8))
-        if close_prz > 0:
-            long_unrealized = left_long_qty * (close_prz - avg_buy_prz) if avg_buy_prz > 0 else Decimal("0")
-            short_unrealized = left_short_qty * (avg_sell_prz - close_prz) if avg_sell_prz > 0 else Decimal("0")
-            if left_long_qty > 0 or left_short_qty > 0:
-                table.add_row(
-                    f"  日内未实现盈亏: unrealized_pnl = left_long_qty * (close_prz - avg_buy_prz) + left_short_qty * (avg_sell_prz - close_prz)",
-                    f"{_format_decimal_no_comma(left_long_qty, 2)} * ({_format_decimal_no_comma(close_prz, 8)} - {_format_decimal_no_comma(avg_buy_prz, 8)}) + {_format_decimal_no_comma(left_short_qty, 2)} * ({_format_decimal_no_comma(avg_sell_prz, 8)} - {_format_decimal_no_comma(close_prz, 8)}) = {_format_decimal_no_comma(unrealized_pnl, 4)}"
-                )
-            else:
-                table.add_row("  累积未实现盈亏 (unrealized_pnl)", _format_decimal(unrealized_pnl, 4))
-        else:
-            table.add_row("  累积未实现盈亏 (unrealized_pnl)", _format_decimal(unrealized_pnl, 4))
-        table.add_row("", "")  # 空行
-        
-        # 5. Pnl 汇总
-        table.add_row("[bold yellow]--- 5. Pnl 汇总 ---[/bold yellow]", "")
-        # 单日 PnL = 今日新增的已实现盈亏 + 今日未实现盈亏
-        today_realized = today_m.get("realized_pnl", Decimal("0"))
-        today_unrealized = today_m.get("unrealized_pnl", Decimal("0"))
-        daily_pnl = today_realized + today_unrealized
-        table.add_row("  单日已实现盈亏 (realized_pnl)", _format_decimal(today_realized, 4))
-        table.add_row("  单日 PnL (今日新增已实现 + 今日未实现)", _format_decimal(daily_pnl, 4))
-        
-        # 累计已实现盈亏的计算过程
-        if yesterday_cumulative_realized_pnl != Decimal("0") or today_realized != Decimal("0"):
-            table.add_row(
-                f"  累计已实现盈亏: cumulative_realized_pnl = 昨日累计已实现 + 今日新增已实现",
-                f"{_format_decimal_no_comma(yesterday_cumulative_realized_pnl, 4)} + {_format_decimal_no_comma(today_realized, 4)} = {_format_decimal(today_m.get('cumulative_realized_pnl', cumulative_pnl - today_unrealized), 4)}"
-            )
-        else:
-            table.add_row("  累计已实现盈亏 (cumulative_realized_pnl)", _format_decimal(today_m.get("cumulative_realized_pnl", cumulative_pnl - today_unrealized), 4))
-        
-        # 累计盈亏的计算过程
-        cumulative_realized = today_m.get("cumulative_realized_pnl", cumulative_pnl - today_unrealized)
         table.add_row(
-            f"  累计盈亏: cumulative_pnl = 累计已实现盈亏 + 当日未实现盈亏",
-            f"{_format_decimal_no_comma(cumulative_realized, 4)} + {_format_decimal_no_comma(today_unrealized, 4)} = {_format_decimal(cumulative_pnl, 4)}"
+            "  多头剩余市值 (left_long_value)",
+            _format_decimal(today_m.get("left_long_value", Decimal("0")), 4),
         )
-        
+        table.add_row(
+            "  空头剩余市值 (left_short_value)",
+            _format_decimal(today_m.get("left_short_value", Decimal("0")), 4),
+        )
+        table.add_row(
+            "  当日最后一笔成交价 (close_prz)",
+            _format_decimal(close_prz, 8),
+        )
+        table.add_row(
+            "  日内未实现盈亏 (unrealized_pnl)",
+            _format_decimal(unrealized_pnl, 4),
+        )
+        table.add_row("", "")
+
+        # 5. PnL 汇总
+        table.add_row("[bold yellow]--- 5. PnL 汇总 ---[/bold yellow]", "")
+        table.add_row(
+            "  单日已实现盈亏 (realized_pnl)",
+            _format_decimal(realized_pnl, 4),
+        )
+        table.add_row(
+            "  单日 PnL = 当日已实现 + 当日未实现 (daily_pnl)",
+            _format_decimal(daily_pnl, 4),
+        )
+        table.add_row(
+            "  累计 PnL (cumulative_pnl)",
+            _format_decimal(cumulative_pnl, 4),
+        )
+
         # 输出表格到控制台（使用标准输出，确保在控制台可见）
         console.print()  # 空行分隔
         console.print(table)

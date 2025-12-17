@@ -243,7 +243,12 @@ def compare_with_xt_trade_update(
     symbol: str,
     account_id: str,
 ) -> None:
-    """将 API 返回的成交与 xt_trade_update 表进行对比，找出缺失的成交。"""
+    """将 API 返回的成交与 xt_trade_update 表进行对比，找出缺失的成交。
+
+    目前采用最宽松、最直接的对比方式：
+    - 仅按 trade_id 对比：API 的 `execId` 是否在 xt_trade_update.trade_id 中出现。
+    - 不再强制要求 account_id / symbol 匹配，避免因为映射差异导致“假缺失”。
+    """
 
     if not trades:
         print("API 未返回任何成交记录，无需对比。")
@@ -255,19 +260,14 @@ def compare_with_xt_trade_update(
     missing: List[Dict[str, Any]] = []
 
     with Session(engine) as session:
-        for item in trades:
+        for idx, item in enumerate(trades):
             exec_id = str(item.get("execId"))
-            api_symbol = item.get("symbol")
-            if not exec_id or not api_symbol:
+            if not exec_id:
                 continue
 
             exists = (
                 session.query(XTTradeUpdate)
-                .filter(
-                    XTTradeUpdate.trade_id == exec_id,
-                    XTTradeUpdate.account_id == account_id,
-                    XTTradeUpdate.symbol == api_symbol,
-                )
+                .filter(XTTradeUpdate.trade_id == exec_id)
                 .first()
             )
             if not exists:

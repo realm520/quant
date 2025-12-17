@@ -245,9 +245,14 @@ def compare_with_xt_trade_update(
 ) -> None:
     """将 API 返回的成交与 xt_trade_update 表进行对比，找出缺失的成交。
 
-    目前采用最宽松、最直接的对比方式：
-    - 仅按 trade_id 对比：API 的 `execId` 是否在 xt_trade_update.trade_id 中出现。
-    - 不再强制要求 account_id / symbol 匹配，避免因为映射差异导致“假缺失”。
+    xt_trade_update.trade_id 的格式是：`{order_id}_{timestamp}`，例如：
+    568975636608241600_1765356362850
+
+    因此这里用以下规则对齐：
+    - 对于每一条 API 成交，取：
+        db_trade_id = f\"{orderId}_{timestamp}\"
+      然后检查 xt_trade_update.trade_id 是否存在这条记录。
+    - 同时要求 account_id、symbol 匹配，避免跨账号/跨交易对误判。
     """
 
     if not trades:
@@ -261,13 +266,21 @@ def compare_with_xt_trade_update(
 
     with Session(engine) as session:
         for idx, item in enumerate(trades):
-            exec_id = str(item.get("execId"))
-            if not exec_id:
+            order_id = item.get("orderId")
+            ts = item.get("timestamp")
+            api_symbol = item.get("symbol")
+            if not order_id or ts is None or not api_symbol:
                 continue
+
+            db_trade_id = f"{order_id}_{ts}"
 
             exists = (
                 session.query(XTTradeUpdate)
-                .filter(XTTradeUpdate.trade_id == exec_id)
+                .filter(
+                    XTTradeUpdate.trade_id == db_trade_id,
+                    XTTradeUpdate.account_id == account_id,
+                    XTTradeUpdate.symbol == api_symbol,
+                )
                 .first()
             )
             if not exists:

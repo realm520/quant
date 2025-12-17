@@ -245,14 +245,10 @@ def compare_with_xt_trade_update(
 ) -> None:
     """将 API 返回的成交与 xt_trade_update 表进行对比，找出缺失的成交。
 
-    xt_trade_update.trade_id 的格式是：`{order_id}_{timestamp}`，例如：
-    568975636608241600_1765356362850
-
-    因此这里用以下规则对齐：
-    - 对于每一条 API 成交，取：
-        db_trade_id = f\"{orderId}_{timestamp}\"
-      然后检查 xt_trade_update.trade_id 是否存在这条记录。
-    - 同时要求 account_id、symbol 匹配，避免跨账号/跨交易对误判。
+    这里完全按照你说的，只检查 trade_id 能不能对上：
+    - 对于每条 API 成交，取 api_trade_id = str(execId)
+    - 去 xt_trade_update.trade_id 里查是否存在这条记录
+    - 不强制要求 account_id / symbol 匹配（但会在调试输出里带出来）
     """
 
     if not trades:
@@ -265,44 +261,33 @@ def compare_with_xt_trade_update(
     missing: List[Dict[str, Any]] = []
 
     with Session(engine) as session:
-        # 调试：先对前几条打印一下我们构造的 trade_id 以及数据库中是否存在
-        print("调试：前 5 条 API 成交在数据库中的匹配情况（按 trade_id 精确匹配）:")
+        # 调试：先对前几条打印一下 API execId 对应的 trade_id 是否存在
+        print("调试：前 5 条 API 成交在数据库中的匹配情况（按 execId = trade_id 精确匹配）:")
         for item in trades[:5]:
-            order_id_dbg = item.get("orderId")
-            ts_dbg = item.get("timestamp")
-            api_symbol_dbg = item.get("symbol")
-            if not order_id_dbg or ts_dbg is None:
+            api_trade_id_dbg = str(item.get("execId"))
+            if not api_trade_id_dbg:
                 continue
-            dbg_trade_id = f"{order_id_dbg}_{ts_dbg}"
             any_row = (
                 session.query(XTTradeUpdate)
-                .filter(XTTradeUpdate.trade_id == dbg_trade_id)
+                .filter(XTTradeUpdate.trade_id == api_trade_id_dbg)
                 .first()
             )
             if any_row:
                 print(
-                    f"  trade_id={dbg_trade_id} 在库中存在, "
+                    f"  trade_id={api_trade_id_dbg} 在库中存在, "
                     f"account_id={any_row.account_id}, symbol={any_row.symbol}"
                 )
             else:
-                print(f"  trade_id={dbg_trade_id} 在库中不存在")
+                print(f"  trade_id={api_trade_id_dbg} 在库中不存在")
 
         for idx, item in enumerate(trades):
-            order_id = item.get("orderId")
-            ts = item.get("timestamp")
-            api_symbol = item.get("symbol")
-            if not order_id or ts is None or not api_symbol:
+            api_trade_id = str(item.get("execId"))
+            if not api_trade_id:
                 continue
-
-            db_trade_id = f"{order_id}_{ts}"
 
             exists = (
                 session.query(XTTradeUpdate)
-                .filter(
-                    XTTradeUpdate.trade_id == db_trade_id,
-                    XTTradeUpdate.account_id == account_id,
-                    XTTradeUpdate.symbol == api_symbol,
-                )
+                .filter(XTTradeUpdate.trade_id == api_trade_id)
                 .first()
             )
             if not exists:

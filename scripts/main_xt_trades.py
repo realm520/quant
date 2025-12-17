@@ -265,6 +265,28 @@ def compare_with_xt_trade_update(
     missing: List[Dict[str, Any]] = []
 
     with Session(engine) as session:
+        # 调试：先对前几条打印一下我们构造的 trade_id 以及数据库中是否存在
+        print("调试：前 5 条 API 成交在数据库中的匹配情况（按 trade_id 精确匹配）:")
+        for item in trades[:5]:
+            order_id_dbg = item.get("orderId")
+            ts_dbg = item.get("timestamp")
+            api_symbol_dbg = item.get("symbol")
+            if not order_id_dbg or ts_dbg is None:
+                continue
+            dbg_trade_id = f"{order_id_dbg}_{ts_dbg}"
+            any_row = (
+                session.query(XTTradeUpdate)
+                .filter(XTTradeUpdate.trade_id == dbg_trade_id)
+                .first()
+            )
+            if any_row:
+                print(
+                    f"  trade_id={dbg_trade_id} 在库中存在, "
+                    f"account_id={any_row.account_id}, symbol={any_row.symbol}"
+                )
+            else:
+                print(f"  trade_id={dbg_trade_id} 在库中不存在")
+
         for idx, item in enumerate(trades):
             order_id = item.get("orderId")
             ts = item.get("timestamp")

@@ -1397,6 +1397,7 @@ class XTUserStreamService:
     
     async def _save_trade_update(self, data: Dict[str, Any]) -> None:
         """保存成交更新到数据库."""
+        print(f"Received trade update: {data}")
         try:
             # 确保账号特定的表已创建（如果是新账号）
             await self._ensure_account_tables_if_needed()
@@ -1483,7 +1484,7 @@ class XTUserStreamService:
                     session.add(record)
                     logger.info(
                         f"保存成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
-                        f"side={side}, price={price}, quantity={quantity}"
+                        f"side={side}, price={price}, quantity={quantity},timestamp={timestamp},update_time={update_time}"
                     )
                 
                 await session.commit()

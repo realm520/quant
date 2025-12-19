@@ -654,7 +654,7 @@ class XTUserStreamService:
         """处理成交更新消息."""
         if "trade" not in self.enabled_channels:
             return
-        
+        print(f"Received trade update: {data}")
         # 提取XT成交数据
         trade_data = data.get("data", {})
         if not trade_data:
@@ -677,7 +677,7 @@ class XTUserStreamService:
             await self._display_trade_update(trade_data)
             
             # 保存到数据库
-            await self._save_trade_update(trade_data)
+            # await self._save_trade_update(trade_data)
             
             # 更新 Prometheus metrics
             if self.account_id:

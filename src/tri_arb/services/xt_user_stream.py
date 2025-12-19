@@ -1396,6 +1396,7 @@ class XTUserStreamService:
             logger.error(f"Failed to save order update: {e}")
     
     async def _save_trade_update(self, data: Dict[str, Any]) -> None:
+        print(f"Received trade update: {data}")
         """保存成交更新到数据库."""
         try:
             # 确保账号特定的表已创建（如果是新账号）
@@ -1480,14 +1481,20 @@ class XTUserStreamService:
                         position_side=trade.get("position_side") or trade.get("positionSide") or "",
                         raw_data=json.dumps(trade, cls=DecimalEncoder),
                     )
-                    session.add(record)
+                    # 暂时不保存到数据库，只打印日志查看数据
+                    # session.add(record)
+                    current_time = datetime.utcnow()
                     logger.info(
-                        f"保存成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
-                        f"side={side}, price={price}, quantity={quantity}"
+                        f"[仅查看，未保存] 成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
+                        f"side={side}, price={price}, quantity={quantity}, quote_quantity={quote_quantity}, "
+                        f"timestamp={timestamp}, update_time={update_time}, current_time={current_time}, "
+                        f"is_maker={record.is_maker}, position_side={record.position_side}, "
+                        f"commission={record.commission}, commission_asset={record.commission_asset}"
                     )
                 
-                await session.commit()
-                logger.info(f"成功保存 {len(trades)} 条成交记录到数据库")
+                # 暂时不提交到数据库
+                # await session.commit()
+                logger.info(f"[仅查看，未保存] 共处理 {len(trades)} 条成交记录（未实际保存到数据库）")
                 
         except Exception as e:
             logger.error(f"Failed to save trade update: {e}", exc_info=True)

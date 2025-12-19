@@ -1451,12 +1451,14 @@ class XTUserStreamService:
                     )
                     
                     # 使用 XT 的 timestamp（如果存在），否则使用当前时间
+                    # 注意：数据库字段是 TIMESTAMP WITHOUT TIME ZONE，需要 naive datetime（不带时区）
                     timestamp = trade.get("timestamp")
                     if timestamp:
                         try:
                             # XT timestamp 是毫秒级时间戳，需要除以 1000
                             if isinstance(timestamp, (int, float)):
-                                update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc)
+                                # 先转换为 UTC 时间，然后去掉时区信息（转为 naive datetime）
+                                update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc).replace(tzinfo=None)
                             else:
                                 update_time = datetime.utcnow()
                         except (ValueError, OSError):

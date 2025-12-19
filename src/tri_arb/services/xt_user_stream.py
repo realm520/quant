@@ -1484,10 +1484,16 @@ class XTUserStreamService:
                     # 暂时不保存到数据库，只打印日志查看数据
                     # session.add(record)
                     current_time = datetime.utcnow()
+                    raw_timestamp = trade.get("timestamp")
+                    raw_time = None
+                    if raw_timestamp:
+                        raw_time = datetime.fromtimestamp(raw_timestamp/1000.0, tz=timezone.utc)
+                    else:
+                        raw_time = None
                     logger.info(
                         f"[仅查看，未保存] 成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
                         f"side={side}, price={price}, quantity={quantity}, quote_quantity={quote_quantity}, "
-                        f"timestamp={timestamp}, update_time={update_time}, current_time={current_time}, "
+                        f"timestamp={timestamp}, raw_timestamp={raw_timestamp}, raw_time={raw_time}, update_time={update_time}, current_time={current_time}, "
                         f"is_maker={record.is_maker}, position_side={record.position_side}, "
                         f"commission={record.commission}, commission_asset={record.commission_asset}"
                     )

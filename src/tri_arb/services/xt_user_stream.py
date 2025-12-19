@@ -677,30 +677,8 @@ class XTUserStreamService:
             await self._display_trade_update(trade_data)
             
             # 保存到数据库
-            # await self._save_trade_update(trade_data)
-            
-            # 更新 Prometheus metrics
-            if self.account_id:
-                account_id = self.account_id
-            else:
-                account_id = "default"
-            
-            # 订阅服务使用端口 9601
-            ensure_metrics_server(9601)
-            try:
-                from tri_arb.metrics.prometheus import update_trade_metrics
-                update_trade_metrics(
-                    exchange="xt",
-                    exchange_type="perp",
-                    account_id=account_id,
-                    trade_data=trade_data,
-                )
-                logger.debug(f"成功更新成交 metrics (account_id={account_id})")
-            except Exception as metric_error:
-                logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
-            
-            # 更新统计
-            await self._update_trade_stats()
+            await self._save_trade_update(trade_data)
+        
             
         except Exception as e:
             logger.error(f"Error handling trade update: {e}", exc_info=True)
@@ -1483,7 +1461,7 @@ class XTUserStreamService:
                     session.add(record)
                     logger.info(
                         f"保存成交记录: trade_id={trade_id}, order_id={order_id}, symbol={symbol}, "
-                        f"side={side}, price={price}, quantity={quantity}"
+                        f"side={side}, price={price}, quantity={quantity},timestamp={timestamp},update_time={update_time}"
                     )
                 
                 await session.commit()

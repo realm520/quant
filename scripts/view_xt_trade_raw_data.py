@@ -111,9 +111,9 @@ class TradeViewerService(XTUserStreamService):
                 timestamp = trade.get("timestamp")
                 if timestamp:
                     try:
-                        # XT timestamp 是秒级时间戳
+                        # XT timestamp 是毫秒级时间戳，需要除以 1000
                         if isinstance(timestamp, (int, float)):
-                            update_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                            update_time = datetime.fromtimestamp(timestamp / 1000.0, tz=timezone.utc)
                         else:
                             update_time = datetime.utcnow()
                     except (ValueError, OSError):

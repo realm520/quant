@@ -1453,9 +1453,9 @@ class XTUserStreamService:
                     timestamp = trade.get("timestamp")
                     if timestamp:
                         try:
-                            # XT timestamp 是秒级时间戳
+                            # XT timestamp 是毫秒级时间戳，需要除以 1000
                             if isinstance(timestamp, (int, float)):
-                                update_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                                update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc)
                             else:
                                 update_time = datetime.utcnow()
                         except (ValueError, OSError):
@@ -1566,8 +1566,9 @@ class XTUserStreamService:
                 await self._sync_order_data_fixed_lookback(start_time, end_time)
 
             # 同步成交数据（从断开时间往前回补1小时）
-            if "trade" in self.enabled_channels:
-                await self._sync_trade_data_fixed_lookback(start_time, end_time)
+            # 已禁用：REST API 返回的成交数据缺少 side 字段，暂时禁用回补功能
+            # if "trade" in self.enabled_channels:
+            #     await self._sync_trade_data_fixed_lookback(start_time, end_time)
 
             # 清除断线时间记录
             if self.disconnect_time:
@@ -1807,7 +1808,6 @@ class XTUserStreamService:
             # 保存到数据库
             async with self.db_manager.session() as session:
                 from sqlalchemy import select
-                update_time = datetime.utcnow()
                 saved_count = 0
                 skipped_count = 0
 
@@ -1818,6 +1818,17 @@ class XTUserStreamService:
 
                         if not trade_id:
                             continue
+
+                        # 从 trade 数据中提取时间（REST API 返回的 time 字段是毫秒级时间戳）
+                        trade_time = trade.get("time") or trade.get("timestamp")
+                        if trade_time:
+                            try:
+                                # XT REST API 返回的 time 是毫秒级时间戳，需要除以 1000
+                                update_time = datetime.fromtimestamp(int(trade_time) / 1000.0, tz=timezone.utc)
+                            except (ValueError, TypeError, OSError):
+                                update_time = datetime.utcnow()
+                        else:
+                            update_time = datetime.utcnow()
 
                         # 检查成交是否已存在（去重）
                         TradeUpdateModel = self._get_model('XTTradeUpdate')

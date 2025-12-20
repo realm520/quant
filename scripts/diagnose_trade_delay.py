@@ -11,7 +11,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 try:
     import psycopg2
@@ -29,12 +29,18 @@ with open(config_path, "r", encoding="utf-8") as f:
 
 database_url = config["global_settings"]["database_url"]
 parsed = urlparse(database_url.replace("postgresql+asyncpg://", "postgresql://"))
+
+# URL 解码密码（处理 %23 等编码字符）
+password = unquote(parsed.password) if parsed.password else None
+
 db_params = {
     "host": parsed.hostname,
     "port": parsed.port or 5432,
     "database": parsed.path.lstrip("/"),
     "user": parsed.username,
-    "password": parsed.password,
+    "password": password,
+    # 添加 SSL 支持（RDS 通常需要）
+    "sslmode": "require",
 }
 
 def parse_timestamp_from_raw_data(raw_data_str: str) -> datetime | None:

@@ -166,11 +166,16 @@ def main():
             max_delay = max(slot_data["delays"])
             avg_write_delay = sum(slot_data["write_delays"]) / len(slot_data["write_delays"])
             
+            # 格式化数字，保留2位小数，左对齐
+            avg_delay_str = f"{avg_delay:.2f}"
+            max_delay_str = f"{max_delay:.2f}"
+            avg_write_delay_str = f"{avg_write_delay:.2f}"
+            
             print(f"{slot.strftime('%Y-%m-%d %H:%M'):<20} "
                   f"{slot_data['count']:<10} "
-                  f"{avg_delay:.2f:<15} "
-                  f"{max_delay:.2f:<15} "
-                  f"{avg_write_delay:.2f:<20}")
+                  f"{avg_delay_str:<15} "
+                  f"{max_delay_str:<15} "
+                  f"{avg_write_delay_str:<20}")
         
         # 延迟趋势分析
         if len(sorted_slots) >= 2:

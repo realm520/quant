@@ -655,6 +655,9 @@ class XTUserStreamService:
         if "trade" not in self.enabled_channels:
             return
         
+        # 记录消息接收时间（用于延迟监控）
+        message_received_at = datetime.utcnow()
+        
         # 提取XT成交数据
         trade_data = data.get("data", {})
         if not trade_data:
@@ -670,6 +673,14 @@ class XTUserStreamService:
             return
         
         try:
+            # 在数据中添加消息接收时间（用于延迟分析）
+            if isinstance(trade_data, dict):
+                trade_data["_message_received_at"] = message_received_at.isoformat()
+            elif isinstance(trade_data, list):
+                for item in trade_data:
+                    if isinstance(item, dict):
+                        item["_message_received_at"] = message_received_at.isoformat()
+            
             # 记录成交信息（用于划转分析）
             self._record_trade_for_transfer_analysis(trade_data)
             
@@ -1397,6 +1408,7 @@ class XTUserStreamService:
     
     async def _save_trade_update(self, data: Dict[str, Any]) -> None:
         """保存成交更新到数据库."""
+        save_start_time = datetime.utcnow()
         print(f"Received trade update: {data}")
         try:
             # 确保账号特定的表已创建（如果是新账号）
@@ -1453,12 +1465,30 @@ class XTUserStreamService:
                     # 使用 XT 的 timestamp（如果存在），否则使用当前时间
                     # 注意：数据库字段是 TIMESTAMP WITHOUT TIME ZONE，需要 naive datetime（不带时区）
                     timestamp = trade.get("timestamp")
+                    message_received_at_str = trade.get("_message_received_at")
+                    message_received_at = None
+                    if message_received_at_str:
+                        try:
+                            message_received_at = datetime.fromisoformat(message_received_at_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                        except (ValueError, AttributeError):
+                            pass
+                    
                     if timestamp:
                         try:
                             # XT timestamp 是毫秒级时间戳，需要除以 1000
                             if isinstance(timestamp, (int, float)):
                                 # 先转换为 UTC 时间，然后去掉时区信息（转为 naive datetime）
                                 update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc).replace(tzinfo=None)
+                                
+                                # 计算延迟：消息接收时间 vs timestamp
+                                if message_received_at:
+                                    delay_from_timestamp = (message_received_at - update_time).total_seconds()
+                                    if abs(delay_from_timestamp) > 60:  # 超过1分钟
+                                        logger.warning(
+                                            f"成交数据时间延迟: timestamp={update_time}, "
+                                            f"消息接收时间={message_received_at}, "
+                                            f"延迟={delay_from_timestamp:.2f}秒 ({delay_from_timestamp/60:.2f}分钟)"
+                                        )
                             else:
                                 update_time = datetime.utcnow()
                         except (ValueError, OSError):
@@ -1489,8 +1519,21 @@ class XTUserStreamService:
                         f"side={side}, price={price}, quantity={quantity},timestamp={timestamp},update_time={update_time}"
                     )
                 
+                commit_start = datetime.utcnow()
                 await session.commit()
-                logger.info(f"成功保存 {len(trades)} 条成交记录到数据库")
+                commit_duration = (datetime.utcnow() - commit_start).total_seconds()
+                total_duration = (datetime.utcnow() - save_start_time).total_seconds()
+                
+                logger.info(
+                    f"成功保存 {len(trades)} 条成交记录到数据库 "
+                    f"(总耗时: {total_duration:.3f}秒, 提交耗时: {commit_duration:.3f}秒)"
+                )
+                
+                # 如果数据库写入耗时过长，记录警告
+                if commit_duration > 1.0:
+                    logger.warning(
+                        f"数据库写入延迟: 提交耗时 {commit_duration:.2f} 秒，可能影响消息处理速度"
+                    )
                 
         except Exception as e:
             logger.error(f"Failed to save trade update: {e}", exc_info=True)

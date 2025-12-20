@@ -585,8 +585,8 @@ class XTUserStreamService:
             return
         
         try:
-            # 显示持仓更新
-            await self._display_position_update(position_data)
+            # 显示持仓更新（已禁用，专注于成交更新日志）
+            # await self._display_position_update(position_data)
             
             # 保存到数据库
             await self._save_position_update(position_data)
@@ -616,8 +616,8 @@ class XTUserStreamService:
             # 记录订单信息（用于划转分析）
             self._record_order_for_transfer_analysis(order_data)
             
-            # 显示订单更新
-            await self._display_order_update(order_data)
+            # 显示订单更新（已禁用，专注于成交更新日志）
+            # await self._display_order_update(order_data)
             
             # 保存到数据库
             await self._save_order_update(order_data)

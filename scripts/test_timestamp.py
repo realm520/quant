@@ -11,7 +11,7 @@ print()
 # 方式1: 直接当作秒级（错误，会报错）
 print("方式1: 直接当作秒级时间戳（错误）:")
 try:
-    dt = datetime.fromtimestamp(timestamp, timezone.utc)
+dt = datetime.fromtimestamp(timestamp, timezone.utc)
     print(f"  {dt}")
 except ValueError as e:
     print(f"  ❌ 错误: {e}")

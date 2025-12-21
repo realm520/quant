@@ -696,8 +696,8 @@ class XTUserStreamService:
             if isinstance(position_data, dict):
                 position_data["_message_received_at"] = message_received_at.isoformat()
             
-            # 显示持仓更新（已禁用，专注于成交更新日志）
-            await self._display_position_update(position_data)
+            # 显示持仓更新 - 【暂时禁用以避免阻塞WebSocket消息接收】
+            # await self._display_position_update(position_data)
             
             # 将持仓数据放入队列（异步处理，不阻塞）
             await self._position_queue.put(position_data)
@@ -732,8 +732,8 @@ class XTUserStreamService:
             if isinstance(order_data, dict):
                 order_data["_message_received_at"] = message_received_at.isoformat()
             
-            # 显示订单更新（已禁用，专注于成交更新日志）
-            await self._display_order_update(order_data)
+            # 显示订单更新 - 【暂时禁用以避免阻塞WebSocket消息接收】
+            # await self._display_order_update(order_data)
             
             # 将订单数据放入队列（异步处理，不阻塞）
             await self._order_queue.put(order_data)

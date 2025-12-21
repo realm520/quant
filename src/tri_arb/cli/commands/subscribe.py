@@ -461,8 +461,9 @@ def multi_account(
             logger.error("Failed to create database tables for multi-account", exc_info=True, extra={"error": str(init_exc)})
             if debug:
                 console.print_exception()
-            # 表创建失败时，抛出异常阻止程序继续运行
-            raise typer.Exit(code=1)
+            # 表创建失败时，必须停止程序 - 抛出异常让调用者处理
+            console.print("[red]程序无法继续运行，因为必需的表未创建成功[/red]")
+            raise RuntimeError(f"数据库表创建失败，程序无法继续: {init_exc}") from init_exc
         finally:
             await db_manager.close()
 
@@ -559,7 +560,9 @@ def multi_account(
         # 订阅服务使用端口 9601，避免与 watch-balance 冲突
         ensure_metrics_server(9601)
         
+        # 表创建失败时会抛出异常，必须停止程序
         await prepare_tables_if_needed()
+        
         tasks = []
         for acc in enabled_accounts:
             task = asyncio.create_task(run_account_stream(acc))
@@ -581,6 +584,14 @@ def multi_account(
         asyncio.run(run_multi_account_service())
     except KeyboardInterrupt:
         console.print("\n[yellow]订阅已停止[/yellow]")
+    except RuntimeError as exc:
+        # 表创建失败等致命错误
+        if "数据库表创建失败" in str(exc) or "Failed to create" in str(exc):
+            console.print(f"[red]致命错误:[/red] {exc}")
+            console.print("[red]程序已停止[/red]")
+        if debug:
+            console.print_exception()
+        raise typer.Exit(code=1)
     except Exception as exc:
         if debug:
             console.print_exception()

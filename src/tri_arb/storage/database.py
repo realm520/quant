@@ -250,17 +250,24 @@ class DatabaseManager:
                 verified_tables = []
                 missing_after_creation = []
                 
+                logger.info(f"Verifying table creation: metadata has {len(metadata_tables)} tables, database has {len([t for t in existing_tables_after if t.startswith('xt_')])} xt_* tables")
+                
                 for table_name in metadata_tables:
                     if table_name in existing_tables_after:
                         verified_tables.append(table_name)
+                        logger.debug(f"✓ Verified table exists: {table_name}")
                     else:
                         missing_after_creation.append(table_name)
+                        logger.warning(f"✗ Table missing after creation attempt: {table_name}")
                         # 如果表应该在 created_tables 中但实际不存在，从 created_tables 中移除
                         if table_name in created_tables:
+                            logger.warning(f"  Table {table_name} was in created_tables but does not exist in database")
                             created_tables.remove(table_name)
-                        # 添加到失败列表
+                        # 添加到失败列表（如果还没有）
                         if table_name not in [t[0] for t in failed_tables]:
-                            failed_tables.append((table_name, "Table creation appeared to succeed but table does not exist"))
+                            error_msg = "Table creation appeared to succeed but table does not exist in database after creation"
+                            logger.error(f"  Adding to failed_tables: {table_name} - {error_msg}")
+                            failed_tables.append((table_name, error_msg))
                 
                 # 总结创建结果
                 if verified_tables:
@@ -268,10 +275,14 @@ class DatabaseManager:
                 if failed_tables:
                     error_msg = f"⚠ Failed to create {len(failed_tables)} {name} tables: {', '.join([t[0] for t in failed_tables])}"
                     logger.error(error_msg)
+                    detailed_errors = []
                     for table_name, error in failed_tables:
-                        logger.error(f"  - {table_name}: {error}")
-                    # 如果有表创建失败，抛出异常
-                    raise RuntimeError(f"Failed to create {len(failed_tables)} {name} table(s): {', '.join([t[0] for t in failed_tables])}")
+                        error_detail = f"{table_name}: {error}"
+                        logger.error(f"  - {error_detail}")
+                        detailed_errors.append(error_detail)
+                    # 如果有表创建失败，抛出异常，包含详细错误信息
+                    full_error_msg = f"Failed to create {len(failed_tables)} {name} table(s):\n" + "\n".join(f"  - {e}" for e in detailed_errors)
+                    raise RuntimeError(full_error_msg)
                 
                 # 如果有表在创建后仍然缺失，抛出异常
                 if missing_after_creation:

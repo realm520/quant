@@ -144,28 +144,71 @@ class DatabaseManager:
                             try:
                                 from sqlalchemy.schema import CreateTable
                                 from sqlalchemy import text
-                                create_table_sql = str(CreateTable(table).compile(dialect=sync_conn.dialect))
-                                sync_conn.execute(text(create_table_sql))
-                                sync_conn.commit()
-                                logger.info(f"✓ Created table: {table_name}")
-                                table_created = True
-                                created_tables.append(table_name)
+                                
+                                # 生成创建表的 SQL
+                                try:
+                                    create_table_sql = str(CreateTable(table).compile(dialect=sync_conn.dialect))
+                                    logger.debug(f"Generated SQL for {table_name} (length: {len(create_table_sql)})")
+                                except Exception as sql_gen_err:
+                                    error_msg = f"Failed to generate SQL for table {table_name}: {sql_gen_err}"
+                                    logger.error(error_msg, exc_info=True)
+                                    failed_tables.append((table_name, error_msg))
+                                    continue
+                                
+                                # 执行创建表的 SQL
+                                try:
+                                    sync_conn.execute(text(create_table_sql))
+                                    sync_conn.commit()
+                                    logger.debug(f"Executed CREATE TABLE for {table_name}")
+                                except Exception as exec_err:
+                                    sync_conn.rollback()
+                                    error_msg = f"Failed to execute CREATE TABLE for {table_name}: {exec_err}"
+                                    logger.error(error_msg, exc_info=True)
+                                    failed_tables.append((table_name, error_msg))
+                                    continue
+                                
+                                # 验证表是否真的创建成功
+                                inspector = inspect(sync_conn)
+                                if inspector.has_table(table_name):
+                                    logger.info(f"✓ Created table: {table_name}")
+                                    table_created = True
+                                    created_tables.append(table_name)
+                                else:
+                                    error_msg = f"Table {table_name} creation appeared to succeed but table does not exist"
+                                    logger.error(error_msg)
+                                    failed_tables.append((table_name, error_msg))
+                                    continue  # 表创建失败，跳过索引创建
                             except (ProgrammingError, DBAPIError) as create_err:
                                 sync_conn.rollback()
                                 create_err_str = str(create_err).lower()
                                 if "already exists" in create_err_str or "duplicate" in create_err_str:
-                                    logger.debug(f"Table {table_name} already exists (skipping)")
-                                    table_created = True  # 表已存在，视为成功
-                                    created_tables.append(table_name)
+                                    # 表已存在，验证一下
+                                    inspector = inspect(sync_conn)
+                                    if inspector.has_table(table_name):
+                                        logger.debug(f"Table {table_name} already exists (skipping)")
+                                        table_created = True
+                                        created_tables.append(table_name)
+                                    else:
+                                        error_msg = f"Table {table_name} marked as existing but not found: {create_err}"
+                                        logger.error(error_msg)
+                                        failed_tables.append((table_name, error_msg))
+                                        continue
                                 else:
                                     logger.error(f"Failed to create table {table_name}: {create_err}")
                                     failed_tables.append((table_name, str(create_err)))
                                     continue  # 表创建失败，跳过索引创建
                         else:
-                            # 表已存在
-                            logger.debug(f"Table {table_name} already exists (skipping table creation)")
-                            table_created = True
-                            created_tables.append(table_name)
+                            # 表已存在，再次验证
+                            inspector = inspect(sync_conn)
+                            if inspector.has_table(table_name):
+                                logger.debug(f"Table {table_name} already exists (skipping table creation)")
+                                table_created = True
+                                created_tables.append(table_name)
+                            else:
+                                error_msg = f"Table {table_name} marked as existing but not found"
+                                logger.error(error_msg)
+                                failed_tables.append((table_name, error_msg))
+                                continue  # 表不存在，跳过索引创建
                         
                         # 只有在表创建成功或已存在时，才尝试创建索引
                         # UniqueConstraint 已经在 CreateTable 中创建，不需要单独处理
@@ -201,9 +244,27 @@ class DatabaseManager:
                             logger.error(f"Unexpected error creating table {table_name}: {e}", exc_info=True)
                             failed_tables.append((table_name, str(e)))
                 
+                # 验证所有表是否真的存在（防止创建失败但被误认为成功）
+                inspector = inspect(sync_conn)
+                existing_tables_after = set(inspector.get_table_names())
+                verified_tables = []
+                missing_after_creation = []
+                
+                for table_name in metadata_tables:
+                    if table_name in existing_tables_after:
+                        verified_tables.append(table_name)
+                    else:
+                        missing_after_creation.append(table_name)
+                        # 如果表应该在 created_tables 中但实际不存在，从 created_tables 中移除
+                        if table_name in created_tables:
+                            created_tables.remove(table_name)
+                        # 添加到失败列表
+                        if table_name not in [t[0] for t in failed_tables]:
+                            failed_tables.append((table_name, "Table creation appeared to succeed but table does not exist"))
+                
                 # 总结创建结果
-                if created_tables:
-                    logger.info(f"✓ Successfully created/verified {len(created_tables)} {name} tables: {', '.join(sorted(created_tables))}")
+                if verified_tables:
+                    logger.info(f"✓ Successfully created/verified {len(verified_tables)} {name} tables: {', '.join(sorted(verified_tables))}")
                 if failed_tables:
                     error_msg = f"⚠ Failed to create {len(failed_tables)} {name} tables: {', '.join([t[0] for t in failed_tables])}"
                     logger.error(error_msg)
@@ -211,6 +272,12 @@ class DatabaseManager:
                         logger.error(f"  - {table_name}: {error}")
                     # 如果有表创建失败，抛出异常
                     raise RuntimeError(f"Failed to create {len(failed_tables)} {name} table(s): {', '.join([t[0] for t in failed_tables])}")
+                
+                # 如果有表在创建后仍然缺失，抛出异常
+                if missing_after_creation:
+                    error_msg = f"⚠ Tables missing after creation attempt: {', '.join(missing_after_creation)}"
+                    logger.error(error_msg)
+                    raise RuntimeError(f"Tables missing after creation: {', '.join(missing_after_creation)}")
             
             try:
                 logger.info("Creating Binance tables...")

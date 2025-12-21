@@ -203,9 +203,12 @@ def main():
                 print(f"延迟 5秒-1分钟: {delay_stats['delay_5s_1m']} ({100.0 * delay_stats['delay_5s_1m'] / delay_stats['total']:.2f}%)")
                 print(f"延迟 1-5分钟: {delay_stats['delay_1m_5m']} ({100.0 * delay_stats['delay_1m_5m'] / delay_stats['total']:.2f}%)")
                 print(f"延迟 > 5分钟: {delay_stats['delay_gt_5m']} ({100.0 * delay_stats['delay_gt_5m'] / delay_stats['total']:.2f}%)")
-                print(f"\n平均延迟: {delay_stats['avg_delay_ms']:.2f} ms ({delay_stats['avg_delay_ms']/1000:.2f} 秒)")
-                print(f"最大延迟: {delay_stats['max_delay_ms']:.2f} ms ({delay_stats['max_delay_ms']/1000:.2f} 秒)")
-                print(f"最小延迟: {delay_stats['min_delay_ms']:.2f} ms ({delay_stats['min_delay_ms']/1000:.2f} 秒)")
+                avg_delay_ms = float(delay_stats['avg_delay_ms']) if delay_stats['avg_delay_ms'] else 0.0
+                max_delay_ms = float(delay_stats['max_delay_ms']) if delay_stats['max_delay_ms'] else 0.0
+                min_delay_ms = float(delay_stats['min_delay_ms']) if delay_stats['min_delay_ms'] else 0.0
+                print(f"\n平均延迟: {avg_delay_ms:.2f} ms ({avg_delay_ms/1000:.2f} 秒)")
+                print(f"最大延迟: {max_delay_ms:.2f} ms ({max_delay_ms/1000:.2f} 秒)")
+                print(f"最小延迟: {min_delay_ms:.2f} ms ({min_delay_ms/1000:.2f} 秒)")
                 
                 if delay_stats['delay_gt_5m'] > 0:
                     print(f"\n⚠️  警告: 发现 {delay_stats['delay_gt_5m']} 条记录延迟超过 5 分钟！")
@@ -236,10 +239,13 @@ def main():
                 print(f"{'交易ID':<30} {'延迟(秒)':<12} {'队列等待(ms)':<15} {'DB写入(ms)':<12} {'时间戳':<20} {'接收时间':<20}")
                 print("-" * 80)
                 for row in max_delay_rows:
-                    delay_sec = row['delay_from_timestamp_ms'] / 1000.0 if row['delay_from_timestamp_ms'] else 0
+                    delay_ms = float(row['delay_from_timestamp_ms']) if row['delay_from_timestamp_ms'] else 0.0
+                    delay_sec = delay_ms / 1000.0
                     ts_str = str(row['timestamp_from_raw'])[:19] if row['timestamp_from_raw'] else 'N/A'
                     recv_str = str(row['message_received_at'])[:19] if row['message_received_at'] else 'N/A'
-                    print(f"{row['trade_id']:<30} {delay_sec:<12.2f} {row['queue_wait_time_ms']:<15.2f} {row['database_write_duration_ms']:<12.2f} {ts_str:<20} {recv_str:<20}")
+                    queue_wait = float(row['queue_wait_time_ms']) if row['queue_wait_time_ms'] else 0.0
+                    db_write = float(row['database_write_duration_ms']) if row['database_write_duration_ms'] else 0.0
+                    print(f"{row['trade_id']:<30} {delay_sec:<12.2f} {queue_wait:<15.2f} {db_write:<12.2f} {ts_str:<20} {recv_str:<20}")
             
             # 按时间段分析延迟趋势
             cur.execute(f"""
@@ -265,9 +271,12 @@ def main():
                 print("-" * 80)
                 for row in trend_rows:
                     time_str = row['time_slot'].strftime('%Y-%m-%d %H:%M') if row['time_slot'] else 'N/A'
-                    avg_delay_sec = row['avg_delay_ms'] / 1000.0 if row['avg_delay_ms'] else 0
-                    max_delay_sec = row['max_delay_ms'] / 1000.0 if row['max_delay_ms'] else 0
-                    print(f"{time_str:<20} {row['count']:<10} {avg_delay_sec:<15.2f} {max_delay_sec:<15.2f} {row['avg_queue_wait_ms']:<15.2f}")
+                    avg_delay_ms = float(row['avg_delay_ms']) if row['avg_delay_ms'] else 0.0
+                    max_delay_ms = float(row['max_delay_ms']) if row['max_delay_ms'] else 0.0
+                    avg_queue_wait = float(row['avg_queue_wait_ms']) if row['avg_queue_wait_ms'] else 0.0
+                    avg_delay_sec = avg_delay_ms / 1000.0
+                    max_delay_sec = max_delay_ms / 1000.0
+                    print(f"{time_str:<20} {row['count']:<10} {avg_delay_sec:<15.2f} {max_delay_sec:<15.2f} {avg_queue_wait:<15.2f}")
             
             # 性能诊断
             print(f"\n【性能诊断】")
@@ -376,9 +385,11 @@ def main():
                 print(f"重连次数: {correlation['reconnect_count']}")
                 print(f"重连后5分钟内的延迟消息数: {correlation['delayed_message_count']}")
                 if correlation['avg_delay_after_reconnect']:
-                    print(f"重连后平均延迟: {correlation['avg_delay_after_reconnect']/1000:.2f} 秒")
-                    print(f"重连后最大延迟: {correlation['max_delay_after_reconnect']/1000:.2f} 秒")
-                    if correlation['avg_delay_after_reconnect'] > 300000:  # 5分钟
+                    avg_delay = float(correlation['avg_delay_after_reconnect'])
+                    max_delay = float(correlation['max_delay_after_reconnect']) if correlation['max_delay_after_reconnect'] else 0.0
+                    print(f"重连后平均延迟: {avg_delay/1000:.2f} 秒")
+                    print(f"重连后最大延迟: {max_delay/1000:.2f} 秒")
+                    if avg_delay > 300000:  # 5分钟
                         print("\n⚠️  重连后消息延迟严重，说明服务器在重连时推送了积压的消息")
             
             # 消息接收延迟诊断
@@ -386,8 +397,10 @@ def main():
                 print(f"\n【消息接收延迟诊断】")
                 print("-" * 80)
                 
-                avg_delay_min = delay_stats['avg_delay_ms'] / 60000.0
-                max_delay_min = delay_stats['max_delay_ms'] / 60000.0
+                avg_delay_ms = float(delay_stats['avg_delay_ms']) if delay_stats['avg_delay_ms'] else 0.0
+                max_delay_ms = float(delay_stats['max_delay_ms']) if delay_stats['max_delay_ms'] else 0.0
+                avg_delay_min = avg_delay_ms / 60000.0
+                max_delay_min = max_delay_ms / 60000.0
                 
                 if avg_delay_min > 5:
                     print(f"⚠️  严重问题: 平均消息接收延迟 {avg_delay_min:.1f} 分钟")
@@ -427,8 +440,9 @@ def main():
                     print("⚠️  实际处理速度远低于理论值，可能存在性能瓶颈")
                 
                 # 分析消息接收延迟对处理速度的影响
-                if delay_stats and delay_stats['avg_delay_ms'] > 60000:
-                    print(f"\n💡 注意: 消息接收延迟较大（平均 {delay_stats['avg_delay_ms']/1000:.1f} 秒）")
+                avg_delay_ms = float(delay_stats['avg_delay_ms']) if delay_stats and delay_stats['avg_delay_ms'] else 0.0
+                if delay_stats and avg_delay_ms > 60000:
+                    print(f"\n💡 注意: 消息接收延迟较大（平均 {avg_delay_ms/1000:.1f} 秒）")
                     print("   这不会影响队列处理速度，但会影响数据的实时性")
                     print("   建议优先解决 WebSocket 连接稳定性问题")
             

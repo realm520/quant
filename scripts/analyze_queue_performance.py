@@ -156,6 +156,103 @@ def main():
             for row in rows:
                 print(f"{row['wait_range']:<15} {row['count']:<10} {row['percentage']:<10.2f}%")
             
+            # 消息接收延迟分析（timestamp vs message_received_at）
+            print(f"\n【消息接收延迟分析】")
+            print("-" * 80)
+            print("说明: delay_from_timestamp_ms = message_received_at - timestamp_from_raw")
+            print("如果延迟很大，可能是 WebSocket 连接断开重连导致的消息积压")
+            print("-" * 80)
+            
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN delay_from_timestamp_ms < 1000 THEN 1 END) as delay_lt_1s,
+                    COUNT(CASE WHEN delay_from_timestamp_ms >= 1000 AND delay_from_timestamp_ms < 5000 THEN 1 END) as delay_1s_5s,
+                    COUNT(CASE WHEN delay_from_timestamp_ms >= 5000 AND delay_from_timestamp_ms < 60000 THEN 1 END) as delay_5s_1m,
+                    COUNT(CASE WHEN delay_from_timestamp_ms >= 60000 AND delay_from_timestamp_ms < 300000 THEN 1 END) as delay_1m_5m,
+                    COUNT(CASE WHEN delay_from_timestamp_ms >= 300000 THEN 1 END) as delay_gt_5m,
+                    ROUND(AVG(delay_from_timestamp_ms), 2) as avg_delay_ms,
+                    ROUND(MAX(delay_from_timestamp_ms), 2) as max_delay_ms,
+                    ROUND(MIN(delay_from_timestamp_ms), 2) as min_delay_ms
+                FROM xt_trade_update_test
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                AND delay_from_timestamp_ms IS NOT NULL
+            """)
+            
+            delay_stats = cur.fetchone()
+            if delay_stats and delay_stats['total'] > 0:
+                print(f"总记录数: {delay_stats['total']}")
+                print(f"延迟 < 1秒: {delay_stats['delay_lt_1s']} ({100.0 * delay_stats['delay_lt_1s'] / delay_stats['total']:.2f}%)")
+                print(f"延迟 1-5秒: {delay_stats['delay_1s_5s']} ({100.0 * delay_stats['delay_1s_5s'] / delay_stats['total']:.2f}%)")
+                print(f"延迟 5秒-1分钟: {delay_stats['delay_5s_1m']} ({100.0 * delay_stats['delay_5s_1m'] / delay_stats['total']:.2f}%)")
+                print(f"延迟 1-5分钟: {delay_stats['delay_1m_5m']} ({100.0 * delay_stats['delay_1m_5m'] / delay_stats['total']:.2f}%)")
+                print(f"延迟 > 5分钟: {delay_stats['delay_gt_5m']} ({100.0 * delay_stats['delay_gt_5m'] / delay_stats['total']:.2f}%)")
+                print(f"\n平均延迟: {delay_stats['avg_delay_ms']:.2f} ms ({delay_stats['avg_delay_ms']/1000:.2f} 秒)")
+                print(f"最大延迟: {delay_stats['max_delay_ms']:.2f} ms ({delay_stats['max_delay_ms']/1000:.2f} 秒)")
+                print(f"最小延迟: {delay_stats['min_delay_ms']:.2f} ms ({delay_stats['min_delay_ms']/1000:.2f} 秒)")
+                
+                if delay_stats['delay_gt_5m'] > 0:
+                    print(f"\n⚠️  警告: 发现 {delay_stats['delay_gt_5m']} 条记录延迟超过 5 分钟！")
+                    print("   这可能表明 WebSocket 连接断开重连，导致消息积压。")
+            
+            # 查找延迟最大的记录
+            cur.execute("""
+                SELECT 
+                    trade_id,
+                    symbol,
+                    timestamp_from_raw,
+                    message_received_at,
+                    delay_from_timestamp_ms,
+                    queue_wait_time_ms,
+                    database_write_duration_ms,
+                    created_at
+                FROM xt_trade_update_test
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                AND delay_from_timestamp_ms IS NOT NULL
+                ORDER BY delay_from_timestamp_ms DESC
+                LIMIT 10
+            """)
+            
+            max_delay_rows = cur.fetchall()
+            if max_delay_rows:
+                print(f"\n【延迟最大的 10 条记录】")
+                print("-" * 80)
+                print(f"{'交易ID':<30} {'延迟(秒)':<12} {'队列等待(ms)':<15} {'DB写入(ms)':<12} {'时间戳':<20} {'接收时间':<20}")
+                print("-" * 80)
+                for row in max_delay_rows:
+                    delay_sec = row['delay_from_timestamp_ms'] / 1000.0 if row['delay_from_timestamp_ms'] else 0
+                    ts_str = str(row['timestamp_from_raw'])[:19] if row['timestamp_from_raw'] else 'N/A'
+                    recv_str = str(row['message_received_at'])[:19] if row['message_received_at'] else 'N/A'
+                    print(f"{row['trade_id']:<30} {delay_sec:<12.2f} {row['queue_wait_time_ms']:<15.2f} {row['database_write_duration_ms']:<12.2f} {ts_str:<20} {recv_str:<20}")
+            
+            # 按时间段分析延迟趋势
+            cur.execute("""
+                SELECT 
+                    DATE_TRUNC('minute', created_at) as time_slot,
+                    COUNT(*) as count,
+                    ROUND(AVG(delay_from_timestamp_ms), 2) as avg_delay_ms,
+                    ROUND(MAX(delay_from_timestamp_ms), 2) as max_delay_ms,
+                    ROUND(AVG(queue_wait_time_ms), 2) as avg_queue_wait_ms
+                FROM xt_trade_update_test
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                AND delay_from_timestamp_ms IS NOT NULL
+                GROUP BY DATE_TRUNC('minute', created_at)
+                ORDER BY time_slot DESC
+                LIMIT 20
+            """)
+            
+            trend_rows = cur.fetchall()
+            if trend_rows:
+                print(f"\n【延迟趋势（最近 20 分钟）】")
+                print("-" * 80)
+                print(f"{'时间段':<20} {'记录数':<10} {'平均延迟(秒)':<15} {'最大延迟(秒)':<15} {'平均队列等待(ms)':<15}")
+                print("-" * 80)
+                for row in trend_rows:
+                    time_str = row['time_slot'].strftime('%Y-%m-%d %H:%M') if row['time_slot'] else 'N/A'
+                    avg_delay_sec = row['avg_delay_ms'] / 1000.0 if row['avg_delay_ms'] else 0
+                    max_delay_sec = row['max_delay_ms'] / 1000.0 if row['max_delay_ms'] else 0
+                    print(f"{time_str:<20} {row['count']:<10} {avg_delay_sec:<15.2f} {max_delay_sec:<15.2f} {row['avg_queue_wait_ms']:<15.2f}")
+            
             # 性能诊断
             print(f"\n【性能诊断】")
             print("-" * 80)
@@ -189,6 +286,115 @@ def main():
                 print("   - 批量写入参数设置不合理")
                 print("   - 数据库连接池耗尽")
             
+            # WebSocket 连接事件分析
+            print(f"\n【WebSocket 连接事件分析】")
+            print("-" * 80)
+            cur.execute("""
+                SELECT 
+                    event_type,
+                    COUNT(*) as count,
+                    MIN(event_time) as first_event,
+                    MAX(event_time) as last_event,
+                    AVG(disconnect_duration_seconds) as avg_disconnect_duration,
+                    MAX(disconnect_duration_seconds) as max_disconnect_duration
+                FROM xt_websocket_connection_events_test
+                WHERE event_time >= NOW() - INTERVAL '1 hour'
+                GROUP BY event_type
+                ORDER BY event_type
+            """)
+            
+            event_rows = cur.fetchall()
+            if event_rows:
+                print(f"{'事件类型':<20} {'次数':<10} {'首次时间':<20} {'最后时间':<20} {'平均断开时长(秒)':<20} {'最大断开时长(秒)':<20}")
+                print("-" * 80)
+                for row in event_rows:
+                    first_str = row['first_event'].strftime('%Y-%m-%d %H:%M:%S') if row['first_event'] else 'N/A'
+                    last_str = row['last_event'].strftime('%Y-%m-%d %H:%M:%S') if row['last_event'] else 'N/A'
+                    avg_dur = f"{row['avg_disconnect_duration']:.2f}" if row['avg_disconnect_duration'] else 'N/A'
+                    max_dur = f"{row['max_disconnect_duration']:.2f}" if row['max_disconnect_duration'] else 'N/A'
+                    print(f"{row['event_type']:<20} {row['count']:<10} {first_str:<20} {last_str:<20} {avg_dur:<20} {max_dur:<20}")
+                
+                # 查找重连事件
+                reconnect_count = sum(1 for r in event_rows if r['event_type'] == 'reconnect')
+                disconnect_count = sum(1 for r in event_rows if r['event_type'] == 'disconnect')
+                
+                if reconnect_count > 0 or disconnect_count > 0:
+                    print(f"\n⚠️  检测到 {disconnect_count} 次断开和 {reconnect_count} 次重连")
+                    print("   这可能是导致消息接收延迟的主要原因")
+            
+            # 关联重连事件和消息延迟
+            cur.execute("""
+                WITH reconnect_events AS (
+                    SELECT 
+                        event_time as reconnect_time,
+                        disconnect_duration_seconds
+                    FROM xt_websocket_connection_events_test
+                    WHERE event_type = 'reconnect'
+                    AND event_time >= NOW() - INTERVAL '1 hour'
+                ),
+                delayed_messages AS (
+                    SELECT 
+                        message_received_at,
+                        delay_from_timestamp_ms,
+                        timestamp_from_raw
+                    FROM xt_trade_update_test
+                    WHERE created_at >= NOW() - INTERVAL '1 hour'
+                    AND delay_from_timestamp_ms IS NOT NULL
+                    AND delay_from_timestamp_ms > 60000  -- 延迟超过1分钟
+                )
+                SELECT 
+                    COUNT(DISTINCT r.reconnect_time) as reconnect_count,
+                    COUNT(dm.message_received_at) as delayed_message_count,
+                    AVG(dm.delay_from_timestamp_ms) as avg_delay_after_reconnect,
+                    MAX(dm.delay_from_timestamp_ms) as max_delay_after_reconnect
+                FROM reconnect_events r
+                LEFT JOIN delayed_messages dm ON 
+                    dm.message_received_at >= r.reconnect_time 
+                    AND dm.message_received_at <= r.reconnect_time + INTERVAL '5 minutes'
+            """)
+            
+            correlation = cur.fetchone()
+            if correlation and correlation['reconnect_count'] > 0:
+                print(f"\n【重连事件与消息延迟关联分析】")
+                print("-" * 80)
+                print(f"重连次数: {correlation['reconnect_count']}")
+                print(f"重连后5分钟内的延迟消息数: {correlation['delayed_message_count']}")
+                if correlation['avg_delay_after_reconnect']:
+                    print(f"重连后平均延迟: {correlation['avg_delay_after_reconnect']/1000:.2f} 秒")
+                    print(f"重连后最大延迟: {correlation['max_delay_after_reconnect']/1000:.2f} 秒")
+                    if correlation['avg_delay_after_reconnect'] > 300000:  # 5分钟
+                        print("\n⚠️  重连后消息延迟严重，说明服务器在重连时推送了积压的消息")
+            
+            # 消息接收延迟诊断
+            if delay_stats and delay_stats['total'] > 0:
+                print(f"\n【消息接收延迟诊断】")
+                print("-" * 80)
+                
+                avg_delay_min = delay_stats['avg_delay_ms'] / 60000.0
+                max_delay_min = delay_stats['max_delay_ms'] / 60000.0
+                
+                if avg_delay_min > 5:
+                    print(f"⚠️  严重问题: 平均消息接收延迟 {avg_delay_min:.1f} 分钟")
+                    print("   可能原因:")
+                    print("   1. WebSocket 连接频繁断开重连，导致消息积压")
+                    print("   2. 服务器端延迟推送消息")
+                    print("   3. 网络不稳定导致消息延迟")
+                    print("\n   建议:")
+                    print("   1. 检查 WebSocket 连接稳定性（查看日志中的重连记录）")
+                    print("   2. 检查网络连接质量")
+                    print("   3. 考虑增加心跳检测频率，及时发现连接问题")
+                    print("   4. 如果延迟是服务器端问题，可能需要联系 XT 技术支持")
+                elif avg_delay_min > 1:
+                    print(f"⚠️  警告: 平均消息接收延迟 {avg_delay_min:.1f} 分钟")
+                    print("   建议检查 WebSocket 连接稳定性")
+                else:
+                    print(f"✅ 消息接收延迟正常（平均 {avg_delay_min*60:.1f} 秒）")
+                
+                if max_delay_min > 10:
+                    print(f"\n⚠️  严重: 最大延迟 {max_delay_min:.1f} 分钟，存在严重的消息积压")
+                    print("   这通常发生在 WebSocket 连接断开后重连时")
+                    print("   服务器会一次性推送所有积压的消息")
+            
             # 计算理论性能
             print(f"\n【理论性能分析】")
             print("-" * 80)
@@ -203,6 +409,12 @@ def main():
                 
                 if result['total_count'] / 3600 < messages_per_second * 0.5:
                     print("⚠️  实际处理速度远低于理论值，可能存在性能瓶颈")
+                
+                # 分析消息接收延迟对处理速度的影响
+                if delay_stats and delay_stats['avg_delay_ms'] > 60000:
+                    print(f"\n💡 注意: 消息接收延迟较大（平均 {delay_stats['avg_delay_ms']/1000:.1f} 秒）")
+                    print("   这不会影响队列处理速度，但会影响数据的实时性")
+                    print("   建议优先解决 WebSocket 连接稳定性问题")
             
     finally:
         conn.close()

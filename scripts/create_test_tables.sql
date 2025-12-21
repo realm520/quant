@@ -84,6 +84,24 @@ CREATE INDEX IF NOT EXISTS idx_xt_position_test_account_time ON xt_position_upda
 CREATE INDEX IF NOT EXISTS idx_xt_position_test_received_at ON xt_position_update_test(message_received_at);
 CREATE INDEX IF NOT EXISTS idx_xt_position_test_queue_wait ON xt_position_update_test(queue_wait_time_ms);
 
+-- 4. 创建 xt_websocket_connection_events_test 表（WebSocket 连接事件记录）
+CREATE TABLE IF NOT EXISTS xt_websocket_connection_events_test (
+    id BIGSERIAL PRIMARY KEY,
+    event_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    account_id VARCHAR(64),
+    event_type VARCHAR(20) NOT NULL,  -- 'connect', 'disconnect', 'reconnect', 'reconnect_attempt'
+    reconnect_attempt_number INTEGER,  -- 重连尝试次数（仅用于 reconnect_attempt 事件）
+    disconnect_duration_seconds NUMERIC(10, 2),  -- 断开持续时间（秒，仅用于 reconnect 事件）
+    message_count_before_event INTEGER,  -- 事件发生前的消息计数
+    notes TEXT,  -- 额外说明
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_xt_ws_events_time ON xt_websocket_connection_events_test(event_time);
+CREATE INDEX IF NOT EXISTS idx_xt_ws_events_type ON xt_websocket_connection_events_test(event_type);
+CREATE INDEX IF NOT EXISTS idx_xt_ws_events_account_time ON xt_websocket_connection_events_test(account_id, event_time);
+
 -- 3. 创建 xt_trade_update_test 表
 CREATE TABLE IF NOT EXISTS xt_trade_update_test (
     id BIGSERIAL PRIMARY KEY,

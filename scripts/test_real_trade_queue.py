@@ -257,8 +257,8 @@ class TestTradeWriter(TestDataWriter):
                         )
                         await session.commit()
                     
-                    print(f"✓ 批量写入 {len(records)} 条成交记录到测试表 "
-                          f"(耗时: {commit_duration:.2f}ms, 队列剩余: {len(self.batch)})")
+                    # 简化输出，不显示批量写入信息
+                    pass
         
         except Exception as e:
             print(f"✗ 写入失败: {e}")
@@ -396,8 +396,8 @@ class TestOrderWriter(TestDataWriter):
                         )
                         await session.commit()
                     
-                    print(f"✓ 批量写入 {len(insert_data)} 条订单记录到测试表 "
-                          f"(耗时: {commit_duration:.2f}ms, 队列剩余: {len(self.batch)})")
+                    # 简化输出，不显示批量写入信息
+                    pass
         
         except Exception as e:
             print(f"✗ 订单写入失败: {e}")
@@ -548,8 +548,8 @@ class TestPositionWriter(TestDataWriter):
                         )
                         await session.commit()
                     
-                    print(f"✓ 批量写入 {len(insert_data)} 条持仓记录到测试表 "
-                          f"(耗时: {commit_duration:.2f}ms, 队列剩余: {len(self.batch)})")
+                    # 简化输出，不显示批量写入信息
+                    pass
         
         except Exception as e:
             print(f"✗ 持仓写入失败: {e}")
@@ -567,6 +567,8 @@ class TestXTUserStreamService(XTUserStreamService):
         self.test_position_writer = None
         self.monitor_task = None
         self.start_time = None
+        self.message_count = 0
+        self.last_disconnect_time = None
     
     async def start(self) -> None:
         """启动服务并初始化测试写入器."""
@@ -588,6 +590,9 @@ class TestXTUserStreamService(XTUserStreamService):
         # 启动队列监控任务
         self.monitor_task = asyncio.create_task(self._monitor_queues())
         
+        # 记录初始连接事件
+        await self._record_connection_event("connect", notes="Initial connection")
+        
         # 调用父类启动
         await super().start()
     
@@ -607,7 +612,92 @@ class TestXTUserStreamService(XTUserStreamService):
             await self.test_order_writer.stop()
         if self.test_position_writer:
             await self.test_position_writer.stop()
+        
+        # 记录断开连接事件
+        await self._record_connection_event("disconnect", notes="Service stopped")
+        
         await super().stop()
+    
+    async def _record_connection_event(self, event_type: str, reconnect_attempt_number: int = None, 
+                                       disconnect_duration_seconds: float = None, notes: str = None):
+        """记录 WebSocket 连接事件到测试表."""
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import text
+                
+                insert_sql = text("""
+                    INSERT INTO xt_websocket_connection_events_test (
+                        event_time, account_id, event_type, reconnect_attempt_number,
+                        disconnect_duration_seconds, message_count_before_event, notes, created_at
+                    ) VALUES (
+                        :event_time, :account_id, :event_type, :reconnect_attempt_number,
+                        :disconnect_duration_seconds, :message_count_before_event, :notes, :created_at
+                    )
+                """)
+                
+                await session.execute(insert_sql, {
+                    "event_time": datetime.utcnow(),
+                    "account_id": self.account_id or "test",
+                    "event_type": event_type,
+                    "reconnect_attempt_number": reconnect_attempt_number,
+                    "disconnect_duration_seconds": disconnect_duration_seconds,
+                    "message_count_before_event": self.message_count,
+                    "notes": notes,
+                    "created_at": datetime.utcnow(),
+                })
+                await session.commit()
+                
+                # 简化连接事件输出
+                event_time_str = datetime.utcnow().strftime('%H:%M:%S')
+                if event_type == "reconnect" and disconnect_duration_seconds:
+                    print(f"📡 [{event_time_str}] 重连 (断开 {disconnect_duration_seconds:.1f}秒)")
+                elif event_type == "disconnect":
+                    print(f"📡 [{event_time_str}] 断开连接")
+                elif event_type == "connect":
+                    print(f"📡 [{event_time_str}] 连接成功")
+                elif event_type == "reconnect_attempt":
+                    print(f"📡 [{event_time_str}] 重连尝试 #{reconnect_attempt_number}")
+        
+        except Exception as e:
+            print(f"✗ 记录连接事件失败: {e}")
+    
+    async def _connect_and_listen(self):
+        """重写连接方法，记录重连事件."""
+        from websockets.exceptions import ConnectionClosed
+        
+        # 检查是否是重连
+        is_reconnect = self.last_disconnect_time is not None
+        
+        if is_reconnect:
+            disconnect_duration = (datetime.utcnow() - self.last_disconnect_time).total_seconds()
+            await self._record_connection_event(
+                "reconnect",
+                disconnect_duration_seconds=disconnect_duration,
+                notes=f"Reconnected after {disconnect_duration:.1f} seconds"
+            )
+            self.last_disconnect_time = None
+        
+        # 调用父类方法
+        try:
+            await super()._connect_and_listen()
+        except ConnectionClosed as exc:
+            # 记录断开事件
+            if not self.last_disconnect_time:
+                self.last_disconnect_time = datetime.utcnow()
+                await self._record_connection_event(
+                    "disconnect",
+                    notes=f"Connection closed: code={exc.code}, reason={exc.reason}"
+                )
+            raise
+        except Exception as e:
+            # 记录断开事件（如果还没有记录）
+            if not self.last_disconnect_time:
+                self.last_disconnect_time = datetime.utcnow()
+                await self._record_connection_event(
+                    "disconnect",
+                    notes=f"Connection error: {str(e)[:100]}"
+                )
+            raise
     
     async def _monitor_queues(self):
         """定期监控队列状态."""
@@ -641,11 +731,12 @@ class TestXTUserStreamService(XTUserStreamService):
                 if self.test_position_writer and self.test_position_writer.get_queue_size() > self.test_position_writer.batch_size * 2:
                     warnings.append("⚠️  持仓队列可能堵塞")
                 
-                status_line = f"[{elapsed_min:02d}:{elapsed_sec:02d}] " + " | ".join(stats)
-                if warnings:
-                    status_line += " | " + " | ".join(warnings)
-                
-                print(status_line)
+                # 简化队列状态输出，每5分钟输出一次
+                if elapsed_min % 5 == 0 and elapsed_sec < 10:
+                    status_line = f"[{elapsed_min:02d}:{elapsed_sec:02d}] " + " | ".join(stats)
+                    if warnings:
+                        status_line += " | " + " | ".join(warnings)
+                    print(status_line)
                 
             except asyncio.CancelledError:
                 break
@@ -670,8 +761,32 @@ class TestXTUserStreamService(XTUserStreamService):
             return
         
         try:
-            # 显示成交更新（可选）
-            await self._display_trade_update(trade_data)
+            # 增加消息计数
+            self.message_count += 1
+            
+            # 计算延迟并输出
+            timestamp = trade_data.get("timestamp")
+            if timestamp:
+                try:
+                    ts_sec = timestamp / 1000.0
+                    timestamp_from_raw = datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+                    delay_ms = (message_received_at - timestamp_from_raw).total_seconds() * 1000
+                    delay_sec = delay_ms / 1000.0
+                    
+                    # 只输出关键信息：接收时间、事件时间、延迟
+                    recv_str = message_received_at.strftime('%H:%M:%S.%f')[:-3]
+                    event_str = timestamp_from_raw.strftime('%H:%M:%S.%f')[:-3]
+                    
+                    if delay_sec > 60:
+                        delay_str = f"{delay_sec/60:.1f}分钟"
+                    elif delay_sec > 1:
+                        delay_str = f"{delay_sec:.1f}秒"
+                    else:
+                        delay_str = f"{delay_ms:.0f}ms"
+                    
+                    print(f"成交 | 接收: {recv_str} | 事件: {event_str} | 延迟: {delay_str}")
+                except (ValueError, OSError):
+                    pass
             
             # 添加到测试写入器（记录真实的消息接收时间）
             if self.test_trade_writer:
@@ -703,8 +818,33 @@ class TestXTUserStreamService(XTUserStreamService):
             return
         
         try:
-            # 显示订单更新（可选）
-            await self._display_order_update(order_data)
+            # 增加消息计数
+            self.message_count += 1
+            
+            # 计算延迟并输出
+            timestamp = order_data.get("timestamp") or order_data.get("createdTime") or order_data.get("createTime")
+            if timestamp:
+                try:
+                    if isinstance(timestamp, (int, float)):
+                        ts_sec = timestamp / 1000.0 if timestamp > 1e12 else timestamp
+                        timestamp_from_raw = datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+                        delay_ms = (message_received_at - timestamp_from_raw).total_seconds() * 1000
+                        delay_sec = delay_ms / 1000.0
+                        
+                        # 只输出关键信息：接收时间、事件时间、延迟
+                        recv_str = message_received_at.strftime('%H:%M:%S.%f')[:-3]
+                        event_str = timestamp_from_raw.strftime('%H:%M:%S.%f')[:-3]
+                        
+                        if delay_sec > 60:
+                            delay_str = f"{delay_sec/60:.1f}分钟"
+                        elif delay_sec > 1:
+                            delay_str = f"{delay_sec:.1f}秒"
+                        else:
+                            delay_str = f"{delay_ms:.0f}ms"
+                        
+                        print(f"订单 | 接收: {recv_str} | 事件: {event_str} | 延迟: {delay_str}")
+                except (ValueError, OSError):
+                    pass
             
             # 添加到测试写入器
             if self.test_order_writer:
@@ -736,8 +876,33 @@ class TestXTUserStreamService(XTUserStreamService):
             return
         
         try:
-            # 显示持仓更新（可选）
-            await self._display_position_update(position_data)
+            # 增加消息计数
+            self.message_count += 1
+            
+            # 计算延迟并输出
+            timestamp = position_data.get("timestamp") or position_data.get("updateTime")
+            if timestamp:
+                try:
+                    if isinstance(timestamp, (int, float)):
+                        ts_sec = timestamp / 1000.0 if timestamp > 1e12 else timestamp
+                        timestamp_from_raw = datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+                        delay_ms = (message_received_at - timestamp_from_raw).total_seconds() * 1000
+                        delay_sec = delay_ms / 1000.0
+                        
+                        # 只输出关键信息：接收时间、事件时间、延迟
+                        recv_str = message_received_at.strftime('%H:%M:%S.%f')[:-3]
+                        event_str = timestamp_from_raw.strftime('%H:%M:%S.%f')[:-3]
+                        
+                        if delay_sec > 60:
+                            delay_str = f"{delay_sec/60:.1f}分钟"
+                        elif delay_sec > 1:
+                            delay_str = f"{delay_sec:.1f}秒"
+                        else:
+                            delay_str = f"{delay_ms:.0f}ms"
+                        
+                        print(f"持仓 | 接收: {recv_str} | 事件: {event_str} | 延迟: {delay_str}")
+                except (ValueError, OSError):
+                    pass
             
             # 添加到测试写入器
             if self.test_position_writer:

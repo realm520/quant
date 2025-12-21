@@ -157,9 +157,23 @@ class DatabaseManager:
                                 
                                 # 执行创建表的 SQL
                                 try:
-                                    sync_conn.execute(text(create_table_sql))
+                                    # 执行 DDL 语句
+                                    # 注意：PostgreSQL 的 DDL 语句在事务中执行，需要显式提交
+                                    logger.info(f"Executing CREATE TABLE for {table_name}...")
+                                    result = sync_conn.execute(text(create_table_sql))
+                                    # 显式提交事务
                                     sync_conn.commit()
-                                    logger.debug(f"Executed CREATE TABLE for {table_name}")
+                                    logger.info(f"✓ CREATE TABLE executed and committed for {table_name}")
+                                    
+                                    # 立即验证表是否创建成功（在同一连接中）
+                                    inspector = inspect(sync_conn)
+                                    table_exists_after = inspector.has_table(table_name)
+                                    logger.info(f"Verification: table {table_name} exists = {table_exists_after}")
+                                    
+                                    if not table_exists_after:
+                                        error_msg = f"Table {table_name} was not created after CREATE TABLE statement (commit succeeded but table missing)"
+                                        logger.error(error_msg)
+                                        raise RuntimeError(error_msg)
                                 except Exception as exec_err:
                                     sync_conn.rollback()
                                     error_msg = f"Failed to execute CREATE TABLE for {table_name}: {exec_err}"

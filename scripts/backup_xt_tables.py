@@ -61,7 +61,7 @@ def backup_tables():
     conn = psycopg2.connect(**db_params)
     
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor() as cur:
             print("=" * 80)
             print(f"XT 表备份工具 (备份时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
             print("=" * 80)
@@ -243,7 +243,7 @@ def restore_backup(backup_name: str, restore_name: str = None):
     conn = psycopg2.connect(**db_params)
     
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor() as cur:
             # 检查备份表是否存在
             cur.execute("""
                 SELECT EXISTS (

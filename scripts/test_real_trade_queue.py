@@ -22,15 +22,16 @@ from tri_arb.storage.database import DatabaseManager
 
 logger = None
 
-class TestTradeWriter:
-    """测试用的成交写入器，写入到测试表."""
+class TestDataWriter:
+    """测试数据写入器基类."""
     
-    def __init__(self, db_manager: DatabaseManager, account_id: str):
+    def __init__(self, db_manager: DatabaseManager, account_id: str, table_name: str, batch_size: int = 50, batch_timeout: float = 0.5):
         self.db_manager = db_manager
         self.account_id = account_id
+        self.table_name = table_name
         self.batch = []
-        self.batch_size = 50
-        self.batch_timeout = 0.5
+        self.batch_size = batch_size
+        self.batch_timeout = batch_timeout
         self.last_flush_time = datetime.utcnow()
         self.write_task = None
     
@@ -51,18 +52,6 @@ class TestTradeWriter:
         if self.batch:
             await self._flush_batch()
     
-    async def add_trade(self, trade_data: Dict[str, Any], message_received_at: datetime):
-        """添加成交数据到批次."""
-        trade_data["_message_received_at"] = message_received_at.isoformat()
-        self.batch.append({
-            "data": trade_data,
-            "message_received_at": message_received_at,
-        })
-        
-        # 如果批次达到大小，立即刷新
-        if len(self.batch) >= self.batch_size:
-            await self._flush_batch()
-    
     async def _write_loop(self):
         """后台写入循环."""
         while True:
@@ -75,7 +64,43 @@ class TestTradeWriter:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"Error in write loop: {e}")
+                print(f"Error in {self.table_name} write loop: {e}")
+    
+    async def _flush_batch(self):
+        """刷新批次到数据库（子类实现）."""
+        raise NotImplementedError
+    
+    def get_queue_size(self) -> int:
+        """获取当前队列大小."""
+        return len(self.batch)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取写入器统计信息."""
+        return {
+            "table_name": self.table_name,
+            "queue_size": len(self.batch),
+            "batch_size": self.batch_size,
+            "last_flush_time": self.last_flush_time.isoformat() if self.last_flush_time else None,
+        }
+
+
+class TestTradeWriter(TestDataWriter):
+    """测试用的成交写入器，写入到测试表."""
+    
+    def __init__(self, db_manager: DatabaseManager, account_id: str):
+        super().__init__(db_manager, account_id, "xt_trade_update_test", batch_size=50, batch_timeout=0.5)
+    
+    async def add_trade(self, trade_data: Dict[str, Any], message_received_at: datetime):
+        """添加成交数据到批次."""
+        trade_data["_message_received_at"] = message_received_at.isoformat()
+        self.batch.append({
+            "data": trade_data,
+            "message_received_at": message_received_at,
+        })
+        
+        # 如果批次达到大小，立即刷新
+        if len(self.batch) >= self.batch_size:
+            await self._flush_batch()
     
     async def _flush_batch(self):
         """刷新批次到数据库."""
@@ -241,27 +266,391 @@ class TestTradeWriter:
             traceback.print_exc()
 
 
+class TestOrderWriter(TestDataWriter):
+    """测试用的订单写入器，写入到测试表."""
+    
+    def __init__(self, db_manager: DatabaseManager, account_id: str):
+        super().__init__(db_manager, account_id, "xt_order_update_test", batch_size=50, batch_timeout=0.5)
+    
+    async def add_order(self, order_data: Dict[str, Any], message_received_at: datetime):
+        """添加订单数据到批次."""
+        order_data["_message_received_at"] = message_received_at.isoformat()
+        self.batch.append({
+            "data": order_data,
+            "message_received_at": message_received_at,
+        })
+        
+        if len(self.batch) >= self.batch_size:
+            await self._flush_batch()
+    
+    async def _flush_batch(self):
+        """刷新订单批次到数据库."""
+        if not self.batch:
+            return
+        
+        batch_start = datetime.utcnow()
+        batch_to_write = self.batch.copy()
+        self.batch = []
+        self.last_flush_time = datetime.utcnow()
+        
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import text
+                
+                commit_start = datetime.utcnow()
+                current_time = datetime.utcnow()
+                
+                insert_data = []
+                for message in batch_to_write:
+                    order_data = message["data"]
+                    message_received_at = message["message_received_at"]
+                    
+                    order_id = order_data.get("orderId", "")
+                    if not order_id:
+                        continue
+                    
+                    timestamp = order_data.get("timestamp") or order_data.get("createdTime") or order_data.get("createTime")
+                    timestamp_from_raw = None
+                    if timestamp:
+                        try:
+                            if isinstance(timestamp, (int, float)):
+                                ts_sec = timestamp / 1000.0 if timestamp > 1e12 else timestamp
+                                timestamp_from_raw = datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+                        except (ValueError, OSError):
+                            pass
+                    
+                    queue_wait_time_ms = (batch_start - message_received_at).total_seconds() * 1000
+                    delay_from_timestamp_ms = None
+                    if timestamp_from_raw and message_received_at:
+                        delay_from_timestamp_ms = (message_received_at - timestamp_from_raw).total_seconds() * 1000
+                    
+                    insert_data.append({
+                        "update_time": timestamp_from_raw or current_time,
+                        "account_id": self.account_id,
+                        "symbol": order_data.get("symbol", ""),
+                        "order_id": str(order_id),
+                        "client_order_id": order_data.get("clientOrderId", ""),
+                        "side": order_data.get("orderSide", ""),
+                        "order_type": order_data.get("orderType", ""),
+                        "position_side": order_data.get("positionSide", ""),
+                        "quantity": float(Decimal(order_data.get("origQty", "0"))),
+                        "price": float(Decimal(order_data.get("price", "0"))) if order_data.get("price") else None,
+                        "filled_quantity": float(Decimal(order_data.get("executedQty", "0"))),
+                        "status": order_data.get("state", ""),
+                        "time_in_force": order_data.get("timeInForce", ""),
+                        "create_time": self._parse_timestamp(order_data.get("createdTime") or order_data.get("createTime")),
+                        "update_time_order": self._parse_timestamp(order_data.get("updatedTime") or order_data.get("updateTime")),
+                        "message_received_at": message_received_at,
+                        "queue_wait_time_ms": queue_wait_time_ms,
+                        "processing_duration_ms": None,
+                        "database_write_duration_ms": None,
+                        "timestamp_from_raw": timestamp_from_raw,
+                        "delay_from_timestamp_ms": delay_from_timestamp_ms,
+                        "raw_data": json.dumps(order_data, ensure_ascii=False),
+                        "created_at": current_time,
+                    })
+                
+                if insert_data:
+                    insert_sql = text("""
+                        INSERT INTO xt_order_update_test (
+                            update_time, account_id, symbol, order_id, client_order_id, side, order_type,
+                            position_side, quantity, price, filled_quantity, status, time_in_force,
+                            create_time, update_time_order, message_received_at, queue_wait_time_ms,
+                            processing_duration_ms, database_write_duration_ms, timestamp_from_raw,
+                            delay_from_timestamp_ms, raw_data, created_at
+                        ) VALUES (
+                            :update_time, :account_id, :symbol, :order_id, :client_order_id, :side, :order_type,
+                            :position_side, :quantity, :price, :filled_quantity, :status, :time_in_force,
+                            :create_time, :update_time_order, :message_received_at, :queue_wait_time_ms,
+                            :processing_duration_ms, :database_write_duration_ms, :timestamp_from_raw,
+                            :delay_from_timestamp_ms, :raw_data, :created_at
+                        )
+                    """)
+                    
+                    for r in insert_data:
+                        await session.execute(insert_sql, r)
+                    
+                    await session.commit()
+                    commit_duration = (datetime.utcnow() - commit_start).total_seconds() * 1000
+                    
+                    # 更新 processing_duration_ms 和 database_write_duration_ms
+                    if insert_data:
+                        order_ids = [r["order_id"] for r in insert_data]
+                        update_sql = text("""
+                            UPDATE xt_order_update_test
+                            SET processing_duration_ms = (EXTRACT(EPOCH FROM (NOW() - message_received_at)) * 1000),
+                                database_write_duration_ms = :duration
+                            WHERE created_at >= :created_at_start
+                            AND created_at <= :created_at_end
+                            AND order_id = ANY(:order_ids)
+                        """)
+                        
+                        await session.execute(
+                            update_sql,
+                            {
+                                "duration": commit_duration,
+                                "created_at_start": current_time,
+                                "created_at_end": datetime.utcnow(),
+                                "order_ids": order_ids
+                            }
+                        )
+                        await session.commit()
+                    
+                    print(f"✓ 批量写入 {len(insert_data)} 条订单记录到测试表 "
+                          f"(耗时: {commit_duration:.2f}ms, 队列剩余: {len(self.batch)})")
+        
+        except Exception as e:
+            print(f"✗ 订单写入失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _parse_timestamp(self, value):
+        """解析时间戳."""
+        if not value:
+            return None
+        try:
+            if isinstance(value, (int, float)):
+                ts_sec = value / 1000.0 if value > 1e12 else value
+                return datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+        except (ValueError, OSError):
+            pass
+        return None
+
+
+class TestPositionWriter(TestDataWriter):
+    """测试用的持仓写入器，写入到测试表."""
+    
+    def __init__(self, db_manager: DatabaseManager, account_id: str):
+        super().__init__(db_manager, account_id, "xt_position_update_test", batch_size=50, batch_timeout=0.5)
+    
+    async def add_position(self, position_data: Dict[str, Any], message_received_at: datetime):
+        """添加持仓数据到批次."""
+        position_data["_message_received_at"] = message_received_at.isoformat()
+        self.batch.append({
+            "data": position_data,
+            "message_received_at": message_received_at,
+        })
+        
+        if len(self.batch) >= self.batch_size:
+            await self._flush_batch()
+    
+    async def _flush_batch(self):
+        """刷新持仓批次到数据库."""
+        if not self.batch:
+            return
+        
+        batch_start = datetime.utcnow()
+        batch_to_write = self.batch.copy()
+        self.batch = []
+        self.last_flush_time = datetime.utcnow()
+        
+        try:
+            async with self.db_manager.session() as session:
+                from sqlalchemy import text
+                
+                commit_start = datetime.utcnow()
+                current_time = datetime.utcnow()
+                
+                insert_data = []
+                for message in batch_to_write:
+                    position_data = message["data"]
+                    message_received_at = message["message_received_at"]
+                    
+                    symbol = position_data.get("symbol", "")
+                    if not symbol:
+                        continue
+                    
+                    quantity = Decimal(position_data.get("positionSize", "0"))
+                    if quantity == 0:
+                        continue
+                    
+                    timestamp = position_data.get("timestamp") or position_data.get("updateTime")
+                    timestamp_from_raw = None
+                    if timestamp:
+                        try:
+                            if isinstance(timestamp, (int, float)):
+                                ts_sec = timestamp / 1000.0 if timestamp > 1e12 else timestamp
+                                timestamp_from_raw = datetime.fromtimestamp(ts_sec, tz=timezone.utc).replace(tzinfo=None)
+                        except (ValueError, OSError):
+                            pass
+                    
+                    queue_wait_time_ms = (batch_start - message_received_at).total_seconds() * 1000
+                    delay_from_timestamp_ms = None
+                    if timestamp_from_raw and message_received_at:
+                        delay_from_timestamp_ms = (message_received_at - timestamp_from_raw).total_seconds() * 1000
+                    
+                    insert_data.append({
+                        "update_time": timestamp_from_raw or current_time,
+                        "account_id": self.account_id,
+                        "symbol": symbol,
+                        "side": position_data.get("positionSide", ""),
+                        "quantity": float(quantity),
+                        "entry_price": float(Decimal(position_data.get("entryPrice", "0"))) if position_data.get("entryPrice") else None,
+                        "mark_price": float(Decimal(position_data.get("markPrice", "0"))) if position_data.get("markPrice") else None,
+                        "liquidation_price": float(Decimal(position_data.get("liquidationPrice", "0"))) if position_data.get("liquidationPrice") else None,
+                        "unrealized_pnl": float(Decimal(position_data.get("unrealizedPnl", "0"))) if position_data.get("unrealizedPnl") else None,
+                        "leverage": int(position_data.get("leverage", 1)) if position_data.get("leverage") else None,
+                        "margin": float(Decimal(position_data.get("margin", "0"))) if position_data.get("margin") else None,
+                        "roe": float(Decimal(position_data.get("roe", "0"))) if position_data.get("roe") else None,
+                        "message_received_at": message_received_at,
+                        "queue_wait_time_ms": queue_wait_time_ms,
+                        "processing_duration_ms": None,
+                        "database_write_duration_ms": None,
+                        "timestamp_from_raw": timestamp_from_raw,
+                        "delay_from_timestamp_ms": delay_from_timestamp_ms,
+                        "raw_data": json.dumps(position_data, ensure_ascii=False),
+                        "created_at": current_time,
+                    })
+                
+                if insert_data:
+                    insert_sql = text("""
+                        INSERT INTO xt_position_update_test (
+                            update_time, account_id, symbol, side, quantity, entry_price, mark_price,
+                            liquidation_price, unrealized_pnl, leverage, margin, roe,
+                            message_received_at, queue_wait_time_ms, processing_duration_ms,
+                            database_write_duration_ms, timestamp_from_raw, delay_from_timestamp_ms,
+                            raw_data, created_at
+                        ) VALUES (
+                            :update_time, :account_id, :symbol, :side, :quantity, :entry_price, :mark_price,
+                            :liquidation_price, :unrealized_pnl, :leverage, :margin, :roe,
+                            :message_received_at, :queue_wait_time_ms, :processing_duration_ms,
+                            :database_write_duration_ms, :timestamp_from_raw, :delay_from_timestamp_ms,
+                            :raw_data, :created_at
+                        )
+                    """)
+                    
+                    for r in insert_data:
+                        await session.execute(insert_sql, r)
+                    
+                    await session.commit()
+                    commit_duration = (datetime.utcnow() - commit_start).total_seconds() * 1000
+                    
+                    # 更新 processing_duration_ms 和 database_write_duration_ms
+                    if insert_data:
+                        symbols = [r["symbol"] for r in insert_data]
+                        update_sql = text("""
+                            UPDATE xt_position_update_test
+                            SET processing_duration_ms = (EXTRACT(EPOCH FROM (NOW() - message_received_at)) * 1000),
+                                database_write_duration_ms = :duration
+                            WHERE created_at >= :created_at_start
+                            AND created_at <= :created_at_end
+                            AND symbol = ANY(:symbols)
+                        """)
+                        
+                        await session.execute(
+                            update_sql,
+                            {
+                                "duration": commit_duration,
+                                "created_at_start": current_time,
+                                "created_at_end": datetime.utcnow(),
+                                "symbols": symbols
+                            }
+                        )
+                        await session.commit()
+                    
+                    print(f"✓ 批量写入 {len(insert_data)} 条持仓记录到测试表 "
+                          f"(耗时: {commit_duration:.2f}ms, 队列剩余: {len(self.batch)})")
+        
+        except Exception as e:
+            print(f"✗ 持仓写入失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+
 class TestXTUserStreamService(XTUserStreamService):
     """测试用的 XT 用户流服务，写入到测试表."""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.test_writer = None
+        self.test_trade_writer = None
+        self.test_order_writer = None
+        self.test_position_writer = None
+        self.monitor_task = None
+        self.start_time = None
     
     async def start(self) -> None:
         """启动服务并初始化测试写入器."""
+        self.start_time = datetime.utcnow()
+        
         # 初始化测试写入器
-        self.test_writer = TestTradeWriter(self.db_manager, self.account_id or "test")
-        await self.test_writer.start()
+        if "trade" in self.enabled_channels:
+            self.test_trade_writer = TestTradeWriter(self.db_manager, self.account_id or "test")
+            await self.test_trade_writer.start()
+        
+        if "order" in self.enabled_channels:
+            self.test_order_writer = TestOrderWriter(self.db_manager, self.account_id or "test")
+            await self.test_order_writer.start()
+        
+        if "position" in self.enabled_channels:
+            self.test_position_writer = TestPositionWriter(self.db_manager, self.account_id or "test")
+            await self.test_position_writer.start()
+        
+        # 启动队列监控任务
+        self.monitor_task = asyncio.create_task(self._monitor_queues())
         
         # 调用父类启动
         await super().start()
     
     async def stop(self) -> None:
         """停止服务并刷新测试数据."""
-        if self.test_writer:
-            await self.test_writer.stop()
+        # 停止监控任务
+        if self.monitor_task:
+            self.monitor_task.cancel()
+            try:
+                await self.monitor_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self.test_trade_writer:
+            await self.test_trade_writer.stop()
+        if self.test_order_writer:
+            await self.test_order_writer.stop()
+        if self.test_position_writer:
+            await self.test_position_writer.stop()
         await super().stop()
+    
+    async def _monitor_queues(self):
+        """定期监控队列状态."""
+        while True:
+            try:
+                await asyncio.sleep(60)  # 每60秒输出一次状态
+                
+                elapsed = (datetime.utcnow() - self.start_time).total_seconds() if self.start_time else 0
+                elapsed_min = int(elapsed // 60)
+                elapsed_sec = int(elapsed % 60)
+                
+                stats = []
+                if self.test_trade_writer:
+                    trade_stats = self.test_trade_writer.get_stats()
+                    stats.append(f"成交队列: {trade_stats['queue_size']}/{trade_stats['batch_size']}")
+                
+                if self.test_order_writer:
+                    order_stats = self.test_order_writer.get_stats()
+                    stats.append(f"订单队列: {order_stats['queue_size']}/{order_stats['batch_size']}")
+                
+                if self.test_position_writer:
+                    position_stats = self.test_position_writer.get_stats()
+                    stats.append(f"持仓队列: {position_stats['queue_size']}/{position_stats['batch_size']}")
+                
+                # 检查是否有堵塞（队列大小超过批次大小的2倍）
+                warnings = []
+                if self.test_trade_writer and self.test_trade_writer.get_queue_size() > self.test_trade_writer.batch_size * 2:
+                    warnings.append("⚠️  成交队列可能堵塞")
+                if self.test_order_writer and self.test_order_writer.get_queue_size() > self.test_order_writer.batch_size * 2:
+                    warnings.append("⚠️  订单队列可能堵塞")
+                if self.test_position_writer and self.test_position_writer.get_queue_size() > self.test_position_writer.batch_size * 2:
+                    warnings.append("⚠️  持仓队列可能堵塞")
+                
+                status_line = f"[{elapsed_min:02d}:{elapsed_sec:02d}] " + " | ".join(stats)
+                if warnings:
+                    status_line += " | " + " | ".join(warnings)
+                
+                print(status_line)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"监控任务错误: {e}")
     
     async def _handle_trade_update(self, data: Dict[str, Any]) -> None:
         """处理成交更新，写入测试表."""
@@ -285,14 +674,80 @@ class TestXTUserStreamService(XTUserStreamService):
             await self._display_trade_update(trade_data)
             
             # 添加到测试写入器（记录真实的消息接收时间）
-            if self.test_writer:
-                await self.test_writer.add_trade(trade_data, message_received_at)
+            if self.test_trade_writer:
+                await self.test_trade_writer.add_trade(trade_data, message_received_at)
             
             # 不调用父类的保存方法（避免写入正式表，只写入测试表）
             # await self._save_trade_update(trade_data)
             
         except Exception as e:
             print(f"Error handling trade update: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _handle_order_update(self, data: Dict[str, Any]) -> None:
+        """处理订单更新，写入测试表."""
+        if "order" not in self.enabled_channels:
+            return
+        
+        # 记录消息接收时间
+        message_received_at = datetime.utcnow()
+        
+        # 提取XT订单数据
+        order_data = data.get("data", {})
+        if not order_data:
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_order_changed(order_data):
+            return
+        
+        try:
+            # 显示订单更新（可选）
+            await self._display_order_update(order_data)
+            
+            # 添加到测试写入器
+            if self.test_order_writer:
+                await self.test_order_writer.add_order(order_data, message_received_at)
+            
+            # 不调用父类的保存方法（避免写入正式表，只写入测试表）
+            # await self._save_order_update(order_data)
+            
+        except Exception as e:
+            print(f"Error handling order update: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _handle_position_update(self, data: Dict[str, Any]) -> None:
+        """处理持仓更新，写入测试表."""
+        if "position" not in self.enabled_channels:
+            return
+        
+        # 记录消息接收时间
+        message_received_at = datetime.utcnow()
+        
+        # 提取XT持仓数据
+        position_data = data.get("data", {})
+        if not position_data:
+            return
+        
+        # 检查数据是否有变化
+        if not self._has_position_changed(position_data):
+            return
+        
+        try:
+            # 显示持仓更新（可选）
+            await self._display_position_update(position_data)
+            
+            # 添加到测试写入器
+            if self.test_position_writer:
+                await self.test_position_writer.add_position(position_data, message_received_at)
+            
+            # 不调用父类的保存方法（避免写入正式表，只写入测试表）
+            # await self._save_position_update(position_data)
+            
+        except Exception as e:
+            print(f"Error handling position update: {e}")
             import traceback
             traceback.print_exc()
 
@@ -304,8 +759,8 @@ async def main():
     parser = argparse.ArgumentParser(description="测试真实成交消息队列性能")
     parser.add_argument("--config", type=str, default="config/accounts.json", help="配置文件路径")
     parser.add_argument("--account-id", type=str, help="账号ID（可选）")
-    parser.add_argument("--duration", type=int, default=300, help="测试持续时间（秒，默认: 300）")
-    parser.add_argument("--channels", type=str, default="trade", help="订阅的频道（默认: trade）")
+    parser.add_argument("--duration", type=int, default=1200, help="测试持续时间（秒，默认: 1200，即20分钟）")
+    parser.add_argument("--channels", type=str, default="trade,order,position", help="订阅的频道，用逗号分隔（默认: trade,order,position）")
     
     args = parser.parse_args()
     
@@ -323,10 +778,22 @@ async def main():
             return
         account_config = accounts[0]
     
+    duration_min = args.duration // 60
+    duration_sec = args.duration % 60
     print(f"使用账号: {account_config.account_id} ({account_config.name})")
-    print(f"测试持续时间: {args.duration} 秒")
+    print(f"测试持续时间: {args.duration} 秒 ({duration_min} 分 {duration_sec} 秒)")
     print(f"订阅频道: {args.channels}")
-    print(f"数据将写入测试表: xt_trade_update_test\n")
+    
+    channels_list = args.channels.split(",") if args.channels else ["trade"]
+    test_tables = []
+    if "trade" in channels_list:
+        test_tables.append("xt_trade_update_test")
+    if "order" in channels_list:
+        test_tables.append("xt_order_update_test")
+    if "position" in channels_list:
+        test_tables.append("xt_position_update_test")
+    
+    print(f"数据将写入测试表: {', '.join(test_tables)}\n")
     
     # 创建数据库管理器（会自动初始化）
     db_manager = DatabaseManager()
@@ -348,6 +815,8 @@ async def main():
     # 启动服务
     print("开始订阅 WebSocket 消息...")
     print("=" * 80)
+    print("队列状态监控（每60秒输出一次）:")
+    print("-" * 80)
     
     try:
         # 在后台运行服务
@@ -356,7 +825,8 @@ async def main():
         # 等待指定时间
         await asyncio.sleep(args.duration)
         
-        print(f"\n测试时间到，停止服务...")
+        print("\n" + "-" * 80)
+        print(f"测试时间到，停止服务...")
         await service.stop()
         service_task.cancel()
         
@@ -364,6 +834,15 @@ async def main():
             await service_task
         except asyncio.CancelledError:
             pass
+        
+        # 输出最终队列状态
+        print("\n最终队列状态:")
+        if service.test_trade_writer:
+            print(f"  成交队列剩余: {service.test_trade_writer.get_queue_size()} 条")
+        if service.test_order_writer:
+            print(f"  订单队列剩余: {service.test_order_writer.get_queue_size()} 条")
+        if service.test_position_writer:
+            print(f"  持仓队列剩余: {service.test_position_writer.get_queue_size()} 条")
         
         print("\n" + "=" * 80)
         print("测试完成！")

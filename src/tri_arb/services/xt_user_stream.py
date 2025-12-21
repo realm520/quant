@@ -147,8 +147,8 @@ class XTUserStreamService:
             overflow_handler=self._handle_trade_queue_overflow
         )
         self._trade_writer_task: Optional[asyncio.Task] = None
-        self._batch_size = 10  # 批量写入大小
-        self._batch_timeout = 1.0  # 批量写入超时（秒）
+        self._batch_size = 50  # 批量写入大小（优化：从10增加到50，减少数据库往返次数）
+        self._batch_timeout = 0.5  # 批量写入超时（秒）（优化：从1.0减少到0.5，更频繁刷新批次）
         
         logger.debug("XT WebSocket service initialized",
                     extra={

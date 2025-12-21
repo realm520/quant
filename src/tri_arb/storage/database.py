@@ -137,9 +137,10 @@ class DatabaseManager:
                         inspector = inspect(sync_conn)
                         table_exists = inspector.has_table(table_name)
                         
+                        table_created = False
                         if not table_exists:
-                            # 表不存在，使用 CreateTable 创建表（包含所有约束）
-                            # CreateTable 会自动包含 UniqueConstraint
+                            # 表不存在，使用 CreateTable 创建表（包含所有约束和 UniqueConstraint）
+                            # CreateTable 会自动包含 UniqueConstraint，不需要单独创建
                             try:
                                 from sqlalchemy.schema import CreateTable
                                 from sqlalchemy import text
@@ -147,53 +148,40 @@ class DatabaseManager:
                                 sync_conn.execute(text(create_table_sql))
                                 sync_conn.commit()
                                 logger.info(f"✓ Created table: {table_name}")
+                                table_created = True
                                 created_tables.append(table_name)
                             except (ProgrammingError, DBAPIError) as create_err:
                                 sync_conn.rollback()
                                 create_err_str = str(create_err).lower()
                                 if "already exists" in create_err_str or "duplicate" in create_err_str:
                                     logger.debug(f"Table {table_name} already exists (skipping)")
+                                    table_created = True  # 表已存在，视为成功
                                     created_tables.append(table_name)
                                 else:
-                                    logger.warning(f"Failed to create table {table_name}: {create_err}")
-                                    raise create_err
+                                    logger.error(f"Failed to create table {table_name}: {create_err}")
+                                    failed_tables.append((table_name, str(create_err)))
+                                    continue  # 表创建失败，跳过索引创建
                         else:
                             # 表已存在
                             logger.debug(f"Table {table_name} already exists (skipping table creation)")
+                            table_created = True
                             created_tables.append(table_name)
                         
-                        # 尝试创建索引和约束（忽略已存在的错误）
-                        # 注意：如果使用 table.create()，索引和约束应该已经创建了
-                        # 但为了保险，我们仍然尝试创建缺失的索引
-                        for index in table.indexes:
-                            try:
-                                index.create(sync_conn, checkfirst=True)
-                                sync_conn.commit()
-                            except (ProgrammingError, DBAPIError) as idx_err:
-                                sync_conn.rollback()
-                                idx_err_str = str(idx_err).lower()
-                                if "already exists" in idx_err_str or "duplicate" in idx_err_str:
-                                    logger.debug(f"Index {index.name} already exists (skipping)")
-                                else:
-                                    logger.warning(f"Failed to create index {index.name}: {idx_err}")
-                        
-                        # 尝试创建唯一约束（UniqueConstraint）
-                        for constraint in table.constraints:
-                            # 检查是否是 UniqueConstraint
-                            if hasattr(constraint, 'name') and constraint.name:
-                                constraint_type = type(constraint).__name__
-                                if 'Unique' in constraint_type:
-                                    try:
-                                        constraint.create(sync_conn, checkfirst=True)
-                                        sync_conn.commit()
-                                        logger.debug(f"✓ Created/verified unique constraint: {constraint.name}")
-                                    except (ProgrammingError, DBAPIError) as constraint_err:
-                                        sync_conn.rollback()
-                                        constraint_err_str = str(constraint_err).lower()
-                                        if "already exists" in constraint_err_str or "duplicate" in constraint_err_str:
-                                            logger.debug(f"Unique constraint {constraint.name} already exists (skipping)")
-                                        else:
-                                            logger.warning(f"Failed to create unique constraint {constraint.name}: {constraint_err}")
+                        # 只有在表创建成功或已存在时，才尝试创建索引
+                        # UniqueConstraint 已经在 CreateTable 中创建，不需要单独处理
+                        if table_created:
+                            for index in table.indexes:
+                                try:
+                                    index.create(sync_conn, checkfirst=True)
+                                    sync_conn.commit()
+                                except (ProgrammingError, DBAPIError) as idx_err:
+                                    sync_conn.rollback()
+                                    idx_err_str = str(idx_err).lower()
+                                    if "already exists" in idx_err_str or "duplicate" in idx_err_str:
+                                        logger.debug(f"Index {index.name} already exists (skipping)")
+                                    else:
+                                        # 索引创建失败不影响表的使用，只记录警告
+                                        logger.warning(f"Failed to create index {index.name}: {idx_err}")
                     except (ProgrammingError, DBAPIError) as pe:
                         sync_conn.rollback()
                         pe_str = str(pe).lower()

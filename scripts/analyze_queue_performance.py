@@ -111,27 +111,41 @@ def main():
             print(f"\n【队列等待时间分布】")
             print("-" * 80)
             cur.execute("""
+                WITH wait_ranges AS (
+                    SELECT 
+                        CASE 
+                            WHEN queue_wait_time_ms < 100 THEN '< 100ms'
+                            WHEN queue_wait_time_ms < 500 THEN '100-500ms'
+                            WHEN queue_wait_time_ms < 1000 THEN '500ms-1s'
+                            WHEN queue_wait_time_ms < 5000 THEN '1s-5s'
+                            WHEN queue_wait_time_ms < 10000 THEN '5s-10s'
+                            ELSE '> 10s'
+                        END as wait_range,
+                        COUNT(*) as count
+                    FROM xt_trade_update_test
+                    WHERE created_at >= NOW() - INTERVAL '1 hour'
+                    GROUP BY 
+                        CASE 
+                            WHEN queue_wait_time_ms < 100 THEN '< 100ms'
+                            WHEN queue_wait_time_ms < 500 THEN '100-500ms'
+                            WHEN queue_wait_time_ms < 1000 THEN '500ms-1s'
+                            WHEN queue_wait_time_ms < 5000 THEN '1s-5s'
+                            WHEN queue_wait_time_ms < 10000 THEN '5s-10s'
+                            ELSE '> 10s'
+                        END
+                )
                 SELECT 
-                    CASE 
-                        WHEN queue_wait_time_ms < 100 THEN '< 100ms'
-                        WHEN queue_wait_time_ms < 500 THEN '100-500ms'
-                        WHEN queue_wait_time_ms < 1000 THEN '500ms-1s'
-                        WHEN queue_wait_time_ms < 5000 THEN '1s-5s'
-                        WHEN queue_wait_time_ms < 10000 THEN '5s-10s'
-                        ELSE '> 10s'
-                    END as wait_range,
-                    COUNT(*) as count,
-                    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
-                FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
-                GROUP BY wait_range
+                    wait_range,
+                    count,
+                    ROUND(100.0 * count / SUM(count) OVER (), 2) as percentage
+                FROM wait_ranges
                 ORDER BY 
-                    CASE wait_range
-                        WHEN '< 100ms' THEN 1
-                        WHEN '100-500ms' THEN 2
-                        WHEN '500ms-1s' THEN 3
-                        WHEN '1s-5s' THEN 4
-                        WHEN '5s-10s' THEN 5
+                    CASE 
+                        WHEN wait_range = '< 100ms' THEN 1
+                        WHEN wait_range = '100-500ms' THEN 2
+                        WHEN wait_range = '500ms-1s' THEN 3
+                        WHEN wait_range = '1s-5s' THEN 4
+                        WHEN wait_range = '5s-10s' THEN 5
                         ELSE 6
                     END
             """)

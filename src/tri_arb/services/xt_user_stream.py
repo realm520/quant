@@ -123,6 +123,11 @@ class XTUserStreamService:
         self.listen_key = None
         self._subscription_request_id: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        
+        # 标记价格缓存（避免频繁调用 REST API）
+        self._mark_price_cache: Dict[str, Dict[str, Any]] = {}  # {symbol: {"price": Decimal, "timestamp": datetime}}
+        self._mark_price_cache_ttl = 5.0  # 缓存有效期（秒）
+        self._mark_price_update_task: Optional[asyncio.Task] = None
         self._heartbeat_interval = 15  # seconds
 
         # 数据缓存（用于检测变化）
@@ -146,7 +151,17 @@ class XTUserStreamService:
             maxsize=1000,  # 最多缓冲 1000 条成交消息
             overflow_handler=self._handle_trade_queue_overflow
         )
+        self._order_queue = AsyncBoundedQueue(
+            maxsize=1000,  # 最多缓冲 1000 条订单消息
+            overflow_handler=self._handle_order_queue_overflow
+        )
+        self._position_queue = AsyncBoundedQueue(
+            maxsize=500,  # 最多缓冲 500 条持仓消息（持仓更新频率较低）
+            overflow_handler=self._handle_position_queue_overflow
+        )
         self._trade_writer_task: Optional[asyncio.Task] = None
+        self._order_writer_task: Optional[asyncio.Task] = None
+        self._position_writer_task: Optional[asyncio.Task] = None
         self._batch_size = 50  # 批量写入大小（优化：从10增加到50，减少数据库往返次数）
         self._batch_timeout = 0.5  # 批量写入超时（秒）（优化：从1.0减少到0.5，更频繁刷新批次）
         
@@ -210,9 +225,22 @@ class XTUserStreamService:
 
         logger.debug("Starting XT WebSocket service")
         
-        # 启动成交数据写入后台任务
-        self._trade_writer_task = asyncio.create_task(self._trade_writer_loop())
-        logger.info("Trade writer task started")
+        # 启动数据写入后台任务
+        if "trade" in self.enabled_channels:
+            self._trade_writer_task = asyncio.create_task(self._trade_writer_loop())
+            logger.info("Trade writer task started")
+        
+        if "order" in self.enabled_channels:
+            self._order_writer_task = asyncio.create_task(self._order_writer_loop())
+            logger.info("Order writer task started")
+        
+        if "position" in self.enabled_channels:
+            self._position_writer_task = asyncio.create_task(self._position_writer_loop())
+            logger.info("Position writer task started")
+        
+        # 启动标记价格更新后台任务
+        self._mark_price_update_task = asyncio.create_task(self._mark_price_update_loop())
+        logger.info("Mark price update task started")
         
         # 启动WebSocket连接循环
         while self.is_running:
@@ -234,6 +262,14 @@ class XTUserStreamService:
         
         # 记录连接结束
         await self._record_connection_end()
+        
+        # 停止标记价格更新任务
+        if self._mark_price_update_task:
+            self._mark_price_update_task.cancel()
+            try:
+                await self._mark_price_update_task
+            except asyncio.CancelledError:
+                pass
 
         # 清理资源
         if self.rest_client:
@@ -248,12 +284,26 @@ class XTUserStreamService:
             extra={"queue_size": self._trade_queue.qsize()}
         )
     
+    async def _handle_order_queue_overflow(self, item: Any) -> None:
+        """处理订单消息队列溢出."""
+        logger.error(
+            f"订单消息队列已满，丢弃消息: {item}",
+            extra={"queue_size": self._order_queue.qsize()}
+        )
+    
+    async def _handle_position_queue_overflow(self, item: Any) -> None:
+        """处理持仓消息队列溢出."""
+        logger.error(
+            f"持仓消息队列已满，丢弃消息: {item}",
+            extra={"queue_size": self._position_queue.qsize()}
+        )
+    
     async def stop(self) -> None:
         """停止WebSocket服务."""
         logger.info("Stopping XT WebSocket service")
         self.is_running = False
         
-        # 停止成交写入任务
+        # 停止数据写入任务
         if self._trade_writer_task and not self._trade_writer_task.done():
             logger.info("Stopping trade writer task")
             self._trade_writer_task.cancel()
@@ -262,8 +312,26 @@ class XTUserStreamService:
             except asyncio.CancelledError:
                 pass
         
+        if self._order_writer_task and not self._order_writer_task.done():
+            logger.info("Stopping order writer task")
+            self._order_writer_task.cancel()
+            try:
+                await self._order_writer_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self._position_writer_task and not self._position_writer_task.done():
+            logger.info("Stopping position writer task")
+            self._position_writer_task.cancel()
+            try:
+                await self._position_writer_task
+            except asyncio.CancelledError:
+                pass
+        
         # 刷新队列中剩余的消息
         await self._flush_remaining_trades()
+        await self._flush_remaining_orders()
+        await self._flush_remaining_positions()
         
         if self.websocket:
             await self._stop_heartbeat()
@@ -621,11 +689,16 @@ class XTUserStreamService:
             return
         
         try:
+            # 记录消息接收时间（用于延迟监控）
+            message_received_at = datetime.utcnow()
+            if isinstance(position_data, dict):
+                position_data["_message_received_at"] = message_received_at.isoformat()
+            
             # 显示持仓更新（已禁用，专注于成交更新日志）
             await self._display_position_update(position_data)
             
-            # 保存到数据库
-            await self._save_position_update(position_data)
+            # 将持仓数据放入队列（异步处理，不阻塞）
+            await self._position_queue.put(position_data)
             
             # 更新统计
             await self._update_position_stats()
@@ -652,11 +725,16 @@ class XTUserStreamService:
             # 记录订单信息（用于划转分析）
             self._record_order_for_transfer_analysis(order_data)
             
+            # 记录消息接收时间（用于延迟监控）
+            message_received_at = datetime.utcnow()
+            if isinstance(order_data, dict):
+                order_data["_message_received_at"] = message_received_at.isoformat()
+            
             # 显示订单更新（已禁用，专注于成交更新日志）
             await self._display_order_update(order_data)
             
-            # 保存到数据库
-            await self._save_order_update(order_data)
+            # 将订单数据放入队列（异步处理，不阻塞）
+            await self._order_queue.put(order_data)
             
             # 更新 Prometheus metrics
             if self.account_id:
@@ -1219,17 +1297,33 @@ class XTUserStreamService:
                     realized_pnl_raw = data.get("realizedProfit") or data.get("realizedPnl") or "0"
                     realized_pnl = self._safe_decimal(realized_pnl_raw)
                     
-                    # 标记价和未实现盈亏：WebSocket数据中没有，需要通过REST API获取
+                    # 标记价和未实现盈亏：WebSocket数据中没有，从缓存或REST API获取
                     mark_price = Decimal("0")
                     unrealized_pnl = Decimal("0")
                     
-                    # 尝试从REST API获取标记价和未实现盈亏
-                    if self.rest_client and self.rest_client.is_connected and quantity > 0:
+                    # 优先从缓存获取标记价格
+                    cache_key = f"{symbol}_{side}"
+                    cached_data = self._mark_price_cache.get(cache_key)
+                    use_cache = False
+                    
+                    if cached_data:
+                        cache_age = (datetime.utcnow() - cached_data["timestamp"]).total_seconds()
+                        if cache_age < self._mark_price_cache_ttl:
+                            mark_price = cached_data["price"]
+                            use_cache = True
+                    
+                    # 如果缓存不可用，尝试从REST API获取（但不阻塞，使用缓存中的旧值）
+                    if not use_cache and self.rest_client and self.rest_client.is_connected and quantity > 0:
                         try:
                             positions_rest = await self.rest_client.get_positions(symbol=symbol)
                             for pos in positions_rest:
                                 if pos.symbol == symbol and pos.position_side == side:
                                     mark_price = pos.mark_price
+                                    # 更新缓存
+                                    self._mark_price_cache[cache_key] = {
+                                        "price": mark_price,
+                                        "timestamp": datetime.utcnow()
+                                    }
                                     # 如果REST API返回了未实现盈亏，使用它；否则计算
                                     if pos.unrealized_pnl and pos.unrealized_pnl != Decimal("0"):
                                         unrealized_pnl = pos.unrealized_pnl
@@ -1242,6 +1336,17 @@ class XTUserStreamService:
                                     break
                         except Exception as e:
                             logger.debug(f"Failed to get mark price from REST API for {symbol}: {e}")
+                            # 如果 REST API 失败，尝试使用缓存中的旧值
+                            if cached_data:
+                                mark_price = cached_data["price"]
+                                use_cache = True
+                    
+                    # 如果有标记价格，计算未实现盈亏
+                    if mark_price > 0 and not unrealized_pnl:
+                        if side.upper() == "SHORT":
+                            unrealized_pnl = (entry_price - mark_price) * quantity
+                        else:
+                            unrealized_pnl = (mark_price - entry_price) * quantity
                     
                     # XT API uses breakPrice, fallback to liquidationPrice
                     liquidation_price_raw = data.get("breakPrice") or data.get("liquidationPrice", "0")
@@ -1501,6 +1606,124 @@ class XTUserStreamService:
         
         logger.info("Trade writer loop stopped")
     
+    async def _order_writer_loop(self) -> None:
+        """订单数据写入后台任务循环.
+        
+        从队列中取出订单数据，批量写入数据库。
+        """
+        batch = []
+        last_flush_time = datetime.utcnow()
+        
+        logger.info("Order writer loop started")
+        
+        while self.is_running:
+            try:
+                # 尝试从队列获取数据，设置超时以便定期刷新批次
+                try:
+                    order_data = await asyncio.wait_for(
+                        self._order_queue.get(),
+                        timeout=self._batch_timeout
+                    )
+                    batch.append(order_data)
+                except asyncio.TimeoutError:
+                    # 超时：如果批次不为空，刷新批次
+                    if batch:
+                        await self._save_order_batch(batch)
+                        batch = []
+                        last_flush_time = datetime.utcnow()
+                    continue
+                
+                # 如果批次达到大小，立即写入
+                if len(batch) >= self._batch_size:
+                    await self._save_order_batch(batch)
+                    batch = []
+                    last_flush_time = datetime.utcnow()
+                
+                # 标记任务完成
+                self._order_queue.task_done()
+                
+            except asyncio.CancelledError:
+                logger.info("Order writer loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in order writer loop: {e}", exc_info=True)
+                # 发生错误时，尝试保存当前批次
+                if batch:
+                    try:
+                        await self._save_order_batch(batch)
+                        batch = []
+                    except Exception as batch_error:
+                        logger.error(f"Failed to save batch after error: {batch_error}", exc_info=True)
+        
+        # 退出前刷新剩余批次
+        if batch:
+            logger.info(f"Flushing remaining {len(batch)} orders before exit")
+            try:
+                await self._save_order_batch(batch)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining orders: {e}", exc_info=True)
+        
+        logger.info("Order writer loop stopped")
+    
+    async def _position_writer_loop(self) -> None:
+        """持仓数据写入后台任务循环.
+        
+        从队列中取出持仓数据，批量写入数据库。
+        """
+        batch = []
+        last_flush_time = datetime.utcnow()
+        
+        logger.info("Position writer loop started")
+        
+        while self.is_running:
+            try:
+                # 尝试从队列获取数据，设置超时以便定期刷新批次
+                try:
+                    position_data = await asyncio.wait_for(
+                        self._position_queue.get(),
+                        timeout=self._batch_timeout
+                    )
+                    batch.append(position_data)
+                except asyncio.TimeoutError:
+                    # 超时：如果批次不为空，刷新批次
+                    if batch:
+                        await self._save_position_batch(batch)
+                        batch = []
+                        last_flush_time = datetime.utcnow()
+                    continue
+                
+                # 如果批次达到大小，立即写入
+                if len(batch) >= self._batch_size:
+                    await self._save_position_batch(batch)
+                    batch = []
+                    last_flush_time = datetime.utcnow()
+                
+                # 标记任务完成
+                self._position_queue.task_done()
+                
+            except asyncio.CancelledError:
+                logger.info("Position writer loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in position writer loop: {e}", exc_info=True)
+                # 发生错误时，尝试保存当前批次
+                if batch:
+                    try:
+                        await self._save_position_batch(batch)
+                        batch = []
+                    except Exception as batch_error:
+                        logger.error(f"Failed to save batch after error: {batch_error}", exc_info=True)
+        
+        # 退出前刷新剩余批次
+        if batch:
+            logger.info(f"Flushing remaining {len(batch)} positions before exit")
+            try:
+                await self._save_position_batch(batch)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining positions: {e}", exc_info=True)
+        
+        logger.info("Position writer loop stopped")
+    
     async def _flush_remaining_trades(self) -> None:
         """刷新队列中剩余的所有成交数据."""
         remaining = []
@@ -1524,6 +1747,54 @@ class XTUserStreamService:
                 await self._save_trade_batch(remaining)
             except Exception as e:
                 logger.error(f"Failed to flush remaining trades: {e}", exc_info=True)
+    
+    async def _flush_remaining_orders(self) -> None:
+        """刷新队列中剩余的所有订单数据."""
+        remaining = []
+        try:
+            while True:
+                try:
+                    order_data = await asyncio.wait_for(
+                        self._order_queue.get(),
+                        timeout=0.1
+                    )
+                    remaining.append(order_data)
+                    self._order_queue.task_done()
+                except asyncio.TimeoutError:
+                    break
+        except Exception as e:
+            logger.error(f"Error flushing remaining orders: {e}", exc_info=True)
+        
+        if remaining:
+            logger.info(f"Flushing {len(remaining)} remaining orders from queue")
+            try:
+                await self._save_order_batch(remaining)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining orders: {e}", exc_info=True)
+    
+    async def _flush_remaining_positions(self) -> None:
+        """刷新队列中剩余的所有持仓数据."""
+        remaining = []
+        try:
+            while True:
+                try:
+                    position_data = await asyncio.wait_for(
+                        self._position_queue.get(),
+                        timeout=0.1
+                    )
+                    remaining.append(position_data)
+                    self._position_queue.task_done()
+                except asyncio.TimeoutError:
+                    break
+        except Exception as e:
+            logger.error(f"Error flushing remaining positions: {e}", exc_info=True)
+        
+        if remaining:
+            logger.info(f"Flushing {len(remaining)} remaining positions from queue")
+            try:
+                await self._save_position_batch(remaining)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining positions: {e}", exc_info=True)
     
     async def _save_trade_batch(self, batch: list[Dict[str, Any]]) -> None:
         """批量保存成交数据到数据库.
@@ -1724,6 +1995,221 @@ class XTUserStreamService:
                 
         except Exception as e:
             logger.error(f"Failed to save trade batch: {e}", exc_info=True)
+    
+    async def _save_order_batch(self, batch: list[Dict[str, Any]]) -> None:
+        """批量保存订单数据到数据库.
+        
+        Args:
+            batch: 订单数据列表
+        """
+        if not batch:
+            return
+        
+        save_start_time = datetime.utcnow()
+        logger.debug(f"Saving batch of {len(batch)} orders to database")
+        
+        try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
+            async with self.db_manager.session() as session:
+                OrderUpdateModel = self._get_model('XTOrderUpdate')
+                records = []
+                
+                for order_data in batch:
+                    if "orderId" not in order_data and "order_id" not in order_data:
+                        continue
+                    
+                    order_id = order_data.get("orderId") or order_data.get("order_id", "")
+                    if not order_id:
+                        continue
+                    
+                    symbol = order_data.get("symbol", "")
+                    side = order_data.get("orderSide") or order_data.get("side", "")
+                    order_type = order_data.get("orderType") or order_data.get("type", "")
+                    quantity_raw = order_data.get("origQty") or order_data.get("quantity", "0")
+                    quantity = self._safe_decimal(quantity_raw)
+                    price = self._safe_decimal(order_data.get("price", "0"))
+                    filled_quantity_raw = order_data.get("executedQty") or order_data.get("filledQuantity") or order_data.get("filled_quantity", "0")
+                    filled_quantity = self._safe_decimal(filled_quantity_raw)
+                    status = order_data.get("state") or order_data.get("status", "")
+                    
+                    # 解析时间戳
+                    timestamp = order_data.get("timestamp") or order_data.get("updatedTime") or order_data.get("updateTime") or order_data.get("createdTime") or order_data.get("createTime")
+                    if timestamp:
+                        try:
+                            if isinstance(timestamp, (int, float)):
+                                update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc).replace(tzinfo=None)
+                            else:
+                                update_time = datetime.utcnow()
+                        except (ValueError, OSError):
+                            update_time = datetime.utcnow()
+                    else:
+                        update_time = datetime.utcnow()
+                    
+                    record = OrderUpdateModel(
+                        update_time=update_time,
+                        account_id=self.account_id,
+                        symbol=symbol,
+                        order_id=str(order_id),
+                        client_order_id=order_data.get("clientOrderId") or order_data.get("client_order_id", ""),
+                        side=side,
+                        order_type=order_type,
+                        position_side=order_data.get("positionSide") or order_data.get("position_side", ""),
+                        quantity=quantity,
+                        price=price,
+                        filled_quantity=filled_quantity,
+                        status=status,
+                        time_in_force=order_data.get("timeInForce") or order_data.get("time_in_force", ""),
+                        create_time=self._parse_timestamp(order_data.get("createdTime") or order_data.get("createTime") or order_data.get("created_time")),
+                        update_time_order=self._parse_timestamp(order_data.get("updatedTime") or order_data.get("updateTime") or order_data.get("updated_time")),
+                        raw_data=json.dumps(order_data, cls=DecimalEncoder),
+                    )
+                    records.append(record)
+                
+                if records:
+                    session.add_all(records)
+                    commit_start = datetime.utcnow()
+                    await session.commit()
+                    commit_duration = (datetime.utcnow() - commit_start).total_seconds()
+                    total_duration = (datetime.utcnow() - save_start_time).total_seconds()
+                    
+                    logger.debug(
+                        f"Saved {len(records)} orders in batch: "
+                        f"total={total_duration:.3f}s, commit={commit_duration:.3f}s"
+                    )
+                    
+                    # 监控数据库写入延迟
+                    if commit_duration > 1.0:
+                        logger.warning(
+                            f"⚠️ 订单数据库写入延迟: 提交耗时 {commit_duration:.2f} 秒"
+                        )
+                    
+                    # 监控队列积压
+                    queue_size = self._order_queue.qsize()
+                    if queue_size > 100:
+                        logger.warning(
+                            f"⚠️ 订单消息队列积压: {queue_size} 条消息待处理"
+                        )
+                
+        except Exception as e:
+            logger.error(f"Failed to save order batch: {e}", exc_info=True)
+    
+    async def _save_position_batch(self, batch: list[Dict[str, Any]]) -> None:
+        """批量保存持仓数据到数据库.
+        
+        Args:
+            batch: 持仓数据列表
+        """
+        if not batch:
+            return
+        
+        save_start_time = datetime.utcnow()
+        logger.debug(f"Saving batch of {len(batch)} positions to database")
+        
+        try:
+            # 确保账号特定的表已创建（如果是新账号）
+            await self._ensure_account_tables_if_needed()
+            
+            async with self.db_manager.session() as session:
+                PositionUpdateModel = self._get_model('XTPositionUpdate')
+                records = []
+                
+                for position_data in batch:
+                    if "symbol" not in position_data:
+                        continue
+                    
+                    symbol = position_data.get("symbol", "")
+                    if not symbol:
+                        continue
+                    
+                    side = position_data.get("positionSide") or position_data.get("side", "")
+                    quantity_raw = position_data.get("positionSize") or position_data.get("quantity") or position_data.get("positionAmt", "0")
+                    quantity = self._safe_decimal(quantity_raw)
+                    
+                    # 跳过持仓量为0的记录
+                    if quantity == 0:
+                        continue
+                    
+                    entry_price = self._safe_decimal(position_data.get("entryPrice", "0"))
+                    realized_pnl_raw = position_data.get("realizedProfit") or position_data.get("realizedPnl") or "0"
+                    realized_pnl = self._safe_decimal(realized_pnl_raw)
+                    
+                    # 标记价和未实现盈亏：从缓存获取
+                    mark_price = Decimal("0")
+                    unrealized_pnl = Decimal("0")
+                    
+                    cache_key = f"{symbol}_{side}"
+                    cached_data = self._mark_price_cache.get(cache_key)
+                    
+                    if cached_data:
+                        cache_age = (datetime.utcnow() - cached_data["timestamp"]).total_seconds()
+                        if cache_age < self._mark_price_cache_ttl:
+                            mark_price = cached_data["price"]
+                            # 计算未实现盈亏
+                            if side.upper() == "SHORT":
+                                unrealized_pnl = (entry_price - mark_price) * quantity
+                            else:
+                                unrealized_pnl = (mark_price - entry_price) * quantity
+                    
+                    # 解析时间戳
+                    timestamp = position_data.get("timestamp") or position_data.get("updateTime")
+                    if timestamp:
+                        try:
+                            if isinstance(timestamp, (int, float)):
+                                update_time = datetime.fromtimestamp(timestamp/1000.0, tz=timezone.utc).replace(tzinfo=None)
+                            else:
+                                update_time = datetime.utcnow()
+                        except (ValueError, OSError):
+                            update_time = datetime.utcnow()
+                    else:
+                        update_time = datetime.utcnow()
+                    
+                    liquidation_price_raw = position_data.get("breakPrice") or position_data.get("liquidationPrice", "0")
+                    
+                    record = PositionUpdateModel(
+                        update_time=update_time,
+                        account_id=self.account_id,
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=entry_price,
+                        mark_price=mark_price,
+                        liquidation_price=self._safe_decimal(liquidation_price_raw),
+                        unrealized_pnl=unrealized_pnl,
+                        leverage=int(position_data.get("leverage", "1")),
+                        margin=self._safe_decimal(position_data.get("isolatedMargin") or position_data.get("margin", "0")),
+                        raw_data=json.dumps(position_data, cls=DecimalEncoder),
+                    )
+                    records.append(record)
+                
+                if records:
+                    session.add_all(records)
+                    commit_start = datetime.utcnow()
+                    await session.commit()
+                    commit_duration = (datetime.utcnow() - commit_start).total_seconds()
+                    total_duration = (datetime.utcnow() - save_start_time).total_seconds()
+                    
+                    logger.debug(
+                        f"Saved {len(records)} positions in batch: "
+                        f"total={total_duration:.3f}s, commit={commit_duration:.3f}s"
+                    )
+                    
+                    # 监控数据库写入延迟
+                    if commit_duration > 1.0:
+                        logger.warning(
+                            f"⚠️ 持仓数据库写入延迟: 提交耗时 {commit_duration:.2f} 秒"
+                        )
+                    
+                    # 监控队列积压
+                    queue_size = self._position_queue.qsize()
+                    if queue_size > 50:
+                        logger.warning(
+                            f"⚠️ 持仓消息队列积压: {queue_size} 条消息待处理"
+                        )
+                
+        except Exception as e:
+            logger.error(f"Failed to save position batch: {e}", exc_info=True)
     
     async def _sync_missing_data(self) -> None:
         """补充断线期间缺失的数据.
@@ -2399,6 +2885,37 @@ class XTUserStreamService:
         self._last_account_data["key"] = data_key
         return True
 
+    async def _mark_price_update_loop(self):
+        """后台任务：定期更新标记价格缓存."""
+        while self.is_running:
+            try:
+                await asyncio.sleep(self._mark_price_cache_ttl)  # 每5秒更新一次
+                
+                if not self.rest_client or not self.rest_client.is_connected:
+                    continue
+                
+                try:
+                    # 获取所有持仓的标记价格
+                    positions = await self.rest_client.get_positions(None)
+                    now = datetime.utcnow()
+                    
+                    for pos in positions:
+                        cache_key = f"{pos.symbol}_{pos.position_side}"
+                        self._mark_price_cache[cache_key] = {
+                            "price": pos.mark_price,
+                            "timestamp": now
+                        }
+                    
+                    logger.debug(f"Updated mark price cache for {len(positions)} positions")
+                except Exception as e:
+                    logger.debug(f"Failed to update mark price cache: {e}")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in mark price update loop: {e}")
+                await asyncio.sleep(1)  # 出错后等待1秒再重试
+    
     def _has_position_changed(self, position_data: Dict[str, Any]) -> bool:
         """检查持仓数据是否有变化."""
         # 将数据转换为可比较的格式，处理Decimal类型

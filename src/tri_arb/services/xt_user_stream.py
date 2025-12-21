@@ -701,9 +701,9 @@ class XTUserStreamService:
             
             # 将持仓数据放入队列（异步处理，不阻塞）
             await self._position_queue.put(position_data)
-            
-            # 更新统计
-            await self._update_position_stats()
+
+            # 【暂时禁用以避免阻塞】更新统计
+            # await self._update_position_stats()
             
         except Exception as e:
             logger.error(f"Error handling position update: {e}")
@@ -737,31 +737,31 @@ class XTUserStreamService:
             
             # 将订单数据放入队列（异步处理，不阻塞）
             await self._order_queue.put(order_data)
-            
-            # 更新 Prometheus metrics
-            if self.account_id:
-                account_id = self.account_id
-            else:
-                account_id = "default"
-            
-            # 订阅服务使用端口 9601
-            ensure_metrics_server(9601)
-            try:
-                # 添加详细日志以便调试
-                order_id = order_data.get('orderId') or order_data.get('order_id', 'unknown')
-                logger.info(f"Updating order metrics for order {order_id}: symbol={order_data.get('symbol')}, side={order_data.get('orderSide')}, state={order_data.get('state')}")
-                update_order_metrics(
-                    exchange="xt",
-                    exchange_type="perp",
-                    account_id=account_id,
-                    order_data=order_data,
-                )
-                logger.info(f"Order metrics updated successfully for order {order_id}")
-            except Exception as metric_error:
-                logger.error(f"Failed to update order metrics: {metric_error}", exc_info=True)
-            
-            # 更新统计
-            await self._update_order_stats()
+
+            # 【暂时禁用以避免阻塞】更新 Prometheus metrics
+            # if self.account_id:
+            #     account_id = self.account_id
+            # else:
+            #     account_id = "default"
+            #
+            # # 订阅服务使用端口 9601
+            # ensure_metrics_server(9601)
+            # try:
+            #     # 添加详细日志以便调试
+            #     order_id = order_data.get('orderId') or order_data.get('order_id', 'unknown')
+            #     logger.info(f"Updating order metrics for order {order_id}: symbol={order_data.get('symbol')}, side={order_data.get('orderSide')}, state={order_data.get('state')}")
+            #     update_order_metrics(
+            #         exchange="xt",
+            #         exchange_type="perp",
+            #         account_id=account_id,
+            #         order_data=order_data,
+            #     )
+            #     logger.info(f"Order metrics updated successfully for order {order_id}")
+            # except Exception as metric_error:
+            #     logger.error(f"Failed to update order metrics: {metric_error}", exc_info=True)
+
+            # 【暂时禁用以避免阻塞】更新统计
+            # await self._update_order_stats()
             
         except Exception as e:
             logger.error(f"Error handling order update: {e}", exc_info=True)
@@ -797,37 +797,37 @@ class XTUserStreamService:
                     if isinstance(item, dict):
                         item["_message_received_at"] = message_received_at.isoformat()
             
-            # 记录成交信息（用于划转分析）
-            self._record_trade_for_transfer_analysis(trade_data)
+            # 【暂时禁用以避免阻塞】记录成交信息（用于划转分析）
+            # self._record_trade_for_transfer_analysis(trade_data)
             
             # 显示成交更新 - 【暂时禁用以避免阻塞WebSocket消息接收】
             # await self._display_trade_update(trade_data)
             
             # 将成交数据放入队列（异步处理，不阻塞）
             await self._trade_queue.put(trade_data)
-            
-            # 更新 Prometheus metrics
-            if self.account_id:
-                account_id = self.account_id
-            else:
-                account_id = "default"
-            
-            # 订阅服务使用端口 9601
-            ensure_metrics_server(9601)
-            try:
-                from tri_arb.metrics.prometheus import update_trade_metrics
-                update_trade_metrics(
-                    exchange="xt",
-                    exchange_type="perp",
-                    account_id=account_id,
-                    trade_data=trade_data,
-                )
-                logger.debug(f"成功更新成交 metrics (account_id={account_id})")
-            except Exception as metric_error:
-                logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
-            
-            # 更新统计
-            await self._update_trade_stats()
+
+            # 【暂时禁用以避免阻塞】更新 Prometheus metrics
+            # if self.account_id:
+            #     account_id = self.account_id
+            # else:
+            #     account_id = "default"
+            #
+            # # 订阅服务使用端口 9601
+            # ensure_metrics_server(9601)
+            # try:
+            #     from tri_arb.metrics.prometheus import update_trade_metrics
+            #     update_trade_metrics(
+            #         exchange="xt",
+            #         exchange_type="perp",
+            #         account_id=account_id,
+            #         trade_data=trade_data,
+            #     )
+            #     logger.debug(f"成功更新成交 metrics (account_id={account_id})")
+            # except Exception as metric_error:
+            #     logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
+
+            # 【暂时禁用以避免阻塞】更新统计
+            # await self._update_trade_stats()
             
         except Exception as e:
             logger.error(f"Error handling trade update: {e}", exc_info=True)

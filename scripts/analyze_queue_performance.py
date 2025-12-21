@@ -345,7 +345,14 @@ def main():
                 
                 if reconnect_count > 0 or disconnect_count > 0:
                     print(f"\n⚠️  检测到 {disconnect_count} 次断开和 {reconnect_count} 次重连")
-                    print("   这可能是导致消息接收延迟的主要原因")
+                    if disconnect_count > reconnect_count:
+                        print(f"   注意: 有 {disconnect_count - reconnect_count} 次断开没有对应的重连记录")
+                        print("   可能原因:")
+                        print("   1. 连接断开后测试已结束，未完成重连")
+                        print("   2. 重连失败或重连事件未正确记录")
+                        print("   3. 连接断开发生在分析时间段之外")
+                    if reconnect_count > 0:
+                        print("   这可能是导致消息接收延迟的主要原因")
             
             # 关联重连事件和消息延迟
             cur.execute(f"""
@@ -434,10 +441,26 @@ def main():
                 messages_per_second = 1000.0 / (db_delay_ms / batch_size)
                 print(f"假设批量大小: {batch_size}, 数据库写入延迟: {db_delay_ms}ms")
                 print(f"理论最大处理速度: {messages_per_second:.1f} 条/秒")
-                print(f"实际处理速度: {result['total_count'] / 3600:.1f} 条/秒（基于1小时数据）")
                 
-                if result['total_count'] / 3600 < messages_per_second * 0.5:
-                    print("⚠️  实际处理速度远低于理论值，可能存在性能瓶颈")
+                # 根据实际分析的时间段计算处理速度
+                if args.minutes:
+                    time_seconds = args.minutes * 60
+                    time_desc = f"{args.minutes}分钟"
+                else:
+                    time_seconds = args.hours * 3600
+                    time_desc = f"{args.hours}小时"
+                
+                actual_speed = result['total_count'] / time_seconds
+                print(f"实际处理速度: {actual_speed:.1f} 条/秒（基于{time_desc}数据）")
+                
+                if actual_speed < messages_per_second * 0.1:
+                    print("⚠️  实际处理速度远低于理论值")
+                    print("   注意: 这通常是因为消息接收速度本身就慢（取决于市场活跃度）")
+                    print("   只要队列等待时间正常，说明处理能力是足够的")
+                elif actual_speed < messages_per_second * 0.5:
+                    print("💡 实际处理速度低于理论值，但仍在合理范围内")
+                else:
+                    print("✅ 实际处理速度良好")
                 
                 # 分析消息接收延迟对处理速度的影响
                 avg_delay_ms = float(delay_stats['avg_delay_ms']) if delay_stats and delay_stats['avg_delay_ms'] else 0.0

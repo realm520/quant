@@ -375,18 +375,20 @@ class XTUserStreamService:
             logger.debug("Recorded reconnect time")
 
             # 重连后执行断线回补（固定1小时回补 + 账户/持仓最新状态）
-            try:
-                logger.info(
-                    "Starting missing data sync after reconnect",
-                    extra={
-                        "disconnect_time": self.disconnect_time.isoformat() if self.disconnect_time else None,
-                        "reconnect_time": self.reconnect_time.isoformat() if self.reconnect_time else None,
-                    }
-                )
-                await self._sync_missing_data()
-                logger.info("Missing data sync completed after reconnect")
-            except Exception as sync_exc:
-                logger.error(f"Failed to run missing data sync after reconnect: {sync_exc}", exc_info=True)
+            # 已禁用：用于测试时间戳对齐问题
+            # try:
+            #     logger.info(
+            #         "Starting missing data sync after reconnect",
+            #         extra={
+            #             "disconnect_time": self.disconnect_time.isoformat() if self.disconnect_time else None,
+            #             "reconnect_time": self.reconnect_time.isoformat() if self.reconnect_time else None,
+            #         }
+            #     )
+            #     await self._sync_missing_data()
+            #     logger.info("Missing data sync completed after reconnect")
+            # except Exception as sync_exc:
+            #     logger.error(f"Failed to run missing data sync after reconnect: {sync_exc}", exc_info=True)
+            logger.info("Data sync disabled for testing - skipping missing data sync after reconnect")
 
             # 监听消息
             logger.debug("Starting WebSocket message loop")

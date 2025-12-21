@@ -160,10 +160,54 @@ class DatabaseManager:
                                     # 执行 DDL 语句
                                     # 注意：PostgreSQL 的 DDL 语句在事务中执行，需要显式提交
                                     logger.info(f"Executing CREATE TABLE for {table_name}...")
-                                    result = sync_conn.execute(text(create_table_sql))
-                                    # 显式提交事务
-                                    sync_conn.commit()
-                                    logger.info(f"✓ CREATE TABLE executed and committed for {table_name}")
+                                    
+                                    # 如果表创建失败是因为约束已存在，先删除约束
+                                    try:
+                                        result = sync_conn.execute(text(create_table_sql))
+                                        sync_conn.commit()
+                                        logger.info(f"✓ CREATE TABLE executed and committed for {table_name}")
+                                    except Exception as create_err:
+                                        error_str = str(create_err).lower()
+                                        # 检查是否是约束已存在的错误
+                                        if "already exists" in error_str and "constraint" in error_str:
+                                            logger.warning(f"Constraint already exists for {table_name}, attempting to drop and recreate...")
+                                            # 提取约束名
+                                            import re
+                                            constraint_match = re.search(r'"([^"]+)"', error_str)
+                                            if constraint_match:
+                                                constraint_name = constraint_match.group(1)
+                                                logger.info(f"Dropping existing constraint: {constraint_name}")
+                                                # 尝试删除约束（可能约束在另一个表上）
+                                                try:
+                                                    # 查找约束所属的表
+                                                    inspector = inspect(sync_conn)
+                                                    cur = sync_conn.connection.cursor()
+                                                    cur.execute("""
+                                                        SELECT conrelid::regclass::text
+                                                        FROM pg_constraint
+                                                        WHERE conname = %s
+                                                    """, (constraint_name,))
+                                                    result = cur.fetchone()
+                                                    if result:
+                                                        constraint_table = result[0]
+                                                        cur.execute(f'ALTER TABLE "{constraint_table}" DROP CONSTRAINT IF EXISTS "{constraint_name}"')
+                                                        cur.close()
+                                                        sync_conn.commit()
+                                                        logger.info(f"✓ Dropped constraint {constraint_name} from {constraint_table}")
+                                                        
+                                                        # 重新尝试创建表
+                                                        result = sync_conn.execute(text(create_table_sql))
+                                                        sync_conn.commit()
+                                                        logger.info(f"✓ CREATE TABLE executed and committed for {table_name} (after dropping constraint)")
+                                                    else:
+                                                        raise create_err
+                                                except Exception as drop_err:
+                                                    logger.error(f"Failed to drop constraint: {drop_err}")
+                                                    raise create_err
+                                            else:
+                                                raise create_err
+                                        else:
+                                            raise create_err
                                     
                                     # 立即验证表是否创建成功（在同一连接中）
                                     inspector = inspect(sync_conn)

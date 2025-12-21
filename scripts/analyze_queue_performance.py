@@ -36,16 +36,32 @@ db_params = {
 
 def main():
     """分析队列性能."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="分析消息队列性能测试结果")
+    parser.add_argument("--hours", type=int, default=1, help="分析最近N小时的数据（默认: 1）")
+    parser.add_argument("--minutes", type=int, default=None, help="分析最近N分钟的数据（如果指定，会覆盖--hours）")
+    
+    args = parser.parse_args()
+    
+    # 确定时间间隔
+    if args.minutes:
+        interval = f"INTERVAL '{args.minutes} minutes'"
+        time_desc = f"最近 {args.minutes} 分钟"
+    else:
+        interval = f"INTERVAL '{args.hours} hour'"
+        time_desc = f"最近 {args.hours} 小时"
+    
     conn = psycopg2.connect(**db_params)
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # 整体统计
             print("=" * 80)
-            print("消息队列性能分析")
+            print(f"消息队列性能分析 ({time_desc})")
             print("=" * 80)
             
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     COUNT(*) as total_count,
                     AVG(queue_wait_time_ms) as avg_queue_wait,
@@ -57,7 +73,7 @@ def main():
                     AVG(delay_from_timestamp_ms) as avg_delay_from_timestamp,
                     MAX(delay_from_timestamp_ms) as max_delay_from_timestamp
                 FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                WHERE created_at >= NOW() - {interval}
             """)
             
             result = cur.fetchone()
@@ -82,7 +98,7 @@ def main():
             # 按时间段分析（每5分钟）
             print(f"\n【按时间段分析（每5分钟）】")
             print("-" * 80)
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     DATE_TRUNC('minute', created_at) + 
                     INTERVAL '1 minute' * (EXTRACT(MINUTE FROM created_at)::int / 5 * 5) as time_slot,
@@ -91,7 +107,7 @@ def main():
                     MAX(queue_wait_time_ms) as max_queue_wait,
                     AVG(delay_from_timestamp_ms) as avg_delay_from_timestamp
                 FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                WHERE created_at >= NOW() - {interval}
                 GROUP BY time_slot
                 ORDER BY time_slot DESC
                 LIMIT 12
@@ -110,7 +126,7 @@ def main():
             # 队列等待时间分布
             print(f"\n【队列等待时间分布】")
             print("-" * 80)
-            cur.execute("""
+            cur.execute(f"""
                 WITH wait_ranges AS (
                     SELECT 
                         CASE 
@@ -123,7 +139,7 @@ def main():
                         END as wait_range,
                         COUNT(*) as count
                     FROM xt_trade_update_test
-                    WHERE created_at >= NOW() - INTERVAL '1 hour'
+                    WHERE created_at >= NOW() - {interval}
                     GROUP BY 
                         CASE 
                             WHEN queue_wait_time_ms < 100 THEN '< 100ms'
@@ -163,7 +179,7 @@ def main():
             print("如果延迟很大，可能是 WebSocket 连接断开重连导致的消息积压")
             print("-" * 80)
             
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     COUNT(*) as total,
                     COUNT(CASE WHEN delay_from_timestamp_ms < 1000 THEN 1 END) as delay_lt_1s,
@@ -175,7 +191,7 @@ def main():
                     ROUND(MAX(delay_from_timestamp_ms), 2) as max_delay_ms,
                     ROUND(MIN(delay_from_timestamp_ms), 2) as min_delay_ms
                 FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                WHERE created_at >= NOW() - {interval}
                 AND delay_from_timestamp_ms IS NOT NULL
             """)
             
@@ -196,7 +212,7 @@ def main():
                     print("   这可能表明 WebSocket 连接断开重连，导致消息积压。")
             
             # 查找延迟最大的记录
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     trade_id,
                     symbol,
@@ -207,7 +223,7 @@ def main():
                     database_write_duration_ms,
                     created_at
                 FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                WHERE created_at >= NOW() - {interval}
                 AND delay_from_timestamp_ms IS NOT NULL
                 ORDER BY delay_from_timestamp_ms DESC
                 LIMIT 10
@@ -226,7 +242,7 @@ def main():
                     print(f"{row['trade_id']:<30} {delay_sec:<12.2f} {row['queue_wait_time_ms']:<15.2f} {row['database_write_duration_ms']:<12.2f} {ts_str:<20} {recv_str:<20}")
             
             # 按时间段分析延迟趋势
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     DATE_TRUNC('minute', created_at) as time_slot,
                     COUNT(*) as count,
@@ -234,7 +250,7 @@ def main():
                     ROUND(MAX(delay_from_timestamp_ms), 2) as max_delay_ms,
                     ROUND(AVG(queue_wait_time_ms), 2) as avg_queue_wait_ms
                 FROM xt_trade_update_test
-                WHERE created_at >= NOW() - INTERVAL '1 hour'
+                WHERE created_at >= NOW() - {interval}
                 AND delay_from_timestamp_ms IS NOT NULL
                 GROUP BY DATE_TRUNC('minute', created_at)
                 ORDER BY time_slot DESC
@@ -289,7 +305,7 @@ def main():
             # WebSocket 连接事件分析
             print(f"\n【WebSocket 连接事件分析】")
             print("-" * 80)
-            cur.execute("""
+            cur.execute(f"""
                 SELECT 
                     event_type,
                     COUNT(*) as count,
@@ -298,7 +314,7 @@ def main():
                     AVG(disconnect_duration_seconds) as avg_disconnect_duration,
                     MAX(disconnect_duration_seconds) as max_disconnect_duration
                 FROM xt_websocket_connection_events_test
-                WHERE event_time >= NOW() - INTERVAL '1 hour'
+                WHERE event_time >= NOW() - {interval}
                 GROUP BY event_type
                 ORDER BY event_type
             """)
@@ -323,14 +339,14 @@ def main():
                     print("   这可能是导致消息接收延迟的主要原因")
             
             # 关联重连事件和消息延迟
-            cur.execute("""
+            cur.execute(f"""
                 WITH reconnect_events AS (
                     SELECT 
                         event_time as reconnect_time,
                         disconnect_duration_seconds
                     FROM xt_websocket_connection_events_test
                     WHERE event_type = 'reconnect'
-                    AND event_time >= NOW() - INTERVAL '1 hour'
+                    AND event_time >= NOW() - {interval}
                 ),
                 delayed_messages AS (
                     SELECT 
@@ -338,7 +354,7 @@ def main():
                         delay_from_timestamp_ms,
                         timestamp_from_raw
                     FROM xt_trade_update_test
-                    WHERE created_at >= NOW() - INTERVAL '1 hour'
+                    WHERE created_at >= NOW() - {interval}
                     AND delay_from_timestamp_ms IS NOT NULL
                     AND delay_from_timestamp_ms > 60000  -- 延迟超过1分钟
                 )

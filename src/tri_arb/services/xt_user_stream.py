@@ -800,8 +800,8 @@ class XTUserStreamService:
             # 记录成交信息（用于划转分析）
             self._record_trade_for_transfer_analysis(trade_data)
             
-            # 显示成交更新
-            await self._display_trade_update(trade_data)
+            # 显示成交更新 - 【暂时禁用以避免阻塞WebSocket消息接收】
+            # await self._display_trade_update(trade_data)
             
             # 将成交数据放入队列（异步处理，不阻塞）
             await self._trade_queue.put(trade_data)

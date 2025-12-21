@@ -9,15 +9,6 @@ print(f"原始时间戳（毫秒）: {timestamp}")
 print()
 
 # 方式1: 直接当作秒级（错误，会报错）
-print("方式1: 直接当作秒级时间戳（错误）:")
-try:
-dt = datetime.fromtimestamp(timestamp, timezone.utc)
-    print(f"  {dt}")
-except ValueError as e:
-    print(f"  ❌ 错误: {e}")
-    print("  原因: timestamp 是毫秒级（13位数字），不能直接当作秒级使用")
-
-print()
 
 # 方式2: 除以 1000 当作毫秒级（正确）
 print("方式2: 除以 1000 当作毫秒级时间戳（正确）:")

@@ -461,7 +461,8 @@ def multi_account(
             logger.error("Failed to create database tables for multi-account", exc_info=True, extra={"error": str(init_exc)})
             if debug:
                 console.print_exception()
-            # 不关闭连接，让后续任务有机会重试
+            # 表创建失败时，抛出异常阻止程序继续运行
+            raise typer.Exit(code=1)
         finally:
             await db_manager.close()
 

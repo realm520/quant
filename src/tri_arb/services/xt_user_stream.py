@@ -140,11 +140,24 @@ class XTUserStreamService:
         self.account_id = None
         self.account_name = None
         
+        # 消息队列（用于解耦消息接收和数据库写入）
+        from tri_arb.utils.async_utils import AsyncBoundedQueue
+        self._trade_queue = AsyncBoundedQueue(
+            maxsize=1000,  # 最多缓冲 1000 条成交消息
+            overflow_handler=self._handle_trade_queue_overflow
+        )
+        self._trade_writer_task: Optional[asyncio.Task] = None
+        self._batch_size = 10  # 批量写入大小
+        self._batch_timeout = 1.0  # 批量写入超时（秒）
+        
         logger.debug("XT WebSocket service initialized",
                     extra={
                         "enabled_channels": list(self.enabled_channels),
                         "data_sync_enabled": self.enable_data_sync,
-                        "fixed_lookback_hours": 1
+                        "fixed_lookback_hours": 1,
+                        "trade_queue_enabled": True,
+                        "trade_queue_maxsize": 1000,
+                        "trade_batch_size": self._batch_size
                     })
     
     def _get_model(self, model_name: str):
@@ -197,6 +210,10 @@ class XTUserStreamService:
 
         logger.debug("Starting XT WebSocket service")
         
+        # 启动成交数据写入后台任务
+        self._trade_writer_task = asyncio.create_task(self._trade_writer_loop())
+        logger.info("Trade writer task started")
+        
         # 启动WebSocket连接循环
         while self.is_running:
             try:
@@ -224,10 +241,29 @@ class XTUserStreamService:
 
         logger.info("XT WebSocket service stopped")
     
+    async def _handle_trade_queue_overflow(self, item: Any) -> None:
+        """处理成交消息队列溢出."""
+        logger.error(
+            f"成交消息队列已满，丢弃消息: {item}",
+            extra={"queue_size": self._trade_queue.qsize()}
+        )
+    
     async def stop(self) -> None:
         """停止WebSocket服务."""
         logger.info("Stopping XT WebSocket service")
         self.is_running = False
+        
+        # 停止成交写入任务
+        if self._trade_writer_task and not self._trade_writer_task.done():
+            logger.info("Stopping trade writer task")
+            self._trade_writer_task.cancel()
+            try:
+                await self._trade_writer_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 刷新队列中剩余的消息
+        await self._flush_remaining_trades()
         
         if self.websocket:
             await self._stop_heartbeat()
@@ -586,7 +622,7 @@ class XTUserStreamService:
         
         try:
             # 显示持仓更新（已禁用，专注于成交更新日志）
-            # await self._display_position_update(position_data)
+            await self._display_position_update(position_data)
             
             # 保存到数据库
             await self._save_position_update(position_data)
@@ -617,7 +653,7 @@ class XTUserStreamService:
             self._record_order_for_transfer_analysis(order_data)
             
             # 显示订单更新（已禁用，专注于成交更新日志）
-            # await self._display_order_update(order_data)
+            await self._display_order_update(order_data)
             
             # 保存到数据库
             await self._save_order_update(order_data)
@@ -687,8 +723,8 @@ class XTUserStreamService:
             # 显示成交更新
             await self._display_trade_update(trade_data)
             
-            # 保存到数据库
-            await self._save_trade_update(trade_data)
+            # 将成交数据放入队列（异步处理，不阻塞）
+            await self._trade_queue.put(trade_data)
             
             # 更新 Prometheus metrics
             if self.account_id:
@@ -1406,33 +1442,129 @@ class XTUserStreamService:
         except Exception as e:
             logger.error(f"Failed to save order update: {e}")
     
-    async def _save_trade_update(self, data: Dict[str, Any]) -> None:
-        """保存成交更新到数据库."""
+    async def _trade_writer_loop(self) -> None:
+        """成交数据写入后台任务循环.
+        
+        从队列中取出成交数据，批量写入数据库。
+        """
+        batch = []
+        last_flush_time = datetime.utcnow()
+        
+        logger.info("Trade writer loop started")
+        
+        while self.is_running:
+            try:
+                # 尝试从队列获取数据，设置超时以便定期刷新批次
+                try:
+                    trade_data = await asyncio.wait_for(
+                        self._trade_queue.get(),
+                        timeout=self._batch_timeout
+                    )
+                    batch.append(trade_data)
+                except asyncio.TimeoutError:
+                    # 超时：如果批次不为空，刷新批次
+                    if batch:
+                        await self._save_trade_batch(batch)
+                        batch = []
+                        last_flush_time = datetime.utcnow()
+                    continue
+                
+                # 如果批次达到大小，立即写入
+                if len(batch) >= self._batch_size:
+                    await self._save_trade_batch(batch)
+                    batch = []
+                    last_flush_time = datetime.utcnow()
+                
+                # 标记任务完成
+                self._trade_queue.task_done()
+                
+            except asyncio.CancelledError:
+                logger.info("Trade writer loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in trade writer loop: {e}", exc_info=True)
+                # 发生错误时，尝试保存当前批次
+                if batch:
+                    try:
+                        await self._save_trade_batch(batch)
+                        batch = []
+                    except Exception as batch_error:
+                        logger.error(f"Failed to save batch after error: {batch_error}", exc_info=True)
+        
+        # 退出前刷新剩余批次
+        if batch:
+            logger.info(f"Flushing remaining {len(batch)} trades before exit")
+            try:
+                await self._save_trade_batch(batch)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining trades: {e}", exc_info=True)
+        
+        logger.info("Trade writer loop stopped")
+    
+    async def _flush_remaining_trades(self) -> None:
+        """刷新队列中剩余的所有成交数据."""
+        remaining = []
+        try:
+            while True:
+                try:
+                    trade_data = await asyncio.wait_for(
+                        self._trade_queue.get(),
+                        timeout=0.1
+                    )
+                    remaining.append(trade_data)
+                    self._trade_queue.task_done()
+                except asyncio.TimeoutError:
+                    break
+        except Exception as e:
+            logger.error(f"Error flushing remaining trades: {e}", exc_info=True)
+        
+        if remaining:
+            logger.info(f"Flushing {len(remaining)} remaining trades from queue")
+            try:
+                await self._save_trade_batch(remaining)
+            except Exception as e:
+                logger.error(f"Failed to flush remaining trades: {e}", exc_info=True)
+    
+    async def _save_trade_batch(self, batch: list[Dict[str, Any]]) -> None:
+        """批量保存成交数据到数据库.
+        
+        Args:
+            batch: 成交数据列表
+        """
+        if not batch:
+            return
+        
         save_start_time = datetime.utcnow()
-        print(f"Received trade update: {data}")
+        logger.debug(f"Saving batch of {len(batch)} trades to database")
+        
         try:
             # 确保账号特定的表已创建（如果是新账号）
             await self._ensure_account_tables_if_needed()
             
             async with self.db_manager.session() as session:
-                # 支持多种格式：
-                # 1. trades 列表格式: {"trades": [...]}
-                # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
-                # 3. XT WebSocket 格式: {"orderId": "...", "orderSide": "...", ...}
-                trades = []
-                if "trades" in data and isinstance(data.get("trades"), list):
-                    trades = data.get("trades", [])
-                elif isinstance(data, list):
-                    trades = data
-                elif "orderId" in data or "order_id" in data or "trade_id" in data or "tradeId" in data:
-                    # 单个成交对象（包括 XT 格式），转换为列表
-                    trades = [data]
+                # 处理批次中的所有成交数据
+                all_trades = []
+                for data in batch:
+                    # 支持多种格式：
+                    # 1. trades 列表格式: {"trades": [...]}
+                    # 2. 单个成交对象格式: {"trade_id": "...", "order_id": "...", ...}
+                    # 3. XT WebSocket 格式: {"orderId": "...", "orderSide": "...", ...}
+                    trades = []
+                    if "trades" in data and isinstance(data.get("trades"), list):
+                        trades = data.get("trades", [])
+                    elif isinstance(data, list):
+                        trades = data
+                    elif "orderId" in data or "order_id" in data or "trade_id" in data or "tradeId" in data:
+                        # 单个成交对象（包括 XT 格式），转换为列表
+                        trades = [data]
+                    
+                    all_trades.extend(trades)
                 
-                if not trades:
-                    logger.debug("No trades data to save")
+                if not all_trades:
+                    logger.debug("No trades data to save in batch")
                     return
                 
-                for trade in trades:
+                for trade in all_trades:
                     # 支持不同的字段名
                     # XT 格式没有 trade_id，使用 orderId + timestamp 作为 trade_id
                     trade_id = trade.get("trade_id") or trade.get("tradeId") or ""
@@ -1536,8 +1668,10 @@ class XTUserStreamService:
                 created_at_time = datetime.utcnow()
                 
                 logger.info(
-                    f"成功保存 {len(trades)} 条成交记录到数据库 "
-                    f"(总耗时: {total_duration:.3f}秒, 提交耗时: {commit_duration:.3f}秒)"
+                    f"成功批量保存 {len(all_trades)} 条成交记录到数据库 "
+                    f"(总耗时: {total_duration:.3f}秒, 提交耗时: {commit_duration:.3f}秒, "
+                    f"平均每条: {total_duration/len(all_trades)*1000:.2f}ms, "
+                    f"队列剩余: {self._trade_queue.qsize()})"
                 )
                 
                 # 监控数据库写入性能
@@ -1547,15 +1681,31 @@ class XTUserStreamService:
                         f"建议检查: 数据库连接池、网络延迟、数据库性能"
                     )
                 
+                # 监控队列积压
+                queue_size = self._trade_queue.qsize()
+                if queue_size > 100:
+                    logger.warning(
+                        f"⚠️ 成交消息队列积压: {queue_size} 条消息待处理，"
+                        f"可能原因: 数据库写入速度跟不上消息接收速度"
+                    )
+                
                 # 对于每条成交记录，记录时间差异（用于诊断）
-                for trade in trades:
+                for trade in all_trades:
                     trade_timestamp = trade.get("timestamp")
-                    if trade_timestamp and message_received_at:
+                    trade_message_received_at_str = trade.get("_message_received_at")
+                    trade_message_received_at = None
+                    if trade_message_received_at_str:
+                        try:
+                            trade_message_received_at = datetime.fromisoformat(trade_message_received_at_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                        except (ValueError, AttributeError):
+                            pass
+                    
+                    if trade_timestamp and trade_message_received_at:
                         try:
                             if isinstance(trade_timestamp, (int, float)):
                                 timestamp_dt = datetime.fromtimestamp(trade_timestamp/1000.0, tz=timezone.utc).replace(tzinfo=None)
                                 # 计算各个时间点的差异
-                                timestamp_to_received = (message_received_at - timestamp_dt).total_seconds()
+                                timestamp_to_received = (trade_message_received_at - timestamp_dt).total_seconds()
                                 timestamp_to_created = (created_at_time - timestamp_dt).total_seconds()
                                 
                                 # 如果延迟超过阈值，记录详细信息
@@ -1563,7 +1713,7 @@ class XTUserStreamService:
                                     logger.warning(
                                         f"⚠️ 成交记录时间链分析: "
                                         f"timestamp={timestamp_dt}, "
-                                        f"消息接收={message_received_at}, "
+                                        f"消息接收={trade_message_received_at}, "
                                         f"数据库创建={created_at_time}, "
                                         f"timestamp→接收延迟={timestamp_to_received:.2f}秒, "
                                         f"timestamp→创建延迟={timestamp_to_created:.2f}秒, "
@@ -1573,7 +1723,7 @@ class XTUserStreamService:
                             pass
                 
         except Exception as e:
-            logger.error(f"Failed to save trade update: {e}", exc_info=True)
+            logger.error(f"Failed to save trade batch: {e}", exc_info=True)
     
     async def _sync_missing_data(self) -> None:
         """补充断线期间缺失的数据.

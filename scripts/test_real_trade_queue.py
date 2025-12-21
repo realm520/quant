@@ -183,7 +183,9 @@ class TestTradeWriter:
                             "created_at": current_time,
                         })
                     
-                    # 使用 SQLAlchemy 的 text() 和循环插入（简单可靠）
+                    # 使用 SQLAlchemy 的 text() 循环插入（简单可靠）
+                    from sqlalchemy import text
+                    
                     insert_sql = text("""
                         INSERT INTO xt_trade_update_test (
                             update_time, account_id, symbol, order_id, trade_id, side, price, quantity,
@@ -200,7 +202,7 @@ class TestTradeWriter:
                         )
                     """)
                     
-                    # 循环插入（SQLAlchemy 会自动优化）
+                    # 循环插入（对于批量大小 50，性能可接受）
                     for r in insert_data:
                         await session.execute(insert_sql, r)
                     
@@ -326,9 +328,8 @@ async def main():
     print(f"订阅频道: {args.channels}")
     print(f"数据将写入测试表: xt_trade_update_test\n")
     
-    # 创建数据库管理器
+    # 创建数据库管理器（会自动初始化）
     db_manager = DatabaseManager()
-    await db_manager.initialize()
     
     # 创建测试服务
     channels = set(args.channels.split(",")) if args.channels else {"trade"}

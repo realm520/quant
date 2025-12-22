@@ -940,6 +940,17 @@ class PositionMetricsScheduler:
             today_utc = datetime.utcnow().date()
             
             for trade_date, day_data in sorted(daily_series.items()):
+                # 如果 trade_date 是今天，跳过创建今天的快照（因为今天还没有结束）
+                # 今天的快照应该在换日时创建
+                if trade_date == today_utc:
+                    logger.debug(
+                        f"跳过今天的快照创建（将在换日时创建）: trade_date={trade_date}, today={today_utc}",
+                        account_id=account_id,
+                        exchange=exchange,
+                        symbol=symbol,
+                    )
+                    continue
+                
                 # 零点 timestamp = trade_date 的下一天 00:00（即该日结束时的快照）
                 midnight_timestamp = datetime.combine(trade_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
                 
@@ -1104,8 +1115,8 @@ class PositionMetricsScheduler:
             # 查询今天有交易的所有 symbol（快照表示昨天结束时的状态，所以查询今天的交易）
             today_date = midnight_timestamp.date()  # 快照的日期（例如：12月23日）
             if exchange == "binance":
-                from tri_arb.storage.binance_websocket_models import BinanceTradeUpdate
-                TradeModel = BinanceTradeUpdate
+                from tri_arb.storage.models import TradeUpdate
+                TradeModel = TradeUpdate
                 time_column = TradeModel.transaction_time
             else:
                 from tri_arb.storage.xt_websocket_models import XTTradeUpdate

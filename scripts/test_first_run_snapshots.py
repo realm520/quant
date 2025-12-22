@@ -5,6 +5,7 @@
     python3 scripts/test_first_run_snapshots.py --account-id account_008 --exchange xt [--symbol tradoor_usdt]
 """
 
+import argparse
 import asyncio
 import sys
 from datetime import datetime, date, timedelta

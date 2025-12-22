@@ -399,6 +399,9 @@ class PositionMetricsScheduler:
                             )
                             
                             # 检查今天零点快照是否存在，如果不存在则计算并写入
+                            # 注意：今天零点快照的 timestamp = 今天 00:00:00，表示昨天结束时的状态
+                            # 例如：如果今天是12月23日，查询 timestamp = 2025-12-23 00:00:00 的快照
+                            # 这个快照表示12月22日结束时的状态，作为12月23日的初始持仓
                             today_midnight = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=None)
                             today_snapshot_query = (
                                 select(PositionMetrics)
@@ -411,13 +414,16 @@ class PositionMetricsScheduler:
                             today_snapshot = today_snapshot_result.scalar_one_or_none()
                             
                             if not today_snapshot:
-                                # 今天零点快照不存在，需要计算并写入
+                                # 今天零点快照不存在，需要创建
+                                # 这个快照表示昨天结束时的状态（例如：如果今天是12月23日，创建12月22日结束时的快照）
+                                # 如果昨天没有交易，初始持仓为0
                                 logger.info(
-                                    f"计算并写入今天零点快照",
+                                    f"计算并写入今天零点快照（昨天结束时的状态）",
                                     account_id=account_id,
                                     exchange=exchange_name,
+                                    today_date=today,
                                 )
-                                # 重建所有零点快照（会覆盖所有，但确保今天有数据）
+                                # 先尝试重建所有快照（会创建到昨天结束时的快照）
                                 await self._rebuild_midnight_snapshots(
                                     session=session,
                                     calc=calc,
@@ -425,9 +431,27 @@ class PositionMetricsScheduler:
                                     exchange=exchange_name,
                                     symbol=None,
                                 )
-                                # 重建后重新查询今日零点快照
+                                # 重新查询今日零点快照
                                 today_snapshot_result = await session.execute(today_snapshot_query)
                                 today_snapshot = today_snapshot_result.scalar_one_or_none()
+                                
+                                # 如果仍然不存在（例如：昨天没有交易，第一笔交易发生在今天），创建初始持仓为0的快照
+                                if not today_snapshot:
+                                    logger.info(
+                                        f"创建初始持仓为0的今天零点快照（昨天没有交易）",
+                                        account_id=account_id,
+                                        exchange=exchange_name,
+                                        today_date=today,
+                                    )
+                                    await self._create_empty_midnight_snapshot(
+                                        session=session,
+                                        account_id=account_id,
+                                        exchange=exchange_name,
+                                        midnight_timestamp=today_midnight,
+                                    )
+                                    # 重新查询
+                                    today_snapshot_result = await session.execute(today_snapshot_query)
+                                    today_snapshot = today_snapshot_result.scalar_one_or_none()
                             
                             # 从今日零点快照读取初始持仓（作为今日计算的起点）
                             today_initial_positions_dict = {}
@@ -907,7 +931,13 @@ class PositionMetricsScheduler:
                 return
             
             # 4. 对每个 trade_date，构造零点快照并写入/覆盖 position_metrics
+            # 重要：只创建到 latest_date 结束时的快照，不创建未来日期的快照
+            # 例如：如果 latest_date = 12月22日，创建 12月22日结束时的快照（12月23日 00:00）
+            # 如果 latest_date = 12月23日（今天），不创建 12月23日结束时的快照（12月24日 00:00），因为12月23日还没有结束
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+            
+            # 计算今天日期（UTC）
+            today_utc = datetime.utcnow().date()
             
             for trade_date, day_data in sorted(daily_series.items()):
                 # 零点 timestamp = trade_date 的下一天 00:00（即该日结束时的快照）
@@ -918,6 +948,14 @@ class PositionMetricsScheduler:
                     prev_date = trade_date - timedelta(days=1)
                     prev_day_data = daily_series.get(prev_date, {})
                     prev_metrics = prev_day_data.get(sym, {})
+                    
+                    # 如果前一日没有数据，初始持仓为0（例如：第一笔交易发生在今天）
+                    if not prev_metrics:
+                        logger.debug(
+                            f"前一日没有数据，使用空初始持仓: trade_date={trade_date}, symbol={sym}",
+                            account_id=account_id,
+                            exchange=exchange,
+                        )
                     
                     # 获取当日最后一笔成交价（用于未实现盈亏）
                     day_end = datetime.combine(trade_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
@@ -1036,6 +1074,130 @@ class PositionMetricsScheduler:
                 account_id=account_id,
                 exchange=exchange,
                 symbol=symbol,
+                error=str(e),
+            )
+            await session.rollback()
+            raise
+    
+    async def _create_empty_midnight_snapshot(
+        self,
+        session: AsyncSession,
+        account_id: str,
+        exchange: str,
+        midnight_timestamp: datetime,
+    ) -> None:
+        """创建初始持仓为0的零点快照（用于昨天没有交易的情况）.
+        
+        例如：如果今天是12月23日，昨天（12月22日）没有交易，但今天有交易，
+        为今天有交易的所有 symbol 创建初始持仓为0的快照（timestamp = 12月23日 00:00:00）。
+        
+        Args:
+            session: 数据库会话
+            account_id: 账号ID
+            exchange: 交易所
+            midnight_timestamp: 零点时间戳（例如：2025-12-23 00:00:00）
+        """
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy import cast, Date, func
+        
+        try:
+            # 查询今天有交易的所有 symbol（快照表示昨天结束时的状态，所以查询今天的交易）
+            today_date = midnight_timestamp.date()  # 快照的日期（例如：12月23日）
+            if exchange == "binance":
+                from tri_arb.storage.binance_websocket_models import BinanceTradeUpdate
+                TradeModel = BinanceTradeUpdate
+                time_column = TradeModel.transaction_time
+            else:
+                from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+                TradeModel = XTTradeUpdate
+                time_column = TradeModel.update_time
+            
+            symbols_query = (
+                select(TradeModel.symbol.distinct())
+                .where(cast(time_column, Date) == today_date)
+            )
+            
+            if exchange == "binance":
+                symbols_query = symbols_query.where(TradeModel.exchange == "binance_perp")
+            if account_id:
+                symbols_query = symbols_query.where(TradeModel.account_id == account_id)
+            
+            symbols_result = await session.execute(symbols_query)
+            symbols = [row[0] for row in symbols_result.all()]
+            
+            if not symbols:
+                logger.debug(
+                    f"今天没有交易，不需要创建空快照",
+                    account_id=account_id,
+                    exchange=exchange,
+                    midnight_timestamp=midnight_timestamp,
+                )
+                return
+            
+            # 为每个 symbol 创建初始持仓为0的快照
+            for sym in symbols:
+                stmt = pg_insert(PositionMetrics).values(
+                    timestamp=midnight_timestamp,
+                    account_id=account_id,
+                    exchange=exchange,
+                    symbol=sym,
+                    # 所有字段都初始化为0
+                    open_left_long_qty=Decimal("0"),
+                    open_left_short_qty=Decimal("0"),
+                    open_left_long_value=Decimal("0"),
+                    open_left_short_value=Decimal("0"),
+                    daily_sum_buy_qty=Decimal("0"),
+                    daily_sum_sell_qty=Decimal("0"),
+                    daily_sum_buy_value=Decimal("0"),
+                    daily_sum_sell_value=Decimal("0"),
+                    long_qty=Decimal("0"),
+                    short_qty=Decimal("0"),
+                    long_value=Decimal("0"),
+                    short_value=Decimal("0"),
+                    avg_buy_prz=Decimal("0"),
+                    avg_sell_prz=Decimal("0"),
+                    matched_qty=Decimal("0"),
+                    daily_realized_pnl=Decimal("0"),
+                    cumulative_realized_pnl=Decimal("0"),
+                    left_long_qty=Decimal("0"),
+                    left_short_qty=Decimal("0"),
+                    left_long_value=Decimal("0"),
+                    left_short_value=Decimal("0"),
+                    close_prz=Decimal("0"),
+                    unrealized_pnl=Decimal("0"),
+                    daily_pnl=Decimal("0"),
+                    cumulative_pnl=Decimal("0"),
+                    created_at=datetime.utcnow(),
+                )
+                
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["timestamp", "account_id", "exchange", "symbol"],
+                    set_={
+                        "open_left_long_qty": stmt.excluded.open_left_long_qty,
+                        "open_left_short_qty": stmt.excluded.open_left_short_qty,
+                        "open_left_long_value": stmt.excluded.open_left_long_value,
+                        "open_left_short_value": stmt.excluded.open_left_short_value,
+                        "created_at": stmt.excluded.created_at,
+                    }
+                )
+                
+                await session.execute(stmt)
+            
+            await session.commit()
+            logger.info(
+                f"创建初始持仓为0的零点快照",
+                account_id=account_id,
+                exchange=exchange,
+                midnight_timestamp=midnight_timestamp,
+                symbol_count=len(symbols),
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"创建空快照失败",
+                account_id=account_id,
+                exchange=exchange,
+                midnight_timestamp=midnight_timestamp,
                 error=str(e),
             )
             await session.rollback()

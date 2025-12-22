@@ -250,7 +250,7 @@ class PositionCalculator:
             }
 
         return result_dict
-
+    
     async def calculate_position_from_trades(
         self,
         start_time: datetime,

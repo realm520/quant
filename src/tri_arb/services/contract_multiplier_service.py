@@ -150,7 +150,9 @@ class ContractMultiplierService:
                     )
                     continue
                 
-                symbol = symbol_config.get("symbol", "").lower()
+                # 存储时也使用与查找时相同的归一化逻辑，确保一致性
+                original_symbol = symbol_config.get("symbol", "")
+                symbol = original_symbol.lower().replace("/", "_").replace("-", "_")
                 contract_size = symbol_config.get("contractSize")
                 
                 if symbol and contract_size is not None:

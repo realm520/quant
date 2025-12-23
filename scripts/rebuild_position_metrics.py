@@ -16,15 +16,236 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.services.position_calculator import PositionCalculator
 from tri_arb.services.position_metrics_scheduler import PositionMetricsScheduler
 from tri_arb.storage.position_metrics_models import PositionMetrics
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+
+async def _calculate_metrics_for_time(
+    session: AsyncSession,
+    calc: PositionCalculator,
+    account_id: str,
+    exchange: str,
+    symbol: str | None,
+    target_time: datetime,
+):
+    """计算指定时间点的指标数据。
+    
+    这个函数复用了 position_metrics_scheduler.py 中的计算逻辑。
+    """
+    # 获取该时间点所在日期的零点快照
+    today_midnight = datetime.combine(target_time.date(), datetime.min.time()).replace(tzinfo=None)
+    
+    # 获取今日零点快照的所有 symbol 数据
+    all_today_snapshots_query = (
+        select(PositionMetrics)
+        .where(PositionMetrics.account_id == account_id)
+        .where(PositionMetrics.exchange == exchange)
+        .where(PositionMetrics.timestamp == today_midnight)
+    )
+    if symbol:
+        all_today_snapshots_query = all_today_snapshots_query.where(PositionMetrics.symbol == symbol)
+    
+    all_snapshots_result = await session.execute(all_today_snapshots_query)
+    all_snapshots = all_snapshots_result.scalars().all()
+    
+    if not all_snapshots:
+        return  # 如果没有零点快照，跳过
+    
+    # 构建初始累计值（从今日零点快照读取）
+    initial_cumulative = {}
+    for snapshot in all_snapshots:
+        midnight_matched_qty = snapshot.matched_qty or Decimal("0")
+        midnight_left_long_qty = snapshot.left_long_qty or Decimal("0")
+        midnight_left_short_qty = snapshot.left_short_qty or Decimal("0")
+        
+        cumulative_buy_vol = midnight_left_long_qty + midnight_matched_qty
+        cumulative_sell_vol = midnight_left_short_qty + midnight_matched_qty
+        
+        midnight_long_value = snapshot.long_value or Decimal("0")
+        midnight_short_value = snapshot.short_value or Decimal("0")
+        midnight_avg_buy_prz = snapshot.avg_buy_prz or Decimal("0")
+        midnight_avg_sell_prz = snapshot.avg_sell_prz or Decimal("0")
+        
+        initial_cumulative[snapshot.symbol] = {
+            "cumulative_buy_volume": cumulative_buy_vol,
+            "cumulative_sell_volume": cumulative_sell_vol,
+            "cumulative_buy_value": midnight_long_value,
+            "cumulative_sell_value": midnight_short_value,
+            "cumulative_realized_pnl": snapshot.cumulative_realized_pnl or Decimal("0"),
+            "prev_matched_qty": midnight_matched_qty,
+            "prev_avg_buy_prz": midnight_avg_buy_prz,
+            "prev_avg_sell_prz": midnight_avg_sell_prz,
+        }
+    
+    # 获取从今日零点到目标时间点的成交统计
+    today_date = target_time.date()
+    today_daily_stats = await calc.get_daily_trade_stats(
+        start_date=today_date,
+        end_date=today_date,
+        symbol=symbol,
+        end_time=target_time,
+    )
+    
+    if not today_daily_stats or today_date not in today_daily_stats:
+        return  # 如果没有成交数据，跳过
+    
+    # 使用 calc_daily_realized_series 的逻辑，但从初始累计值开始
+    today_series_result = calc._calc_daily_realized_series_with_initial(
+        daily_stats={today_date: today_daily_stats.get(today_date, {})},
+        initial_cumulative=initial_cumulative,
+    )
+    
+    # 转换为指标格式
+    today_metrics = {}
+    if today_date in today_series_result:
+        for sym, metrics in today_series_result[today_date].items():
+            if symbol and sym != symbol:
+                continue
+            
+            # 获取收盘价（到目标时间点的最后一笔成交价）
+            close_prices = await calc._get_close_prices(today_midnight, target_time, sym)
+            close_prz = close_prices.get(sym, Decimal("0"))
+            
+            # 计算未实现盈亏
+            left_long_qty = metrics.get("close_left_long_qty", Decimal("0"))
+            left_short_qty = metrics.get("close_left_short_qty", Decimal("0"))
+            avg_buy_prz = metrics.get("avg_buy_prz", Decimal("0"))
+            avg_sell_prz = metrics.get("avg_sell_prz", Decimal("0"))
+            unrealized_pnl = Decimal("0")
+            if close_prz > 0:
+                unrealized_pnl = (
+                    left_long_qty * (close_prz - avg_buy_prz) +
+                    left_short_qty * (avg_sell_prz - close_prz)
+                )
+            
+            today_metrics[sym] = {
+                "buy_volume": metrics.get("daily_buy_volume", Decimal("0")),
+                "sell_volume": metrics.get("daily_sell_volume", Decimal("0")),
+                "buy_trade_value": metrics.get("daily_buy_value", Decimal("0")),
+                "sell_trade_value": metrics.get("daily_sell_value", Decimal("0")),
+                "long_qty": metrics.get("total_long_qty", Decimal("0")),
+                "short_qty": metrics.get("total_short_qty", Decimal("0")),
+                "long_value": metrics.get("total_long_value", Decimal("0")),
+                "short_value": metrics.get("total_short_value", Decimal("0")),
+                "avg_buy_prz": avg_buy_prz,
+                "avg_sell_prz": avg_sell_prz,
+                "matched_qty": metrics.get("matched_qty", Decimal("0")),
+                "left_long_qty": left_long_qty,
+                "left_short_qty": left_short_qty,
+                "left_long_value": metrics.get("close_left_long_value", Decimal("0")),
+                "left_short_value": metrics.get("close_left_short_value", Decimal("0")),
+                "close_prz": close_prz,
+                "unrealized_pnl": unrealized_pnl,
+                "daily_realized_pnl": metrics.get("daily_realized_pnl", Decimal("0")),
+                "cumulative_realized_pnl": metrics.get("cumulative_realized_pnl", Decimal("0")),
+            }
+    
+    # 存储每个交易对的指标
+    for sym, m in today_metrics.items():
+        if symbol and sym != symbol:
+            continue
+        
+        # 获取零点快照
+        midnight_snapshot_query = (
+            select(PositionMetrics)
+            .where(PositionMetrics.account_id == account_id)
+            .where(PositionMetrics.exchange == exchange)
+            .where(PositionMetrics.symbol == sym)
+            .where(PositionMetrics.timestamp == today_midnight)
+            .limit(1)
+        )
+        midnight_result = await session.execute(midnight_snapshot_query)
+        midnight_snapshot = midnight_result.scalar_one_or_none()
+        
+        midnight_matched_qty = Decimal("0")
+        cumulative_realized_pnl_at_midnight = Decimal("0")
+        if midnight_snapshot:
+            midnight_matched_qty = midnight_snapshot.matched_qty or Decimal("0")
+            cumulative_realized_pnl_at_midnight = midnight_snapshot.cumulative_realized_pnl or Decimal("0")
+        
+        today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
+        today_realized_pnl = m.get("daily_realized_pnl", Decimal("0"))
+        cumulative_realized_pnl_now = cumulative_realized_pnl_at_midnight + today_realized_pnl
+        cumulative_pnl = cumulative_realized_pnl_now + today_unrealized_pnl
+        
+        open_left_long_qty_from_snapshot = midnight_snapshot.left_long_qty if midnight_snapshot else Decimal("0")
+        open_left_short_qty_from_snapshot = midnight_snapshot.left_short_qty if midnight_snapshot else Decimal("0")
+        open_left_long_value_from_snapshot = midnight_snapshot.left_long_value if midnight_snapshot else Decimal("0")
+        open_left_short_value_from_snapshot = midnight_snapshot.left_short_value if midnight_snapshot else Decimal("0")
+        
+        # 使用 UPSERT 插入/更新数据
+        stmt = pg_insert(PositionMetrics).values(
+            timestamp=target_time,
+            account_id=account_id,
+            exchange=exchange,
+            symbol=sym,
+            open_left_long_qty=open_left_long_qty_from_snapshot,
+            open_left_short_qty=open_left_short_qty_from_snapshot,
+            open_left_long_value=open_left_long_value_from_snapshot,
+            open_left_short_value=open_left_short_value_from_snapshot,
+            daily_sum_buy_qty=m.get("buy_volume", Decimal("0")),
+            daily_sum_sell_qty=m.get("sell_volume", Decimal("0")),
+            daily_sum_buy_value=m.get("buy_trade_value", Decimal("0")),
+            daily_sum_sell_value=m.get("sell_trade_value", Decimal("0")),
+            long_qty=m.get("long_qty", Decimal("0")),
+            short_qty=m.get("short_qty", Decimal("0")),
+            long_value=m.get("long_value", Decimal("0")),
+            short_value=m.get("short_value", Decimal("0")),
+            avg_buy_prz=m.get("avg_buy_prz", Decimal("0")),
+            avg_sell_prz=m.get("avg_sell_prz", Decimal("0")),
+            matched_qty=m.get("matched_qty", Decimal("0")),
+            daily_realized_pnl=today_realized_pnl,
+            cumulative_realized_pnl=cumulative_realized_pnl_now,
+            left_long_qty=m.get("left_long_qty", Decimal("0")),
+            left_short_qty=m.get("left_short_qty", Decimal("0")),
+            left_long_value=m.get("left_long_value", Decimal("0")),
+            left_short_value=m.get("left_short_value", Decimal("0")),
+            close_prz=m.get("close_prz", Decimal("0")),
+            unrealized_pnl=today_unrealized_pnl,
+            daily_pnl=today_realized_pnl + today_unrealized_pnl,
+            cumulative_pnl=cumulative_pnl,
+        )
+        
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["timestamp", "account_id", "exchange", "symbol"],
+            set_={
+                "open_left_long_qty": stmt.excluded.open_left_long_qty,
+                "open_left_short_qty": stmt.excluded.open_left_short_qty,
+                "open_left_long_value": stmt.excluded.open_left_long_value,
+                "open_left_short_value": stmt.excluded.open_left_short_value,
+                "daily_sum_buy_qty": stmt.excluded.daily_sum_buy_qty,
+                "daily_sum_sell_qty": stmt.excluded.daily_sum_sell_qty,
+                "daily_sum_buy_value": stmt.excluded.daily_sum_buy_value,
+                "daily_sum_sell_value": stmt.excluded.daily_sum_sell_value,
+                "long_qty": stmt.excluded.long_qty,
+                "short_qty": stmt.excluded.short_qty,
+                "long_value": stmt.excluded.long_value,
+                "short_value": stmt.excluded.short_value,
+                "avg_buy_prz": stmt.excluded.avg_buy_prz,
+                "avg_sell_prz": stmt.excluded.avg_sell_prz,
+                "matched_qty": stmt.excluded.matched_qty,
+                "daily_realized_pnl": stmt.excluded.daily_realized_pnl,
+                "cumulative_realized_pnl": stmt.excluded.cumulative_realized_pnl,
+                "left_long_qty": stmt.excluded.left_long_qty,
+                "left_short_qty": stmt.excluded.left_short_qty,
+                "left_long_value": stmt.excluded.left_long_value,
+                "left_short_value": stmt.excluded.left_short_value,
+                "close_prz": stmt.excluded.close_prz,
+                "unrealized_pnl": stmt.excluded.unrealized_pnl,
+                "daily_pnl": stmt.excluded.daily_pnl,
+                "cumulative_pnl": stmt.excluded.cumulative_pnl,
+            }
+        )
+        
+        await session.execute(stmt)
 
 
 async def rebuild_all_metrics(
@@ -105,7 +326,65 @@ async def rebuild_all_metrics(
                 contract_multiplier_getter=contract_multiplier_getter,
             )
             
-            # 4. 重建零点快照
+            # 4. 查询时间范围（在重建零点快照之前，以便确定需要重建的时间范围）
+            print(f"正在查询时间范围...")
+            time_range_query = select(
+                func.min(PositionMetrics.timestamp).label('min_time'),
+                func.max(PositionMetrics.timestamp).label('max_time')
+            ).where(
+                PositionMetrics.account_id == account_id
+            ).where(
+                PositionMetrics.exchange == exchange
+            )
+            if symbol:
+                time_range_query = time_range_query.where(PositionMetrics.symbol == symbol)
+            
+            time_range_result = await session.execute(time_range_query)
+            time_range = time_range_result.first()
+            
+            # 如果没有数据，从交易表中查询最早和最后成交时间
+            if not time_range or not time_range.min_time or not time_range.max_time:
+                print(f"数据库中暂无数据，从交易表查询时间范围...")
+                from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+                from tri_arb.storage.models import TradeUpdate
+                
+                TradeModel = XTTradeUpdate if exchange == "xt" else TradeUpdate
+                time_column = (
+                    TradeModel.transaction_time if exchange == "binance"
+                    else TradeModel.update_time
+                )
+                
+                trade_time_query = select(
+                    func.min(time_column).label('min_time'),
+                    func.max(time_column).label('max_time')
+                )
+                if exchange == "binance":
+                    trade_time_query = trade_time_query.where(TradeModel.exchange == "binance_perp")
+                if account_id:
+                    trade_time_query = trade_time_query.where(TradeModel.account_id == account_id)
+                if symbol:
+                    trade_time_query = trade_time_query.where(TradeModel.symbol == symbol)
+                
+                trade_time_result = await session.execute(trade_time_query)
+                trade_time_range = trade_time_result.first()
+                
+                if trade_time_range and trade_time_range.min_time and trade_time_range.max_time:
+                    # 从最早交易日期开始，到最新交易日期结束
+                    min_date = trade_time_range.min_time.date()
+                    max_date = trade_time_range.max_time.date()
+                    min_time = datetime.combine(min_date, datetime.min.time()).replace(tzinfo=None)
+                    max_time = datetime.combine(max_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
+                    print(f"从交易表找到时间范围: {min_time} -> {max_time}")
+                else:
+                    print(f"⚠️  未找到交易数据，跳过实时数据重建")
+                    min_time = None
+                    max_time = None
+            else:
+                min_time = time_range.min_time
+                max_time = time_range.max_time
+                print(f"从数据库找到时间范围: {min_time} -> {max_time}")
+            
+            # 5. 重建零点快照
             print(f"正在重建零点快照...")
             await scheduler._rebuild_midnight_snapshots(
                 session=session,
@@ -117,32 +396,75 @@ async def rebuild_all_metrics(
             await session.commit()
             print(f"零点快照重建完成")
             
-            # 5. 重新计算实时数据
-            # 注意：实时数据是每5分钟计算的，这里只重新计算当前时刻的数据
-            # 历史实时数据需要等待调度器自动重新计算，或者可以手动触发
-            print(f"正在重新计算当前时刻的实时数据...")
-            
-            # 调用调度器的计算方法来重新计算当前数据
-            # 这会使用正确的 avg_sell_prz 公式
-            try:
-                await scheduler._calculate_and_store_metrics(
-                    session=session,
-                    account_id=account_id,
-                    exchange=exchange,
-                    symbol=symbol,
+            # 6. 重新计算所有历史实时数据（每5分钟间隔）
+            if min_time and max_time:
+                print(f"正在重新计算所有历史实时数据（每5分钟间隔）...")
+                
+                # 删除所有非零点快照的实时数据
+                print(f"正在删除所有非零点快照的实时数据...")
+                delete_realtime_query = delete(PositionMetrics).where(
+                    PositionMetrics.account_id == account_id
+                ).where(
+                    PositionMetrics.exchange == exchange
+                ).where(
+                    func.extract('hour', PositionMetrics.timestamp) * 60 + 
+                    func.extract('minute', PositionMetrics.timestamp) != 0
                 )
+                if symbol:
+                    delete_realtime_query = delete_realtime_query.where(PositionMetrics.symbol == symbol)
+                
+                result = await session.execute(delete_realtime_query)
+                deleted_count = result.rowcount
+                print(f"已删除 {deleted_count} 条实时数据记录")
                 await session.commit()
-                print(f"当前时刻的实时数据已重新计算")
-            except Exception as e:
-                print(f"重新计算实时数据时出错（这可能是正常的，如果调度器未运行）: {e}")
-                await session.rollback()
+                
+                # 每隔5分钟计算一次
+                # 从第一个非零点时间开始
+                current_time = min_time
+                # 如果不是整点，调整到下一个5分钟间隔
+                if current_time.minute % 5 != 0:
+                    current_time = current_time.replace(minute=(current_time.minute // 5 + 1) * 5, second=0, microsecond=0)
+                
+                interval = timedelta(minutes=5)
+                calculated_count = 0
+                
+                # 计算需要处理的时间点总数
+                total_intervals = int((max_time - current_time).total_seconds() / 300) + 1
+                print(f"需要计算约 {total_intervals} 个时间点的数据（每5分钟间隔）")
+                
+                while current_time <= max_time:
+                    # 跳过零点（零点快照已经重建）
+                    if current_time.hour == 0 and current_time.minute == 0:
+                        current_time += interval
+                        continue
+                    
+                    try:
+                        # 计算该时间点的数据
+                        await _calculate_metrics_for_time(
+                            session=session,
+                            calc=calc,
+                            account_id=account_id,
+                            exchange=exchange,
+                            symbol=symbol,
+                            target_time=current_time,
+                        )
+                        calculated_count += 1
+                        
+                        if calculated_count % 100 == 0:
+                            await session.commit()
+                            print(f"已计算 {calculated_count} 个时间点的数据...")
+                    except Exception as e:
+                        print(f"计算时间点 {current_time} 的数据时出错: {e}")
+                        await session.rollback()
+                    
+                    current_time += interval
+                
+                await session.commit()
+                print(f"✅ 已重新计算 {calculated_count} 个时间点的实时数据")
             
             print(f"\n数据重建完成！")
             print(f"✅ 所有零点快照已使用正确的公式重新计算")
-            print(f"✅ 当前时刻的实时数据已重新计算")
-            print(f"\n注意：")
-            print(f"  - 历史实时数据（非零点快照）会在下次调度时自动使用正确的公式重新计算")
-            print(f"  - 或者您可以等待调度器运行，它会自动修复所有数据")
+            print(f"✅ 所有历史实时数据已使用正确的公式重新计算")
             
         except Exception as e:
             print(f"错误：{e}")

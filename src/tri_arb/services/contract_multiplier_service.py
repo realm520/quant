@@ -128,14 +128,32 @@ class ContractMultiplierService:
                 return
             
             # 解析所有交易对的配置
-            symbols = data.get("result", [])
+            # XT API 返回格式可能是：
+            # 1. 旧格式：{"result": [...]} - result 直接是列表
+            # 2. 新格式：{"result": {"symbols": [...]}} - result 是包含 symbols 的字典
+            result = data.get("result", [])
             
-            # 类型检查：确保 result 是列表
+            # 处理新格式：如果 result 是字典且包含 symbols 字段
+            if isinstance(result, dict) and "symbols" in result:
+                symbols = result.get("symbols", [])
+            elif isinstance(result, list):
+                # 旧格式：result 直接是列表
+                symbols = result
+            else:
+                logger.warning(
+                    f"XT API 返回的 result 格式无法识别，无法加载交易对配置",
+                    result_type=type(result).__name__,
+                    result_value=str(result)[:100] if isinstance(result, str) else result,
+                )
+                self._xt_configs_loaded = True
+                return
+            
+            # 类型检查：确保 symbols 是列表
             if not isinstance(symbols, list):
                 logger.warning(
-                    f"XT API 返回的 result 不是列表类型，无法加载交易对配置",
-                    result_type=type(symbols).__name__,
-                    result_value=str(symbols)[:100] if isinstance(symbols, str) else symbols,
+                    f"XT API 返回的 symbols 不是列表类型，无法加载交易对配置",
+                    symbols_type=type(symbols).__name__,
+                    symbols_value=str(symbols)[:100] if isinstance(symbols, str) else symbols,
                 )
                 self._xt_configs_loaded = True
                 return

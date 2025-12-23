@@ -252,16 +252,17 @@ async def rebuild_all_metrics(
     account_id: str,
     exchange: str,
     symbol: str | None = None,
-    delete_existing: bool = True,
     database_url: str | None = None,
 ):
-    """重建所有 position_metrics 数据。
+    """重建缺失的 position_metrics 数据。
+    
+    只插入缺失的数据，不删除已有数据。
+    每5分钟一个时间点。
     
     Args:
         account_id: 账号ID
         exchange: 交易所名称
         symbol: 交易对（可选），None 表示所有交易对
-        delete_existing: 是否删除现有数据（默认 True）
         database_url: 数据库连接URL（可选），如果不提供则从环境变量读取
     """
     # 获取数据库连接URL
@@ -281,21 +282,8 @@ async def rebuild_all_metrics(
     
     async with db_manager.session() as session:
         try:
-            # 1. 删除现有数据（可选）
-            if delete_existing:
-                print(f"正在删除现有的 position_metrics 数据...")
-                delete_query = delete(PositionMetrics).where(
-                    PositionMetrics.account_id == account_id
-                ).where(
-                    PositionMetrics.exchange == exchange
-                )
-                if symbol:
-                    delete_query = delete_query.where(PositionMetrics.symbol == symbol)
-                
-                result = await session.execute(delete_query)
-                deleted_count = result.rowcount
-                print(f"已删除 {deleted_count} 条记录")
-                await session.commit()
+            # 1. 查询时间范围（从数据库或交易表）
+            print(f"正在查询时间范围...")
             
             # 2. 创建合约乘数服务（如果需要）
             from tri_arb.services.contract_multiplier_service import ContractMultiplierService
@@ -318,7 +306,7 @@ async def rebuild_all_metrics(
                 
                 contract_multiplier_getter = sync_getter
             
-            # 3. 创建 PositionCalculator（需要在 session 内创建）
+            # 2. 创建 PositionCalculator（需要在 session 内创建）
             calc = PositionCalculator(
                 session,
                 exchange=exchange,
@@ -326,66 +314,43 @@ async def rebuild_all_metrics(
                 contract_multiplier_getter=contract_multiplier_getter,
             )
             
-            # 4. 查询时间范围（在重建零点快照之前，以便确定需要重建的时间范围）
-            print(f"正在查询时间范围...")
-            time_range_query = select(
-                func.min(PositionMetrics.timestamp).label('min_time'),
-                func.max(PositionMetrics.timestamp).label('max_time')
-            ).where(
-                PositionMetrics.account_id == account_id
-            ).where(
-                PositionMetrics.exchange == exchange
+            # 查询时间范围（从交易表查询，确定需要计算的时间范围）
+            from tri_arb.storage.xt_websocket_models import XTTradeUpdate
+            from tri_arb.storage.models import TradeUpdate
+            
+            TradeModel = XTTradeUpdate if exchange == "xt" else TradeUpdate
+            time_column = (
+                TradeModel.transaction_time if exchange == "binance"
+                else TradeModel.update_time
             )
+            
+            trade_time_query = select(
+                func.min(time_column).label('min_time'),
+                func.max(time_column).label('max_time')
+            )
+            if exchange == "binance":
+                trade_time_query = trade_time_query.where(TradeModel.exchange == "binance_perp")
+            if account_id:
+                trade_time_query = trade_time_query.where(TradeModel.account_id == account_id)
             if symbol:
-                time_range_query = time_range_query.where(PositionMetrics.symbol == symbol)
+                trade_time_query = trade_time_query.where(TradeModel.symbol == symbol)
             
-            time_range_result = await session.execute(time_range_query)
-            time_range = time_range_result.first()
+            trade_time_result = await session.execute(trade_time_query)
+            trade_time_range = trade_time_result.first()
             
-            # 如果没有数据，从交易表中查询最早和最后成交时间
-            if not time_range or not time_range.min_time or not time_range.max_time:
-                print(f"数据库中暂无数据，从交易表查询时间范围...")
-                from tri_arb.storage.xt_websocket_models import XTTradeUpdate
-                from tri_arb.storage.models import TradeUpdate
-                
-                TradeModel = XTTradeUpdate if exchange == "xt" else TradeUpdate
-                time_column = (
-                    TradeModel.transaction_time if exchange == "binance"
-                    else TradeModel.update_time
-                )
-                
-                trade_time_query = select(
-                    func.min(time_column).label('min_time'),
-                    func.max(time_column).label('max_time')
-                )
-                if exchange == "binance":
-                    trade_time_query = trade_time_query.where(TradeModel.exchange == "binance_perp")
-                if account_id:
-                    trade_time_query = trade_time_query.where(TradeModel.account_id == account_id)
-                if symbol:
-                    trade_time_query = trade_time_query.where(TradeModel.symbol == symbol)
-                
-                trade_time_result = await session.execute(trade_time_query)
-                trade_time_range = trade_time_result.first()
-                
-                if trade_time_range and trade_time_range.min_time and trade_time_range.max_time:
-                    # 从最早交易日期开始，到最新交易日期结束
-                    min_date = trade_time_range.min_time.date()
-                    max_date = trade_time_range.max_time.date()
-                    min_time = datetime.combine(min_date, datetime.min.time()).replace(tzinfo=None)
-                    max_time = datetime.combine(max_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
-                    print(f"从交易表找到时间范围: {min_time} -> {max_time}")
-                else:
-                    print(f"⚠️  未找到交易数据，跳过实时数据重建")
-                    min_time = None
-                    max_time = None
-            else:
-                min_time = time_range.min_time
-                max_time = time_range.max_time
-                print(f"从数据库找到时间范围: {min_time} -> {max_time}")
+            if not trade_time_range or not trade_time_range.min_time or not trade_time_range.max_time:
+                print(f"⚠️  未找到交易数据，无法确定时间范围")
+                return
             
-            # 5. 重建零点快照
-            print(f"正在重建零点快照...")
+            # 从最早交易日期开始，到最新交易日期结束
+            min_date = trade_time_range.min_time.date()
+            max_date = trade_time_range.max_time.date()
+            min_time = datetime.combine(min_date, datetime.min.time()).replace(tzinfo=None)
+            max_time = datetime.combine(max_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=None)
+            print(f"从交易表找到时间范围: {min_time} -> {max_time}")
+            
+            # 4. 重建零点快照（如果不存在）
+            print(f"正在重建零点快照（如果不存在）...")
             await scheduler._rebuild_midnight_snapshots(
                 session=session,
                 calc=calc,
@@ -396,75 +361,86 @@ async def rebuild_all_metrics(
             await session.commit()
             print(f"零点快照重建完成")
             
-            # 6. 重新计算所有历史实时数据（每5分钟间隔）
-            if min_time and max_time:
-                print(f"正在重新计算所有历史实时数据（每5分钟间隔）...")
-                
-                # 删除所有非零点快照的实时数据
-                print(f"正在删除所有非零点快照的实时数据...")
-                delete_realtime_query = delete(PositionMetrics).where(
-                    PositionMetrics.account_id == account_id
-                ).where(
-                    PositionMetrics.exchange == exchange
-                ).where(
-                    func.extract('hour', PositionMetrics.timestamp) * 60 + 
-                    func.extract('minute', PositionMetrics.timestamp) != 0
-                )
-                if symbol:
-                    delete_realtime_query = delete_realtime_query.where(PositionMetrics.symbol == symbol)
-                
-                result = await session.execute(delete_realtime_query)
-                deleted_count = result.rowcount
-                print(f"已删除 {deleted_count} 条实时数据记录")
-                await session.commit()
-                
-                # 每隔5分钟计算一次
-                # 从第一个非零点时间开始
-                current_time = min_time
-                # 如果不是整点，调整到下一个5分钟间隔
-                if current_time.minute % 5 != 0:
-                    current_time = current_time.replace(minute=(current_time.minute // 5 + 1) * 5, second=0, microsecond=0)
-                
-                interval = timedelta(minutes=5)
-                calculated_count = 0
-                
-                # 计算需要处理的时间点总数
-                total_intervals = int((max_time - current_time).total_seconds() / 300) + 1
-                print(f"需要计算约 {total_intervals} 个时间点的数据（每5分钟间隔）")
-                
-                while current_time <= max_time:
-                    # 跳过零点（零点快照已经重建）
-                    if current_time.hour == 0 and current_time.minute == 0:
-                        current_time += interval
-                        continue
-                    
-                    try:
-                        # 计算该时间点的数据
-                        await _calculate_metrics_for_time(
-                            session=session,
-                            calc=calc,
-                            account_id=account_id,
-                            exchange=exchange,
-                            symbol=symbol,
-                            target_time=current_time,
-                        )
-                        calculated_count += 1
-                        
-                        if calculated_count % 100 == 0:
-                            await session.commit()
-                            print(f"已计算 {calculated_count} 个时间点的数据...")
-                    except Exception as e:
-                        print(f"计算时间点 {current_time} 的数据时出错: {e}")
-                        await session.rollback()
-                    
+            # 5. 查询数据库中已有的时间点（用于跳过已存在的数据）
+            print(f"正在查询数据库中已有的时间点...")
+            existing_times_query = select(
+                PositionMetrics.timestamp,
+                PositionMetrics.symbol
+            ).where(
+                PositionMetrics.account_id == account_id
+            ).where(
+                PositionMetrics.exchange == exchange
+            )
+            if symbol:
+                existing_times_query = existing_times_query.where(PositionMetrics.symbol == symbol)
+            
+            existing_times_result = await session.execute(existing_times_query)
+            # 使用 (timestamp, symbol) 作为键，因为同一个时间点可能有多个 symbol
+            existing_times_set = {(row[0], row[1]) for row in existing_times_result.all()}
+            print(f"数据库中已有 {len(existing_times_set)} 条记录")
+            
+            # 6. 计算缺失的实时数据（每5分钟间隔）
+            print(f"正在计算缺失的实时数据（每5分钟间隔）...")
+            
+            # 从最小时间开始，每隔5分钟计算一次
+            current_time = min_time
+            # 如果不是整点，调整到下一个5分钟间隔
+            if current_time.minute % 5 != 0:
+                current_time = current_time.replace(minute=(current_time.minute // 5 + 1) * 5, second=0, microsecond=0)
+            
+            interval = timedelta(minutes=5)
+            calculated_count = 0
+            skipped_count = 0
+            
+            # 计算需要处理的时间点总数
+            total_intervals = int((max_time - current_time).total_seconds() / 300) + 1
+            print(f"需要检查 {total_intervals} 个时间点（每5分钟间隔）")
+            
+            while current_time <= max_time:
+                # 跳过零点（零点快照已经重建，如果需要更新会在上面处理）
+                if current_time.hour == 0 and current_time.minute == 0:
                     current_time += interval
+                    continue
                 
-                await session.commit()
-                print(f"✅ 已重新计算 {calculated_count} 个时间点的实时数据")
+                try:
+                    # 计算该时间点的数据
+                    # _calculate_metrics_for_time 内部会为每个 symbol 检查并跳过已存在的数据
+                    # 但为了效率，我们先检查是否所有 symbol 都已存在（如果指定了 symbol）
+                    if symbol:
+                        # 如果指定了 symbol，检查该时间点是否已存在
+                        if (current_time, symbol) in existing_times_set:
+                            skipped_count += 1
+                            current_time += interval
+                            continue
+                    
+                    # 计算该时间点的数据（函数内部使用 UPSERT，不会重复插入）
+                    await _calculate_metrics_for_time(
+                        session=session,
+                        calc=calc,
+                        account_id=account_id,
+                        exchange=exchange,
+                        symbol=symbol,
+                        target_time=current_time,
+                    )
+                    calculated_count += 1
+                    
+                    # 每100个时间点提交一次
+                    if calculated_count % 100 == 0:
+                        await session.commit()
+                        print(f"已计算 {calculated_count} 个时间点，跳过 {skipped_count} 个已存在的时间点...")
+                except Exception as e:
+                    print(f"计算时间点 {current_time} 的数据时出错: {e}")
+                    await session.rollback()
+                
+                current_time += interval
+            
+            await session.commit()
+            print(f"✅ 已计算 {calculated_count} 个缺失的时间点")
+            print(f"✅ 跳过 {skipped_count} 个已存在的时间点")
             
             print(f"\n数据重建完成！")
-            print(f"✅ 所有零点快照已使用正确的公式重新计算")
-            print(f"✅ 所有历史实时数据已使用正确的公式重新计算")
+            print(f"✅ 零点快照已重建（如果不存在）")
+            print(f"✅ 缺失的实时数据已插入（每5分钟间隔）")
             
         except Exception as e:
             print(f"错误：{e}")
@@ -478,11 +454,6 @@ async def main():
     parser.add_argument("--exchange", required=True, help="交易所名称（如 xt, binance）")
     parser.add_argument("--symbol", default=None, help="交易对（可选），不指定则处理所有交易对")
     parser.add_argument(
-        "--keep-existing",
-        action="store_true",
-        help="保留现有数据（不删除），只重建缺失的数据",
-    )
-    parser.add_argument(
         "--database-url",
         default=None,
         help="数据库连接URL（可选），如果不提供则从环境变量 DATABASE_URL 读取",
@@ -494,7 +465,6 @@ async def main():
         account_id=args.account_id,
         exchange=args.exchange,
         symbol=args.symbol,
-        delete_existing=not args.keep_existing,
         database_url=args.database_url,
     )
 

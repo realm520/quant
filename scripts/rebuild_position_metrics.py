@@ -165,14 +165,17 @@ async def _calculate_metrics_for_time(
         midnight_result = await session.execute(midnight_snapshot_query)
         midnight_snapshot = midnight_result.scalar_one_or_none()
         
+        # 从零点快照读取累计已实现盈亏
         midnight_matched_qty = Decimal("0")
         cumulative_realized_pnl_at_midnight = Decimal("0")
         if midnight_snapshot:
             midnight_matched_qty = midnight_snapshot.matched_qty or Decimal("0")
             cumulative_realized_pnl_at_midnight = midnight_snapshot.cumulative_realized_pnl or Decimal("0")
         
+        # 使用与调度器相同的计算逻辑
         today_unrealized_pnl = m.get("unrealized_pnl", Decimal("0"))
         today_realized_pnl = m.get("daily_realized_pnl", Decimal("0"))
+        # 当前时刻的累积已实现盈亏 = 零点快照的累积已实现 + 今日新增的已实现
         cumulative_realized_pnl_now = cumulative_realized_pnl_at_midnight + today_realized_pnl
         cumulative_pnl = cumulative_realized_pnl_now + today_unrealized_pnl
         

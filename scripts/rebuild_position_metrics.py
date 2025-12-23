@@ -17,6 +17,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from datetime import datetime
+from decimal import Decimal
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -8,6 +8,7 @@
 
 import asyncio
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ async def rebuild_all_metrics(
     exchange: str,
     symbol: str | None = None,
     delete_existing: bool = True,
+    database_url: str | None = None,
 ):
     """重建所有 position_metrics 数据。
     
@@ -38,8 +40,21 @@ async def rebuild_all_metrics(
         exchange: 交易所名称
         symbol: 交易对（可选），None 表示所有交易对
         delete_existing: 是否删除现有数据（默认 True）
+        database_url: 数据库连接URL（可选），如果不提供则从环境变量读取
     """
-    db_manager = DatabaseManager()
+    # 获取数据库连接URL
+    if database_url is None:
+        database_url = os.getenv("DATABASE_URL")
+    
+    if database_url is None:
+        raise ValueError(
+            "数据库连接URL未设置。请通过以下方式之一设置：\n"
+            "1. 设置环境变量 DATABASE_URL:\n"
+            "   export DATABASE_URL='postgresql+asyncpg://user:password@host:port/dbname'\n"
+            "2. 或在命令行传入 --database-url 参数"
+        )
+    
+    db_manager = DatabaseManager(database_url=database_url)
     scheduler = PositionMetricsScheduler(db_manager)
     
     async with db_manager.session() as session:
@@ -122,6 +137,11 @@ async def main():
         action="store_true",
         help="保留现有数据（不删除），只重建缺失的数据",
     )
+    parser.add_argument(
+        "--database-url",
+        default=None,
+        help="数据库连接URL（可选），如果不提供则从环境变量 DATABASE_URL 读取",
+    )
     
     args = parser.parse_args()
     
@@ -130,6 +150,7 @@ async def main():
         exchange=args.exchange,
         symbol=args.symbol,
         delete_existing=not args.keep_existing,
+        database_url=args.database_url,
     )
 
 

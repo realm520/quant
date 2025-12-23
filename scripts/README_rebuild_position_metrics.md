@@ -6,6 +6,20 @@
 
 ## 使用方法
 
+### 设置数据库连接
+
+首先需要设置数据库连接URL，有两种方式：
+
+**方式1：使用环境变量（推荐）**
+```bash
+export DATABASE_URL='postgresql+asyncpg://user:password@host:port/dbname'
+```
+
+**方式2：使用命令行参数**
+```bash
+--database-url 'postgresql+asyncpg://user:password@host:port/dbname'
+```
+
 ### 1. 重建所有数据（推荐）
 
 删除所有现有数据并重新计算：
@@ -32,6 +46,15 @@ python3 scripts/rebuild_position_metrics.py \
   --account-id account_008 \
   --exchange xt \
   --keep-existing
+```
+
+### 4. 指定数据库连接URL
+
+```bash
+python3 scripts/rebuild_position_metrics.py \
+  --account-id account_008 \
+  --exchange xt \
+  --database-url 'postgresql+asyncpg://user:password@host:port/dbname'
 ```
 
 ## 注意事项

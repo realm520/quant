@@ -1188,10 +1188,10 @@ class PositionCalculator:
                     total_long_value / total_long_qty
                     if total_long_qty > 0 else Decimal("0")
                 )
-                # 平均卖价 = 当日卖市值 / 当日卖量（不是累计平均）
+                # 平均卖价 = 总空头市值 / 总空头持仓量
                 avg_sell_prz = (
-                    daily_sell_value / daily_sell_volume
-                    if daily_sell_volume > 0 else Decimal("0")
+                    total_short_value / total_short_qty
+                    if total_short_qty > 0 else Decimal("0")
                 )
                 
                 # 轧差数量 = min(总多头持仓, 总空头持仓)
@@ -1366,10 +1366,10 @@ class PositionCalculator:
                     total_long_value / total_long_qty
                     if total_long_qty > 0 else Decimal("0")
                 )
-                # 平均卖价 = 当日卖市值 / 当日卖量（不是累计平均）
+                # 平均卖价 = 总空头市值 / 总空头持仓量
                 avg_sell_prz = (
-                    daily_sell_value / daily_sell_volume
-                    if daily_sell_volume > 0 else Decimal("0")
+                    total_short_value / total_short_qty
+                    if total_short_qty > 0 else Decimal("0")
                 )
                 
                 # 轧差数量 = min(总多头持仓, 总空头持仓)

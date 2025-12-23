@@ -260,7 +260,12 @@ async def main():
             return contract_multiplier_service.get_multiplier_sync(args.exchange, symbol)
         
         # 创建位置计算器
-        calc = PositionCalculator(session, contract_multiplier_getter)
+        calc = PositionCalculator(
+            session,
+            exchange=args.exchange,
+            account_id=args.account_id,
+            contract_multiplier_getter=contract_multiplier_getter,
+        )
         
         # 计算指标
         result = await calculate_metrics_for_time(

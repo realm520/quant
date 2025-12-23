@@ -75,14 +75,36 @@ async def rebuild_all_metrics(
                 print(f"已删除 {deleted_count} 条记录")
                 await session.commit()
             
-            # 2. 创建 PositionCalculator
+            # 2. 创建合约乘数服务（如果需要）
+            from tri_arb.services.contract_multiplier_service import ContractMultiplierService
+            contract_multiplier_service = ContractMultiplierService()
+            
+            # 创建合约乘数 getter
+            contract_multiplier_getter = None
+            if contract_multiplier_service:
+                # 使用同步方法，直接调用公开 API（不需要 API key）
+                service = contract_multiplier_service
+                exchange_name = exchange
+                
+                # 使用闭包捕获 service 和 exchange
+                def sync_getter(symbol: str) -> Decimal:
+                    """同步获取合约乘数."""
+                    try:
+                        return service.get_multiplier_sync(exchange_name, symbol)
+                    except Exception:
+                        return Decimal("1")
+                
+                contract_multiplier_getter = sync_getter
+            
+            # 3. 创建 PositionCalculator（需要在 session 内创建）
             calc = PositionCalculator(
-                account_id=account_id,
+                session,
                 exchange=exchange,
-                db_manager=db_manager,
+                account_id=account_id,
+                contract_multiplier_getter=contract_multiplier_getter,
             )
             
-            # 3. 重建零点快照
+            # 4. 重建零点快照
             print(f"正在重建零点快照...")
             await scheduler._rebuild_midnight_snapshots(
                 session=session,
@@ -94,7 +116,7 @@ async def rebuild_all_metrics(
             await session.commit()
             print(f"零点快照重建完成")
             
-            # 4. 重新计算实时数据
+            # 5. 重新计算实时数据
             # 注意：实时数据是每5分钟计算的，这里只重新计算当前时刻的数据
             # 历史实时数据需要等待调度器自动重新计算，或者可以手动触发
             print(f"正在重新计算当前时刻的实时数据...")

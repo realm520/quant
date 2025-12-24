@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Set
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
+from sqlalchemy.dialects.postgresql import insert
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -2016,7 +2017,7 @@ class XTUserStreamService:
             
             async with self.db_manager.session() as session:
                 OrderUpdateModel = self._get_model('XTOrderUpdate')
-                records = []
+                order_dicts = []
                 
                 for order_data in batch:
                     if "orderId" not in order_data and "order_id" not in order_data:
@@ -2049,35 +2050,47 @@ class XTUserStreamService:
                     else:
                         update_time = datetime.utcnow()
                     
-                    record = OrderUpdateModel(
-                        update_time=update_time,
-                        account_id=self.account_id,
-                        symbol=symbol,
-                        order_id=str(order_id),
-                        client_order_id=order_data.get("clientOrderId") or order_data.get("client_order_id", ""),
-                        side=side,
-                        order_type=order_type,
-                        position_side=order_data.get("positionSide") or order_data.get("position_side", ""),
-                        quantity=quantity,
-                        price=price,
-                        filled_quantity=filled_quantity,
-                        status=status,
-                        time_in_force=order_data.get("timeInForce") or order_data.get("time_in_force", ""),
-                        create_time=self._parse_timestamp(order_data.get("createdTime") or order_data.get("createTime") or order_data.get("created_time")),
-                        update_time_order=self._parse_timestamp(order_data.get("updatedTime") or order_data.get("updateTime") or order_data.get("updated_time")),
-                        raw_data=json.dumps(order_data, cls=DecimalEncoder),
-                    )
-                    records.append(record)
+                    order_dict = {
+                        'update_time': update_time,
+                        'account_id': self.account_id,
+                        'symbol': symbol,
+                        'order_id': str(order_id),
+                        'client_order_id': order_data.get("clientOrderId") or order_data.get("client_order_id", ""),
+                        'side': side,
+                        'order_type': order_type,
+                        'position_side': order_data.get("positionSide") or order_data.get("position_side", ""),
+                        'quantity': quantity,
+                        'price': price,
+                        'filled_quantity': filled_quantity,
+                        'status': status,
+                        'time_in_force': order_data.get("timeInForce") or order_data.get("time_in_force", ""),
+                        'create_time': self._parse_timestamp(order_data.get("createdTime") or order_data.get("createTime") or order_data.get("created_time")),
+                        'update_time_order': self._parse_timestamp(order_data.get("updatedTime") or order_data.get("updateTime") or order_data.get("updated_time")),
+                        'raw_data': json.dumps(order_data, cls=DecimalEncoder),
+                    }
+                    order_dicts.append(order_dict)
                 
-                if records:
-                    session.add_all(records)
+                if order_dicts:
+                    # 使用 PostgreSQL INSERT ... ON CONFLICT DO UPDATE 处理唯一约束冲突
+                    stmt = insert(OrderUpdateModel).values(order_dicts)
+                    stmt = stmt.on_conflict_do_update(
+                        constraint='uq_xt_order_id_time_account',
+                        set_={
+                            'status': stmt.excluded.status,
+                            'filled_quantity': stmt.excluded.filled_quantity,
+                            'raw_data': stmt.excluded.raw_data,
+                            'update_time_order': stmt.excluded.update_time_order,
+                        }
+                    )
+                    
                     commit_start = datetime.utcnow()
+                    await session.execute(stmt)
                     await session.commit()
                     commit_duration = (datetime.utcnow() - commit_start).total_seconds()
                     total_duration = (datetime.utcnow() - save_start_time).total_seconds()
                     
                     logger.debug(
-                        f"Saved {len(records)} orders in batch: "
+                        f"Saved {len(order_dicts)} orders in batch: "
                         f"total={total_duration:.3f}s, commit={commit_duration:.3f}s"
                     )
                     

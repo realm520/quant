@@ -2071,8 +2071,45 @@ class XTUserStreamService:
                     order_dicts.append(order_dict)
                 
                 if order_dicts:
+                    # 去重：根据 (order_id, account_id) 去重，保留最新的记录
+                    # 注意：唯一约束是 (order_id, update_time, account_id)，但批次中去重应该只基于 order_id
+                    # 因为同一个订单在同一个批次中不应该出现多次
+                    unique_orders = {}
+                    duplicates_found = []
+                    
+                    for idx, order_dict in enumerate(order_dicts):
+                        # 批次中去重只基于 order_id 和 account_id，不考虑 update_time
+                        key = (
+                            order_dict['order_id'],
+                            order_dict['account_id']
+                        )
+                        
+                        # 如果已存在，比较 update_time_order，保留更新的
+                        if key in unique_orders:
+                            duplicates_found.append((key, idx))
+                            existing = unique_orders[key]
+                            existing_time = existing.get('update_time_order') or existing.get('update_time')
+                            new_time = order_dict.get('update_time_order') or order_dict.get('update_time')
+                            if new_time and existing_time and new_time > existing_time:
+                                unique_orders[key] = order_dict
+                                logger.debug(
+                                    f"批次中去重: order_id={order_dict['order_id']}, "
+                                    f"保留更新的记录 (update_time_order: {existing_time} -> {new_time})"
+                                )
+                        else:
+                            unique_orders[key] = order_dict
+                    
+                    
+                    # 转换为列表
+                    deduplicated_orders = list(unique_orders.values())
+                    
+                    if len(deduplicated_orders) < len(order_dicts):
+                        logger.debug(
+                            f"去重: 从 {len(order_dicts)} 条记录去重到 {len(deduplicated_orders)} 条"
+                        )
+                    
                     # 使用 PostgreSQL INSERT ... ON CONFLICT DO UPDATE 处理唯一约束冲突
-                    stmt = insert(OrderUpdateModel).values(order_dicts)
+                    stmt = insert(OrderUpdateModel).values(deduplicated_orders)
                     stmt = stmt.on_conflict_do_update(
                         constraint='uq_xt_order_id_time_account',
                         set_={
@@ -2090,7 +2127,7 @@ class XTUserStreamService:
                     total_duration = (datetime.utcnow() - save_start_time).total_seconds()
                     
                     logger.debug(
-                        f"Saved {len(order_dicts)} orders in batch: "
+                        f"Saved {len(deduplicated_orders)} orders in batch: "
                         f"total={total_duration:.3f}s, commit={commit_duration:.3f}s"
                     )
                     

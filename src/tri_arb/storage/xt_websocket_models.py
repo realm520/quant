@@ -235,6 +235,63 @@ class XTTransfer(Base):
     )
 
 
+class XTOrderHistory(Base):
+    """XT 历史订单记录（通过 REST API 定时获取）.
+    
+    存储通过 REST API 定时获取的历史订单，用于补充 WebSocket 可能遗漏的订单。
+    与 XTOrderUpdate 的区别：
+    - XTOrderUpdate: WebSocket 实时推送的订单更新
+    - XTOrderHistory: REST API 定时获取的历史订单快照
+    """
+    
+    __tablename__ = "xt_order_history"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    order_id = Column(String(50), nullable=False, index=True)  # 订单ID
+    account_id = Column(String(64), nullable=True, index=True)  # 账号ID
+    
+    # 订单信息
+    symbol = Column(String(20), nullable=False, index=True)  # 交易对
+    client_order_id = Column(String(50), nullable=True)  # 客户订单ID
+    side = Column(String(10), nullable=False)  # BUY/SELL
+    order_type = Column(String(30), nullable=False)  # 订单类型
+    position_side = Column(String(10), nullable=True)  # 持仓方向
+    
+    # 数量信息
+    quantity = Column(Numeric(30, 10), nullable=False)  # 订单数量
+    price = Column(Numeric(30, 10), nullable=True)  # 订单价格
+    filled_quantity = Column(Numeric(30, 10), nullable=False)  # 已成交数量
+    avg_price = Column(Numeric(30, 10), nullable=True)  # 成交均价
+    
+    # 状态信息
+    status = Column(String(20), nullable=False, index=True)  # 订单状态
+    time_in_force = Column(String(10), nullable=True)  # 有效方式
+    
+    # 时间信息
+    created_time = Column(DateTime, nullable=False, index=True)  # 创建时间（来自API的createdTime）
+    updated_time = Column(DateTime, nullable=True)  # 更新时间（来自API的updatedTime）
+    sync_time = Column(DateTime, nullable=False, index=True)  # 同步时间（REST API获取的时间）
+    
+    # 其他信息
+    margin_frozen = Column(Numeric(30, 10), nullable=True)  # 占用保证金
+    close_position = Column(Boolean, nullable=True)  # 是否全部平仓
+    close_profit = Column(Numeric(30, 10), nullable=True)  # 平仓盈亏
+    force_close = Column(Boolean, nullable=True)  # 是否为强平订单
+    
+    # 原始数据
+    raw_data = Column(Text, nullable=True)  # 完整JSON数据
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('idx_xt_order_history_id_time', 'order_id', 'created_time'),
+        Index('idx_xt_order_history_symbol_status', 'symbol', 'status'),
+        Index('idx_xt_order_history_sync_time', 'sync_time'),
+        Index('idx_xt_order_history_account_time', 'account_id', 'sync_time'),
+        # 唯一约束：同一个订单在同一时间只能有一条记录
+        UniqueConstraint('order_id', 'created_time', 'account_id', name='uq_xt_order_history_id_time_account'),
+    )
+
+
 class XTWebSocketConnection(Base):
     """XT WebSocket连接记录.
     

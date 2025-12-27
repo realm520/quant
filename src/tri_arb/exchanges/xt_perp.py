@@ -1521,6 +1521,105 @@ class XTPerpExchange(BaseExchange):
         logger.info("Retrieved order list", count=len(orders), symbol=symbol)
         return orders
 
+    async def get_order_history_paginated(
+        self,
+        start_time_ms: int,
+        end_time_ms: int,
+        max_pages: int = 50,
+        limit_per_page: int = 500,
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """分页获取历史订单（原始数据格式）.
+
+        用于定时同步历史订单，支持分页获取，确保不遗漏订单。
+
+        注意：XT API 的 id+direction 分页存在 bug，这里使用缩小 endTime 的方式分页。
+        每次请求后，使用返回的最旧订单时间 - 1ms 作为下一次请求的 endTime。
+
+        Args:
+            start_time_ms: 开始时间（毫秒时间戳）
+            end_time_ms: 结束时间（毫秒时间戳）
+            max_pages: 最多获取页数（默认50页，避免无限循环）
+            limit_per_page: 每页最大订单数（默认500，XT API实际限制是200）
+
+        Yields:
+            每页的订单列表（原始字典格式）
+
+        Raises:
+            RuntimeError: If exchange is not connected
+        """
+        if not self.is_connected or self._client is None:
+            raise RuntimeError("Exchange is not connected. Call connect() first.")
+
+        path = "/future/trade/v1/order/list-history"
+        page = 1
+        seen_order_ids: set[str] = set()  # 用于去重
+        current_end_time_ms = end_time_ms  # 当前查询的结束时间
+        actual_limit = min(limit_per_page, 200)  # XT API 实际限制是200
+
+        while page <= max_pages:
+            try:
+                params = {
+                    "limit": actual_limit,
+                    "startTime": start_time_ms,
+                    "endTime": current_end_time_ms,
+                }
+
+                # 调用 API
+                data = await self._request("GET", path, params=params, body=None, require_auth=True)
+
+                # 解析响应
+                order_list = data.get("items", []) if isinstance(data, dict) else []
+
+                if not order_list:
+                    logger.debug(f"Page {page}: No more orders")
+                    break
+
+                # 去重：过滤掉已经见过的订单ID，同时找到最旧的订单时间
+                unique_orders = []
+                oldest_time_ms: int | None = None
+
+                for item in order_list:
+                    order_id = str(item.get("orderId", ""))
+                    created_time = item.get("createdTime") or item.get("createTime")
+
+                    if order_id and order_id not in seen_order_ids:
+                        unique_orders.append(item)
+                        seen_order_ids.add(order_id)
+
+                    # 记录最旧的订单时间
+                    if created_time:
+                        if oldest_time_ms is None or created_time < oldest_time_ms:
+                            oldest_time_ms = created_time
+
+                if not unique_orders:
+                    logger.debug(f"Page {page}: All orders are duplicates, stopping pagination")
+                    break
+
+                logger.debug(f"Page {page}: Retrieved {len(order_list)} orders, {len(unique_orders)} unique")
+                yield unique_orders
+
+                # 判断是否继续分页
+                # 如果返回的订单数小于限制，说明没有更多订单了
+                if len(order_list) < actual_limit:
+                    logger.debug(f"Page {page}: No more pages (count={len(order_list)} < limit={actual_limit})")
+                    break
+
+                # 使用最旧订单的时间 - 1ms 作为下一页的 endTime
+                if oldest_time_ms is not None and oldest_time_ms > start_time_ms:
+                    current_end_time_ms = oldest_time_ms - 1
+                    logger.debug(f"Page {page}: Next endTime = {current_end_time_ms}")
+                else:
+                    logger.debug(f"Page {page}: Reached startTime, stopping pagination")
+                    break
+
+                page += 1
+                # 短暂延迟，避免请求过快
+                await asyncio.sleep(0.3)
+
+            except Exception as e:
+                logger.error(f"Error fetching page {page}: {e}", exc_info=True)
+                break
+
     async def get_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Get current open orders for futures contracts.
 

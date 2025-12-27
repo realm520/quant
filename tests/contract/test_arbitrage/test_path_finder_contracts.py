@@ -29,21 +29,21 @@ class TestFindArbitragePathsContract:
                 bid=Decimal("50000.0"),
                 ask=Decimal("50001.0"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600.0"),
                 ask=Decimal("2601.0"),
                 bid_volume=Decimal("10.0"),
-                ask_volume=Decimal("10.0")
+                ask_volume=Decimal("10.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.0501"),
                 bid_volume=Decimal("10.0"),
-                ask_volume=Decimal("10.0")
+                ask_volume=Decimal("10.0"),
             ),
         ]
 
@@ -68,18 +68,14 @@ class TestFindArbitragePathsContract:
 
     def test_filters_by_base_currency_whitelist(self, valid_tickers):
         """Contract: Respects base_currency_whitelist filter."""
-        paths = find_arbitrage_paths(
-            tickers=valid_tickers,
-            base_currencies=["USDT"]
-        )
+        paths = find_arbitrage_paths(tickers=valid_tickers, base_currencies=["USDT"])
         for path in paths:
             assert path.start_currency == "USDT"
 
     def test_empty_list_when_whitelist_excludes_all(self, valid_tickers):
         """Contract: Returns empty list when whitelist excludes all currencies."""
         paths = find_arbitrage_paths(
-            tickers=valid_tickers,
-            base_currencies=["XRP"]  # Not in tickers
+            tickers=valid_tickers, base_currencies=["XRP"]  # Not in tickers
         )
         assert paths == []
 
@@ -91,7 +87,7 @@ class TestFindArbitragePathsContract:
     def test_performance_500_pairs_under_100ms(self):
         """Contract: Processes 500 pairs in < 100ms (NFR-002)."""
         import time
-        
+
         # Generate 500 ticker pairs
         tickers = []
         for i in range(500):
@@ -101,14 +97,14 @@ class TestFindArbitragePathsContract:
                     bid=Decimal(f"{1000 + i}.0"),
                     ask=Decimal(f"{1000 + i + 1}.0"),
                     bid_volume=Decimal("1.0"),
-                    ask_volume=Decimal("1.0")
+                    ask_volume=Decimal("1.0"),
                 )
             )
-        
+
         start = time.perf_counter()
         find_arbitrage_paths(tickers=tickers)
         duration = time.perf_counter() - start
-        
+
         assert duration < 0.1  # < 100ms
 
 
@@ -124,40 +120,40 @@ class TestPathFindingAlgorithm:
                 bid=Decimal("2.0"),
                 ask=Decimal("2.1"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="C/B",
                 bid=Decimal("3.0"),
                 ask=Decimal("3.1"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="D/C",
                 bid=Decimal("4.0"),
                 ask=Decimal("4.1"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="E/D",
                 bid=Decimal("5.0"),
                 ask=Decimal("5.1"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="A/E",  # Close the loop after 5 steps
                 bid=Decimal("1.0"),
                 ask=Decimal("1.1"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
-        
+
         # Should not find 5-step path (depth limit = 3)
         assert all(len(p.trading_pairs) == 3 for p in paths)
 
@@ -169,32 +165,31 @@ class TestPathFindingAlgorithm:
                 bid=Decimal("50000.0"),
                 ask=Decimal("50001.0"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.0501"),
                 bid_volume=Decimal("10.0"),
-                ask_volume=Decimal("10.0")
+                ask_volume=Decimal("10.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600.0"),
                 ask=Decimal("2601.0"),
                 bid_volume=Decimal("100.0"),
-                ask_volume=Decimal("100.0")
+                ask_volume=Decimal("100.0"),
             ),
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
-        
+
         # Should find USDT -> BTC -> ETH -> USDT
         assert len(paths) > 0
-        
+
         # Check one path is the expected triangle
         found_triangle = any(
-            set(p.trading_pairs) == {"BTC/USDT", "ETH/BTC", "ETH/USDT"}
-            for p in paths
+            set(p.trading_pairs) == {"BTC/USDT", "ETH/BTC", "ETH/USDT"} for p in paths
         )
         assert found_triangle

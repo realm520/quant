@@ -17,29 +17,28 @@ logger = structlog.get_logger(__name__)
 
 
 def find_arbitrage_paths(
-    tickers: list[Ticker],
-    base_currencies: list[str] | None = None
+    tickers: list[Ticker], base_currencies: list[str] | None = None
 ) -> list[TradingPath]:
     """
     Find all possible triangular arbitrage paths from ticker data.
-    
+
     Uses DFS algorithm with depth limit of 3 to find closed-loop paths.
-    
+
     Args:
         tickers: List of market tickers with price data
         base_currencies: Optional whitelist of starting currencies (None = all)
-    
+
     Returns:
         List of valid triangular trading paths (closed loops)
-    
+
     Raises:
         ValueError: If tickers is empty or contains invalid data
-    
+
     Performance: < 100ms for 500 pairs (NFR-002)
     """
     if not tickers:
         raise ValueError("Tickers list cannot be empty")
-    
+
     # Build adjacency graph: currency -> list of (target_currency, pair_symbol)
     graph: dict[str, list[tuple[str, str]]] = defaultdict(list)
     invalid_symbols = 0
@@ -62,15 +61,19 @@ def find_arbitrage_paths(
     # Log graph statistics
     node_count = len(graph)
     edge_count = len(tickers) - invalid_symbols
-    degree_distribution = {currency: len(neighbors) for currency, neighbors in graph.items()}
+    degree_distribution = {
+        currency: len(neighbors) for currency, neighbors in graph.items()
+    }
     avg_degree = sum(degree_distribution.values()) / node_count if node_count > 0 else 0
 
     # Find hub currencies (degree >= 10)
     hubs = sorted(
         [(curr, deg) for curr, deg in degree_distribution.items() if deg >= 10],
         key=lambda x: x[1],
-        reverse=True
-    )[:5]  # Top 5 hubs
+        reverse=True,
+    )[
+        :5
+    ]  # Top 5 hubs
 
     logger.info(
         "graph_built",
@@ -78,15 +81,15 @@ def find_arbitrage_paths(
         edges=edge_count,
         avg_degree=f"{avg_degree:.1f}",
         top_hubs=[f"{curr}({deg})" for curr, deg in hubs],
-        invalid_symbols=invalid_symbols
+        invalid_symbols=invalid_symbols,
     )
-    
+
     # Get all possible starting currencies
     if base_currencies:
         start_currencies = [c for c in base_currencies if c in graph]
     else:
         start_currencies = list(graph.keys())
-    
+
     # Find all triangular paths using DFS
     paths: list[TradingPath] = []
     paths_per_start: dict[str, int] = {}
@@ -103,7 +106,7 @@ def find_arbitrage_paths(
             path_pairs=[],
             depth=0,
             max_depth=3,
-            paths=paths
+            paths=paths,
         )
 
         # Track paths found from this start
@@ -116,16 +119,12 @@ def find_arbitrage_paths(
     paths_before_dedup = len(paths)
     unique_paths = _deduplicate_paths(paths)
     paths_after_dedup = len(unique_paths)
-    
+
     # Log path discovery statistics
     effective_starts = len(paths_per_start)
-    
+
     # Top 5 starting currencies by path count
-    top_starts = sorted(
-        paths_per_start.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:5]
+    top_starts = sorted(paths_per_start.items(), key=lambda x: x[1], reverse=True)[:5]
 
     logger.info(
         "path_discovery_complete",
@@ -133,8 +132,12 @@ def find_arbitrage_paths(
         effective_starts=effective_starts,
         paths_before_dedup=paths_before_dedup,
         paths_after_dedup=paths_after_dedup,
-        dedup_rate=f"{(1 - paths_after_dedup/paths_before_dedup)*100:.1f}%" if paths_before_dedup > 0 else "N/A",
-        top_starts=[f"{curr}({count})" for curr, count in top_starts]
+        dedup_rate=(
+            f"{(1 - paths_after_dedup/paths_before_dedup)*100:.1f}%"
+            if paths_before_dedup > 0
+            else "N/A"
+        ),
+        top_starts=[f"{curr}({count})" for curr, count in top_starts],
     )
 
     return unique_paths
@@ -143,17 +146,17 @@ def find_arbitrage_paths(
 def _normalize_path(path: TradingPath) -> frozenset[str]:
     """
     将路径规范化为交易对集合，用于去重。
-    
+
     同一组交易对的不同起点路径会被规范化为相同的集合。
     例如:
     - USDT→BTC→ETH→USDT (BTC/USDT, ETH/BTC, ETH/USDT)
     - BTC→ETH→USDT→BTC (ETH/BTC, ETH/USDT, BTC/USDT)
     - ETH→USDT→BTC→ETH (ETH/USDT, BTC/USDT, ETH/BTC)
     以上三条路径会被规范化为同一个集合: {BTC/USDT, ETH/BTC, ETH/USDT}
-    
+
     Args:
         path: 交易路径
-    
+
     Returns:
         交易对集合（frozenset）
     """
@@ -163,26 +166,26 @@ def _normalize_path(path: TradingPath) -> frozenset[str]:
 def _deduplicate_paths(paths: list[TradingPath]) -> list[TradingPath]:
     """
     对路径列表进行去重，移除使用相同交易对集合的重复路径。
-    
+
     去重策略:
     - 使用交易对集合作为唯一键
     - 对于重复的路径，保留第一个发现的路径
-    
+
     Args:
         paths: 原始路径列表
-    
+
     Returns:
         去重后的路径列表
     """
     seen_pairs: set[frozenset[str]] = set()
     unique_paths: list[TradingPath] = []
-    
+
     for path in paths:
         pair_set = _normalize_path(path)
         if pair_set not in seen_pairs:
             seen_pairs.add(pair_set)
             unique_paths.append(path)
-    
+
     return unique_paths
 
 
@@ -194,11 +197,11 @@ def _dfs_find_paths(
     path_pairs: list[str],
     depth: int,
     max_depth: int,
-    paths: list[TradingPath]
+    paths: list[TradingPath],
 ) -> None:
     """
     DFS helper to find triangular arbitrage paths.
-    
+
     Args:
         graph: Adjacency graph of currencies
         current: Current currency in the path
@@ -217,8 +220,7 @@ def _dfs_find_paths(
                 # Type assertion: we validated len == 3
                 pairs_tuple = (path_pairs[0], path_pairs[1], path_pairs[2])
                 trading_path = TradingPath(
-                    start_currency=start,
-                    trading_pairs=pairs_tuple
+                    start_currency=start, trading_pairs=pairs_tuple
                 )
                 # Verify it's a closed loop
                 if trading_path.is_closed_loop:
@@ -227,20 +229,20 @@ def _dfs_find_paths(
                 # Invalid path, skip
                 pass
         return
-    
+
     # Explore neighbors
     if current not in graph:
         return
-    
+
     for next_currency, pair_symbol in graph[current]:
         # Avoid revisiting same pair in same path
         if pair_symbol in visited_pairs:
             continue
-        
+
         # Add to path
         visited_pairs.add(pair_symbol)
         path_pairs.append(pair_symbol)
-        
+
         # Recurse
         _dfs_find_paths(
             graph=graph,
@@ -250,9 +252,9 @@ def _dfs_find_paths(
             path_pairs=path_pairs,
             depth=depth + 1,
             max_depth=max_depth,
-            paths=paths
+            paths=paths,
         )
-        
+
         # Backtrack
         path_pairs.pop()
         visited_pairs.remove(pair_symbol)

@@ -43,7 +43,7 @@ def main(
     ),
 ) -> None:
     """CEX Tools: Universal Cryptocurrency Exchange API Tool.
-    
+
     Interact with cryptocurrency exchanges through a unified interface.
     Supports market data, trading, and account management operations.
     """
@@ -68,7 +68,7 @@ def ticker(
     symbol: str = typer.Argument(..., help="Trading pair symbol (e.g., BTC/USDT)"),
 ) -> None:
     """Get current ticker price for a trading pair.
-    
+
     Example:
         cextools market ticker BTC/USDT
     """
@@ -105,7 +105,10 @@ def ticker(
             table.add_row("Ask Price", f"{price.ask_price:.8f}")
             table.add_row("Mid Price", f"{price.mid_price:.8f}")
             table.add_row("Spread", f"{(price.ask_price - price.bid_price):.8f}")
-            table.add_row("Spread %", f"{((price.ask_price - price.bid_price) / price.mid_price * 100):.4f}%")
+            table.add_row(
+                "Spread %",
+                f"{((price.ask_price - price.bid_price) / price.mid_price * 100):.4f}%",
+            )
             table.add_row("Bid Volume", f"{price.bid_volume:.8f}")
             table.add_row("Ask Volume", f"{price.ask_volume:.8f}")
             table.add_row("Timestamp", str(price.timestamp))
@@ -133,7 +136,7 @@ def orderbook(
     depth: int = typer.Option(20, "--depth", "-d", help="Number of price levels"),
 ) -> None:
     """Get order book depth for a trading pair.
-    
+
     Example:
         cextools market orderbook BTC/USDT --depth 50
     """
@@ -144,7 +147,9 @@ def orderbook(
     verbose = ctx.obj["verbose"]
 
     if verbose:
-        logger.info("Fetching orderbook", exchange=exchange_name, symbol=symbol, depth=depth)
+        logger.info(
+            "Fetching orderbook", exchange=exchange_name, symbol=symbol, depth=depth
+        )
 
     from tri_arb.exchanges.factory import create_exchange
 
@@ -168,10 +173,18 @@ def orderbook(
             max_rows = min(depth, len(orderbook.bids), len(orderbook.asks))
 
             for i in range(max_rows):
-                bid_price = f"{orderbook.bids[i][0]:.8f}" if i < len(orderbook.bids) else ""
-                bid_qty = f"{orderbook.bids[i][1]:.8f}" if i < len(orderbook.bids) else ""
-                ask_price = f"{orderbook.asks[i][0]:.8f}" if i < len(orderbook.asks) else ""
-                ask_qty = f"{orderbook.asks[i][1]:.8f}" if i < len(orderbook.asks) else ""
+                bid_price = (
+                    f"{orderbook.bids[i][0]:.8f}" if i < len(orderbook.bids) else ""
+                )
+                bid_qty = (
+                    f"{orderbook.bids[i][1]:.8f}" if i < len(orderbook.bids) else ""
+                )
+                ask_price = (
+                    f"{orderbook.asks[i][0]:.8f}" if i < len(orderbook.asks) else ""
+                )
+                ask_qty = (
+                    f"{orderbook.asks[i][1]:.8f}" if i < len(orderbook.asks) else ""
+                )
 
                 table.add_row(bid_price, bid_qty, ask_price, ask_qty)
 
@@ -205,18 +218,23 @@ def orderbook(
 @account_app.command("balance")
 def balance(
     ctx: typer.Context,
-    currency: str = typer.Option(None, "--currency", "-c", help="Specific currency (e.g., BTC, USDT). If not provided, shows all."),
+    currency: str = typer.Option(
+        None,
+        "--currency",
+        "-c",
+        help="Specific currency (e.g., BTC, USDT). If not provided, shows all.",
+    ),
 ) -> None:
     """Get account balance for all currencies or a specific currency.
-    
+
     Requires API credentials set as environment variables:
     - XT_API_KEY
     - XT_API_SECRET
-    
+
     Examples:
         # All balances
         cextools account balance
-        
+
         # Specific currency
         cextools account balance --currency USDT
     """
@@ -227,7 +245,11 @@ def balance(
     verbose = ctx.obj["verbose"]
 
     if verbose:
-        logger.info("Fetching account balance", exchange=exchange_name, currency=currency or "all")
+        logger.info(
+            "Fetching account balance",
+            exchange=exchange_name,
+            currency=currency or "all",
+        )
 
     from tri_arb.exchanges.factory import create_exchange
 
@@ -239,7 +261,9 @@ def balance(
             console.print("[red]Error: API credentials not found![/red]")
             console.print("\nPlease set environment variables:")
             console.print(f"  export {exchange_name.upper()}_API_KEY=your_api_key")
-            console.print(f"  export {exchange_name.upper()}_API_SECRET=your_api_secret")
+            console.print(
+                f"  export {exchange_name.upper()}_API_SECRET=your_api_secret"
+            )
             raise typer.Exit(code=1)
 
         try:
@@ -247,7 +271,9 @@ def balance(
 
             # Note: BaseExchange doesn't have get_balance method yet
             # This is a placeholder showing the expected interface
-            console.print("[yellow]Note: Account balance command is under development.[/yellow]")
+            console.print(
+                "[yellow]Note: Account balance command is under development.[/yellow]"
+            )
             console.print("\n[cyan]Expected API:[/cyan]")
             console.print("  exchange.get_balance(currency=None) -> dict")
             console.print("\n[cyan]Example output:[/cyan]")
@@ -264,7 +290,9 @@ def balance(
             table.add_row("ETH", "5.25000000", "0.00000000", "5.25000000")
 
             console.print(table)
-            console.print("\n[yellow]This feature requires implementing get_balance() method in BaseExchange.[/yellow]")
+            console.print(
+                "\n[yellow]This feature requires implementing get_balance() method in BaseExchange.[/yellow]"
+            )
 
             if verbose:
                 logger.info("Balance command executed (placeholder)")
@@ -282,11 +310,18 @@ def balance(
 # Register command groups
 app.add_typer(market_app, name="market")
 app.add_typer(trading_app, name="trading")
+
+
 @account_app.command("history")
 def history(
     ctx: typer.Context,
     symbol: str = typer.Argument(..., help="Trading pair symbol (e.g., BTC/USDT)"),
-    limit: int = typer.Option(50, "--limit", "-l", help="Maximum number of trades to retrieve (default: 50, max: 100)"),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        "-l",
+        help="Maximum number of trades to retrieve (default: 50, max: 100)",
+    ),
 ) -> None:
     """Get recent trade history for a trading pair.
 
@@ -317,7 +352,9 @@ def history(
         raise typer.Exit(code=1)
 
     if verbose:
-        logger.info("Fetching trade history", exchange=exchange_name, symbol=symbol, limit=limit)
+        logger.info(
+            "Fetching trade history", exchange=exchange_name, symbol=symbol, limit=limit
+        )
 
     from tri_arb.exchanges.factory import create_exchange
 
@@ -329,7 +366,9 @@ def history(
             console.print("[red]Error: API credentials not found![/red]")
             console.print("\nPlease set environment variables:")
             console.print(f"  export {exchange_name.upper()}_API_KEY=your_api_key")
-            console.print(f"  export {exchange_name.upper()}_API_SECRET=your_api_secret")
+            console.print(
+                f"  export {exchange_name.upper()}_API_SECRET=your_api_secret"
+            )
             raise typer.Exit(code=1)
 
         try:
@@ -346,7 +385,10 @@ def history(
                 return
 
             # Create table
-            table = Table(title=f"Trade History: {symbol} (Last {len(trades)} trades)", show_header=True)
+            table = Table(
+                title=f"Trade History: {symbol} (Last {len(trades)} trades)",
+                show_header=True,
+            )
             table.add_column("Time", style="cyan")
             table.add_column("Trade ID", style="dim")
             table.add_column("Order ID", style="dim")
@@ -366,14 +408,22 @@ def history(
                 side_str = f"[{side_color}]{trade.side.value}[/{side_color}]"
 
                 # Format numbers
-                price_str = f"{trade.price:.8f}".rstrip('0').rstrip('.')
-                qty_str = f"{trade.quantity:.8f}".rstrip('0').rstrip('.')
-                fee_str = f"{trade.fee:.8f}".rstrip('0').rstrip('.')
+                price_str = f"{trade.price:.8f}".rstrip("0").rstrip(".")
+                qty_str = f"{trade.quantity:.8f}".rstrip("0").rstrip(".")
+                fee_str = f"{trade.fee:.8f}".rstrip("0").rstrip(".")
 
                 table.add_row(
                     time_str,
-                    trade.trade_id[:8] + "..." if len(trade.trade_id) > 8 else trade.trade_id,
-                    trade.order_id[:8] + "..." if len(trade.order_id) > 8 else trade.order_id,
+                    (
+                        trade.trade_id[:8] + "..."
+                        if len(trade.trade_id) > 8
+                        else trade.trade_id
+                    ),
+                    (
+                        trade.order_id[:8] + "..."
+                        if len(trade.order_id) > 8
+                        else trade.order_id
+                    ),
                     side_str,
                     price_str,
                     qty_str,
@@ -389,17 +439,30 @@ def history(
 
             # Group fees by currency
             from collections import defaultdict
+
             fees_by_currency = defaultdict(float)
             for trade in trades:
                 fees_by_currency[trade.fee_currency] += float(trade.fee)
 
             console.print(f"\n[cyan]Summary:[/cyan]")
-            console.print(f"  Total BUY:  {total_buy_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
-            console.print(f"  Total SELL: {total_sell_qty:.8f} {trading_pair.base_currency}".rstrip('0').rstrip('.'))
+            console.print(
+                f"  Total BUY:  {total_buy_qty:.8f} {trading_pair.base_currency}".rstrip(
+                    "0"
+                ).rstrip(
+                    "."
+                )
+            )
+            console.print(
+                f"  Total SELL: {total_sell_qty:.8f} {trading_pair.base_currency}".rstrip(
+                    "0"
+                ).rstrip(
+                    "."
+                )
+            )
 
             console.print(f"\n  [cyan]Fees by Currency:[/cyan]")
             for currency, fee_amount in sorted(fees_by_currency.items()):
-                fee_str = f"{fee_amount:.8f}".rstrip('0').rstrip('.')
+                fee_str = f"{fee_amount:.8f}".rstrip("0").rstrip(".")
                 console.print(f"    {currency}: {fee_str}")
 
             if verbose:
@@ -423,25 +486,31 @@ app.add_typer(account_app, name="account")
 # 添加subscribe命令组
 try:
     from tri_arb.cli.commands import subscribe
+
     app.add_typer(subscribe.app, name="subscribe")
 except ImportError as e:
     # 如果subscribe模块不可用，跳过
     import sys
+
     print(f"Warning: subscribe command not available: {e}", file=sys.stderr)
 except Exception as e:
     import sys
+
     print(f"Error loading subscribe command: {e}", file=sys.stderr)
 
 # 添加trading-monitor命令组
 try:
     from tri_arb.cli.commands import position_metrics
+
     app.add_typer(position_metrics.app, name="trading-monitor")
 except ImportError as e:
     # 如果position_metrics模块不可用，跳过
     import sys
+
     print(f"Warning: trading-monitor command not available: {e}", file=sys.stderr)
 except Exception as e:
     import sys
+
     print(f"Error loading trading-monitor command: {e}", file=sys.stderr)
 
 

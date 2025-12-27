@@ -48,8 +48,7 @@ class ArbitrageExecutor:
         self.logger = logger.bind(executor="ArbitrageExecutor")
 
     async def execute_opportunity(
-        self,
-        opportunity: ArbitrageOpportunity
+        self, opportunity: ArbitrageOpportunity
     ) -> ArbitrageExecution:
         """Execute arbitrage opportunity with three sequential market orders.
 
@@ -80,15 +79,16 @@ class ArbitrageExecutor:
 
         # Create execution record with unique session ID
         execution = ArbitrageExecution(
-            opportunity=opportunity,
-            initial_amount=opportunity.recommended_amount
+            opportunity=opportunity, initial_amount=opportunity.recommended_amount
         )
 
         self.logger.info(
             "arbitrage_execution_started",
             session_id=execution.session_id,
-            path=" → ".join([opportunity.path.start_currency] + list(opportunity.path.trading_pairs)),
-            initial_amount=float(execution.initial_amount)
+            path=" → ".join(
+                [opportunity.path.start_currency] + list(opportunity.path.trading_pairs)
+            ),
+            initial_amount=float(execution.initial_amount),
         )
 
         try:
@@ -102,7 +102,7 @@ class ArbitrageExecutor:
                     step_number=step_num,
                     price_info=price_info,
                     amount=current_amount,
-                    execution=execution
+                    execution=execution,
                 )
 
                 execution.steps.append(step)
@@ -129,7 +129,7 @@ class ArbitrageExecutor:
                 initial_amount=float(execution.initial_amount),
                 final_amount=float(execution.final_amount),
                 net_profit=float(execution.net_profit),
-                profit_rate=float(execution.actual_profit_rate)
+                profit_rate=float(execution.actual_profit_rate),
             )
 
         except Exception as e:
@@ -143,7 +143,7 @@ class ArbitrageExecutor:
                 session_id=execution.session_id,
                 error=str(e),
                 steps_completed=len(execution.steps),
-                exc_info=True
+                exc_info=True,
             )
             raise
 
@@ -154,7 +154,7 @@ class ArbitrageExecutor:
         step_number: int,
         price_info: dict,
         amount: Decimal,
-        execution: ArbitrageExecution
+        execution: ArbitrageExecution,
     ) -> ExecutionStep:
         """Execute single trade step.
 
@@ -178,7 +178,7 @@ class ArbitrageExecutor:
             step_number=step_number,
             price_info=price_info,
             amount=amount,
-            execution=execution
+            execution=execution,
         )
 
         step = ExecutionStep(step_number=step_number, order=order)
@@ -188,7 +188,9 @@ class ArbitrageExecutor:
 
         try:
             submitted_order = await self.exchange.place_order(order)
-            step.exchange_order_id = submitted_order.exchange_order_id or submitted_order.order_id
+            step.exchange_order_id = (
+                submitted_order.exchange_order_id or submitted_order.order_id
+            )
             step.status = "submitted"
 
             self.logger.info(
@@ -198,7 +200,7 @@ class ArbitrageExecutor:
                 order_id=step.exchange_order_id,
                 pair=f"{order.trading_pair.base_currency}/{order.trading_pair.quote_currency}",
                 side=order.side.value,
-                quantity=float(order.quantity)
+                quantity=float(order.quantity),
             )
 
         except Exception as e:
@@ -208,7 +210,7 @@ class ArbitrageExecutor:
                 session_id=execution.session_id,
                 step=step_number,
                 error=str(e),
-                exc_info=True
+                exc_info=True,
             )
             raise RuntimeError(f"Order submission failed: {e}") from e
 
@@ -216,13 +218,15 @@ class ArbitrageExecutor:
         try:
             filled_order = await self._wait_for_fill(
                 order_id=step.exchange_order_id,
-                timeout=self.config.order_timeout_seconds
+                timeout=self.config.order_timeout_seconds,
             )
 
             # Record fill details
             step.filled_at = datetime.utcnow()
             step.filled_quantity = filled_order.quantity  # Actual filled quantity
-            step.filled_price = filled_order.price  # Actual execution price (if available)
+            step.filled_price = (
+                filled_order.price
+            )  # Actual execution price (if available)
             step.status = "filled"
 
             # TODO: Get fee from trade history (exchange.get_trade_history)
@@ -234,7 +238,7 @@ class ArbitrageExecutor:
                 step=step_number,
                 order_id=step.exchange_order_id,
                 filled_quantity=float(step.filled_quantity),
-                filled_price=float(step.filled_price) if step.filled_price else None
+                filled_price=float(step.filled_price) if step.filled_price else None,
             )
 
         except TimeoutError as e:
@@ -244,9 +248,11 @@ class ArbitrageExecutor:
                 session_id=execution.session_id,
                 step=step_number,
                 order_id=step.exchange_order_id,
-                timeout=self.config.order_timeout_seconds
+                timeout=self.config.order_timeout_seconds,
             )
-            raise RuntimeError(f"Order timed out after {self.config.order_timeout_seconds}s") from e
+            raise RuntimeError(
+                f"Order timed out after {self.config.order_timeout_seconds}s"
+            ) from e
 
         except Exception as e:
             step.status = "failed"
@@ -256,17 +262,13 @@ class ArbitrageExecutor:
                 step=step_number,
                 order_id=step.exchange_order_id,
                 error=str(e),
-                exc_info=True
+                exc_info=True,
             )
             raise RuntimeError(f"Order fill failed: {e}") from e
 
         return step
 
-    async def _wait_for_fill(
-        self,
-        order_id: str,
-        timeout: int
-    ) -> Order:
+    async def _wait_for_fill(self, order_id: str, timeout: int) -> Order:
         """Wait for order to fill (market orders usually fill immediately).
 
         Polls order status at configured interval until filled or timeout.
@@ -309,15 +311,13 @@ class ArbitrageExecutor:
                     "order_status_query_failed",
                     order_id=order_id,
                     error=str(e),
-                    retrying=True
+                    retrying=True,
                 )
                 await asyncio.sleep(poll_interval)
 
         # Timeout reached - attempt to cancel order
         self.logger.warning(
-            "order_timeout_cancelling",
-            order_id=order_id,
-            timeout=timeout
+            "order_timeout_cancelling", order_id=order_id, timeout=timeout
         )
 
         try:
@@ -326,9 +326,7 @@ class ArbitrageExecutor:
                 self.logger.info("order_cancelled", order_id=order_id)
         except Exception as e:
             self.logger.error(
-                "order_cancellation_failed",
-                order_id=order_id,
-                error=str(e)
+                "order_cancellation_failed", order_id=order_id, error=str(e)
             )
 
         raise TimeoutError(f"Order {order_id} timed out after {timeout}s")
@@ -338,7 +336,7 @@ class ArbitrageExecutor:
         step_number: int,
         price_info: dict,
         amount: Decimal,
-        execution: ArbitrageExecution
+        execution: ArbitrageExecution,
     ) -> Order:
         """Create order for execution step.
 
@@ -382,15 +380,13 @@ class ArbitrageExecutor:
             status=OrderStatus.PENDING,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
-            exchange=self.exchange.name
+            exchange=self.exchange.name,
         )
 
         return order
 
     def _get_trading_pair(
-        self,
-        pair_symbol: str,
-        execution: ArbitrageExecution
+        self, pair_symbol: str, execution: ArbitrageExecution
     ) -> TradingPair:
         """Get TradingPair object for given symbol.
 
@@ -422,5 +418,5 @@ class ArbitrageExecutor:
             min_order_size=Decimal("0.00001"),  # Conservative minimum
             max_order_size=Decimal("1000000"),  # Conservative maximum
             price_precision=8,
-            quantity_precision=8
+            quantity_precision=8,
         )

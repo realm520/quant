@@ -125,8 +125,8 @@ class XTExchangeAdapter:
             exchange="xt",
             min_order_size=Decimal("0.00001"),  # Conservative minimum
             max_order_size=Decimal("1000000"),  # Conservative maximum
-            price_precision=8,                  # Standard precision
-            quantity_precision=8,               # Standard precision
+            price_precision=8,  # Standard precision
+            quantity_precision=8,  # Standard precision
         )
 
     def _price_to_ticker(self, price: Price) -> Ticker:
@@ -155,7 +155,9 @@ class XTExchangeAdapter:
             'BTC/USDT'
         """
         # Convert TradingPair to symbol string
-        symbol = f"{price.trading_pair.base_currency}/{price.trading_pair.quote_currency}"
+        symbol = (
+            f"{price.trading_pair.base_currency}/{price.trading_pair.quote_currency}"
+        )
 
         return Ticker(
             symbol=symbol,

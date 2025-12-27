@@ -14,12 +14,12 @@ from tri_arb.models.exchange import Ticker
 
 class TestPathFinderEdgeCases:
     """Test edge cases for path finding algorithm."""
-    
+
     def test_empty_ticker_list_raises_error(self):
         """Empty ticker list should raise ValueError."""
         with pytest.raises(ValueError, match="empty"):
             find_arbitrage_paths(tickers=[])
-    
+
     def test_single_trading_pair_no_paths(self):
         """Single pair cannot form triangular arbitrage."""
         tickers = [
@@ -28,13 +28,13 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             )
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
         assert paths == []
-    
+
     def test_two_currencies_no_closed_loop(self):
         """Two currencies cannot form closed triangular path."""
         tickers = [
@@ -43,20 +43,20 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600"),
                 ask=Decimal("2601"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
         assert paths == []
-    
+
     def test_three_currencies_finds_triangular_path(self):
         """Three currencies should form valid triangular paths."""
         tickers = [
@@ -65,31 +65,31 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600"),
                 ask=Decimal("2601"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
-        
+
         paths = find_arbitrage_paths(tickers=tickers)
         assert len(paths) > 0
-        
+
         # All paths should be closed loops
         for path in paths:
             assert path.is_closed_loop is True
-    
+
     def test_whitelist_filters_paths(self):
         """Whitelist should filter paths by starting currency."""
         tickers = [
@@ -98,33 +98,30 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600"),
                 ask=Decimal("2601"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
-        
+
         # Filter to only USDT starting paths
-        paths = find_arbitrage_paths(
-            tickers=tickers,
-            base_currencies=["USDT"]
-        )
-        
+        paths = find_arbitrage_paths(tickers=tickers, base_currencies=["USDT"])
+
         for path in paths:
             assert path.start_currency == "USDT"
-    
+
     def test_empty_whitelist_means_all_currencies(self):
         """Empty whitelist should allow all starting currencies (per spec: empty=all)."""
         tickers = [
@@ -133,22 +130,22 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600"),
                 ask=Decimal("2601"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
 
         paths_all = find_arbitrage_paths(tickers=tickers, base_currencies=None)
@@ -156,10 +153,10 @@ class TestPathFinderEdgeCases:
 
         # Per spec: empty whitelist = all currencies (same as None)
         assert len(paths_empty) == len(paths_all)
-        
+
         # None whitelist should find all paths
         assert len(paths_all) > 0
-    
+
     def test_invalid_ticker_symbols_skipped(self):
         """Tickers with invalid symbol format should be skipped."""
         tickers = [
@@ -168,21 +165,21 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("100"),
                 ask=Decimal("101"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="BTC/USDT",
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
-        
+
         # Should not crash, just skip invalid ticker
         paths = find_arbitrage_paths(tickers=tickers)
         assert isinstance(paths, list)
-    
+
     def test_multiple_paths_for_same_currencies(self):
         """
         Multiple paths with same trading pairs should be deduplicated.
@@ -204,22 +201,22 @@ class TestPathFinderEdgeCases:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2600"),
                 ask=Decimal("2601"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
-            )
+                ask_volume=Decimal("1.0"),
+            ),
         ]
 
         paths = find_arbitrage_paths(tickers=tickers)

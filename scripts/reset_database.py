@@ -40,7 +40,9 @@ async def reset_database():
         # 先手动删除所有视图和CASCADE删除表
         async with db_manager.async_engine.begin() as conn:
             # 删除所有视图
-            await conn.execute(text("""
+            await conn.execute(
+                text(
+                    """
                 DO $$ DECLARE
                     r RECORD;
                 BEGIN
@@ -48,7 +50,9 @@ async def reset_database():
                         EXECUTE 'DROP VIEW IF EXISTS ' || quote_ident(r.viewname) || ' CASCADE';
                     END LOOP;
                 END $$;
-            """))
+            """
+                )
+            )
             logger.info("All views dropped")
 
         # 然后删除表
@@ -63,9 +67,13 @@ async def reset_database():
 
         print("\n✨ Database reset complete!")
         print("\nTables created:")
-        print("  - Binance: account_updates, order_updates, trade_updates, listen_keys, connection_status")
+        print(
+            "  - Binance: account_updates, order_updates, trade_updates, listen_keys, connection_status"
+        )
         print("  - OKX: okx_account_balances, okx_positions, okx_orders, okx_trades")
-        print("  - Gate.io: gate_account_balances, gate_positions, gate_orders, gate_trades")
+        print(
+            "  - Gate.io: gate_account_balances, gate_positions, gate_orders, gate_trades"
+        )
         print("  - XT: (WebSocket models)")
         print("  - REST API: (REST models)")
 

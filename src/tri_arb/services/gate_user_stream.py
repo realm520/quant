@@ -23,7 +23,12 @@ from sqlalchemy.exc import IntegrityError
 
 from tri_arb.config.logging import get_logger
 from tri_arb.storage.database import DatabaseManager
-from tri_arb.storage.gate_models import GateAccountBalance, GatePosition, GateOrder, GateTrade
+from tri_arb.storage.gate_models import (
+    GateAccountBalance,
+    GatePosition,
+    GateOrder,
+    GateTrade,
+)
 from tri_arb.storage.models import ConnectionStatus
 from tri_arb.exchanges.gate_perp import GatePerpExchange
 from tri_arb.services.gate_reconciliation import GateReconciliationService
@@ -35,7 +40,7 @@ console = Console()
 
 def _safe_float(value, default=0.0) -> float:
     """安全转换为float."""
-    if value is None or value == '' or value == 'null':
+    if value is None or value == "" or value == "null":
         return default
     try:
         return float(value)
@@ -45,7 +50,7 @@ def _safe_float(value, default=0.0) -> float:
 
 def _safe_decimal(value, default="0") -> Decimal:
     """安全转换为Decimal."""
-    if value is None or value == '' or value == 'null':
+    if value is None or value == "" or value == "null":
         return Decimal(default)
     try:
         return Decimal(str(value))
@@ -55,7 +60,7 @@ def _safe_decimal(value, default="0") -> Decimal:
 
 class GateUserStreamService:
     """Gate.io用户数据流订阅服务."""
-    
+
     def __init__(
         self,
         api_key: str,
@@ -93,10 +98,7 @@ class GateUserStreamService:
         self.user_id: Optional[int] = None
 
         # 创建 exchange 实例用于数据恢复
-        self.exchange = GatePerpExchange(
-            api_key=api_key,
-            api_secret=api_secret
-        )
+        self.exchange = GatePerpExchange(api_key=api_key, api_secret=api_secret)
 
         # 断线重连相关
         self.last_message_time: Optional[datetime] = None
@@ -110,16 +112,18 @@ class GateUserStreamService:
             lookback_window=3600,  # 重连时回溯1小时
         )
 
-        logger.info("GateUserStreamService initialized",
-                   display_format=display_format,
-                   enabled_channels=list(self.enabled_channels),
-                   reconciliation_mode="on_reconnect")
-    
+        logger.info(
+            "GateUserStreamService initialized",
+            display_format=display_format,
+            enabled_channels=list(self.enabled_channels),
+            reconciliation_mode="on_reconnect",
+        )
+
     def _has_account_changed(self, data: dict) -> bool:
         """检查账户数据是否有变化."""
         if not self.skip_duplicate_updates:
             return True
-        
+
         # 提取关键业务数据（使用Gate.io实际字段）
         account_snapshot = {}
         for balance in data.get("result", []):
@@ -129,19 +133,19 @@ class GateUserStreamService:
                 "change": balance.get("change"),
                 "type": balance.get("type"),
             }
-        
+
         current_data = json.dumps(account_snapshot, sort_keys=True)
         if self.last_account_data == current_data:
             return False
-        
+
         self.last_account_data = current_data
         return True
-    
+
     def _has_position_changed(self, data: dict) -> bool:
         """检查持仓数据是否有变化."""
         if not self.skip_duplicate_updates:
             return True
-        
+
         # 提取关键业务数据
         position_snapshot = {}
         for pos in data.get("result", []):
@@ -152,67 +156,73 @@ class GateUserStreamService:
                 "mark_price": pos.get("mark_price"),
                 "unrealised_pnl": pos.get("unrealised_pnl"),
             }
-        
+
         current_data = json.dumps(position_snapshot, sort_keys=True)
         if self.last_position_data == current_data:
             return False
-        
+
         self.last_position_data = current_data
         return True
-    
+
     async def _get_user_id(self) -> int:
         """通过REST API获取Gate.io用户ID.
-        
+
         Returns:
             用户ID（整数）
         """
         if self.user_id is not None:
             return self.user_id
-        
+
         import httpx
-        
+
         # Gate.io REST API获取账户信息
         url = "https://api.gateio.ws/api/v4/futures/usdt/accounts"
         timestamp = str(int(time.time()))
-        
+
         # 生成REST API签名
         query_string = ""
         body_hash = hashlib.sha512(b"").hexdigest()
         url_path = "/api/v4/futures/usdt/accounts"
         payload_str = f"GET\n{url_path}\n{query_string}\n{body_hash}\n{timestamp}"
-        
+
         signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            payload_str.encode('utf-8'),
-            hashlib.sha512
+            self.api_secret.encode("utf-8"), payload_str.encode("utf-8"), hashlib.sha512
         ).hexdigest()
-        
+
         headers = {
             "KEY": self.api_key,
             "Timestamp": timestamp,
             "SIGN": signature,
         }
-        
+
         try:
-            logger.debug("Attempting to get Gate.io user_id", url=url, api_key=self.api_key[:8] + "...")
-            
+            logger.debug(
+                "Attempting to get Gate.io user_id",
+                url=url,
+                api_key=self.api_key[:8] + "...",
+            )
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, headers=headers)
-                
-                logger.debug("Gate.io API response", 
-                           status_code=response.status_code,
-                           headers=dict(response.headers))
-                
+
+                logger.debug(
+                    "Gate.io API response",
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                )
+
                 if response.status_code != 200:
-                    logger.error("Gate.io API returned non-200 status", 
-                               status_code=response.status_code,
-                               response_text=response.text[:500])
+                    logger.error(
+                        "Gate.io API returned non-200 status",
+                        status_code=response.status_code,
+                        response_text=response.text[:500],
+                    )
                     self.user_id = 0
                     return 0
-                
+
                 data = response.json()
                 logger.debug("Gate.io API response data", data=data)
-                
+
                 # 从响应中提取user_id
                 # Gate.io账户数据中应该包含user字段
                 if isinstance(data, dict) and "user" in data:
@@ -224,114 +234,130 @@ class GateUserStreamService:
                     first_item = data[0]
                     if isinstance(first_item, dict) and "user" in first_item:
                         self.user_id = int(first_item["user"])
-                        logger.info("Got Gate.io user_id from array", user_id=self.user_id)
+                        logger.info(
+                            "Got Gate.io user_id from array", user_id=self.user_id
+                        )
                         return self.user_id
-                
+
                 # 如果没有user字段，尝试使用默认值
-                logger.warning("Could not extract user_id from API response, using 0", 
-                             response_keys=list(data.keys()) if isinstance(data, dict) else "not_dict")
+                logger.warning(
+                    "Could not extract user_id from API response, using 0",
+                    response_keys=(
+                        list(data.keys()) if isinstance(data, dict) else "not_dict"
+                    ),
+                )
                 self.user_id = 0
                 return 0
-                    
+
         except httpx.TimeoutException as e:
             logger.error("Gate.io API timeout", error=str(e))
             self.user_id = 0
             return 0
         except httpx.HTTPStatusError as e:
-            logger.error("Gate.io API HTTP error", 
-                        status_code=e.response.status_code,
-                        response_text=e.response.text[:500])
+            logger.error(
+                "Gate.io API HTTP error",
+                status_code=e.response.status_code,
+                response_text=e.response.text[:500],
+            )
             self.user_id = 0
             return 0
         except Exception as e:
-            logger.error("Failed to get user_id from futures API", error=str(e), exc_info=True)
+            logger.error(
+                "Failed to get user_id from futures API", error=str(e), exc_info=True
+            )
             # 尝试备用方法
             return await self._get_user_id_fallback()
-    
+
     async def _get_user_id_fallback(self) -> int:
         """备用的 user_id 获取方法，使用现货账户 API."""
         try:
             import httpx
-            
+
             # 使用现货账户 API 作为备用
             url = "https://api.gateio.ws/api/v4/spot/accounts"
             timestamp = str(int(time.time()))
-            
+
             # 生成签名
             query_string = ""
             body_hash = hashlib.sha512(b"").hexdigest()
             url_path = "/api/v4/spot/accounts"
             payload_str = f"GET\n{url_path}\n{query_string}\n{body_hash}\n{timestamp}"
-            
+
             signature = hmac.new(
-                self.api_secret.encode('utf-8'),
-                payload_str.encode('utf-8'),
-                hashlib.sha512
+                self.api_secret.encode("utf-8"),
+                payload_str.encode("utf-8"),
+                hashlib.sha512,
             ).hexdigest()
-            
+
             headers = {
                 "KEY": self.api_key,
                 "Timestamp": timestamp,
                 "SIGN": signature,
             }
-            
+
             logger.debug("Trying fallback method to get user_id", url=url)
-            
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, headers=headers)
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     logger.debug("Fallback API response", data=data)
-                    
+
                     # 尝试从现货账户响应中提取 user_id
                     if isinstance(data, dict) and "user" in data:
                         self.user_id = int(data["user"])
-                        logger.info("Got Gate.io user_id from fallback API", user_id=self.user_id)
+                        logger.info(
+                            "Got Gate.io user_id from fallback API",
+                            user_id=self.user_id,
+                        )
                         return self.user_id
                     elif isinstance(data, list) and len(data) > 0:
                         first_item = data[0]
                         if isinstance(first_item, dict) and "user" in first_item:
                             self.user_id = int(first_item["user"])
-                            logger.info("Got Gate.io user_id from fallback array", user_id=self.user_id)
+                            logger.info(
+                                "Got Gate.io user_id from fallback array",
+                                user_id=self.user_id,
+                            )
                             return self.user_id
-                
+
                 logger.warning("Fallback method also failed to get user_id")
                 self.user_id = 0
                 return 0
-                
+
         except Exception as e:
             logger.error("Fallback method failed", error=str(e))
             self.user_id = 0
             return 0
-    
-    def _generate_signature(self, channel: str, event: str, timestamp: int, payload: str = "") -> str:
+
+    def _generate_signature(
+        self, channel: str, event: str, timestamp: int, payload: str = ""
+    ) -> str:
         """生成Gate.io WebSocket签名.
-        
+
         签名格式: channel={channel}&event={event}&time={timestamp}
         如果有payload，不包含在签名中
         """
         message = f"channel={channel}&event={event}&time={timestamp}"
         signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha512
+            self.api_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha512
         ).hexdigest()
         return signature
-    
+
     async def subscribe_channel(self, channel: str):
         """订阅频道."""
         timestamp = int(time.time())
-        
+
         # Gate.io的签名不包含payload
         signature = self._generate_signature(channel, "subscribe", timestamp)
-        
+
         # 根据频道类型决定payload格式
         # Gate.io私有频道格式:
         # - futures.balances: ["USDT"] - 结算货币
         # - futures.positions: [user_id, "!all"] - user_id + 市场标识
         # - futures.orders: [user_id, "!all"] - user_id + 市场标识（!all表示所有合约）
-        
+
         if "balances" in channel:
             # 账户余额频道使用结算货币
             payload = ["USDT"]
@@ -341,29 +367,29 @@ class GateUserStreamService:
                 user_id = await self._get_user_id()
                 payload = [str(user_id), "!all"]  # user_id + !all(所有合约)
             except Exception as e:
-                logger.warning("Failed to get user_id, using default payload", error=str(e))
+                logger.warning(
+                    "Failed to get user_id, using default payload", error=str(e)
+                )
                 # 如果无法获取 user_id，尝试使用默认值或跳过该频道
                 payload = ["0", "!all"]  # 使用默认值
-        
+
         subscribe_msg = {
             "time": timestamp,
             "channel": channel,
             "event": "subscribe",
-            "auth": {
-                "method": "api_key",
-                "KEY": self.api_key,
-                "SIGN": signature
-            },
-            "payload": payload
+            "auth": {"method": "api_key", "KEY": self.api_key, "SIGN": signature},
+            "payload": payload,
         }
-        
-        logger.debug("Sending Gate subscription", 
-                    channel=channel, 
-                    timestamp=timestamp,
-                    payload=payload)
+
+        logger.debug(
+            "Sending Gate subscription",
+            channel=channel,
+            timestamp=timestamp,
+            payload=payload,
+        )
         await self.websocket.send(json.dumps(subscribe_msg))
         logger.debug("Subscribed to Gate channel", channel=channel)
-    
+
     async def subscribe_all_channels(self):
         """订阅所有启用的频道."""
         # Gate.io频道名称
@@ -372,81 +398,92 @@ class GateUserStreamService:
             "position": "futures.positions",
             "order": "futures.orders",
         }
-        
+
         for enabled in self.enabled_channels:
             if enabled in channel_mapping:
                 await self.subscribe_channel(channel_mapping[enabled])
                 await asyncio.sleep(0.1)  # 避免发送太快
-        
-        logger.info("All Gate channels subscribed",
-                   channels=list(self.enabled_channels))
-    
+
+        logger.info(
+            "All Gate channels subscribed", channels=list(self.enabled_channels)
+        )
+
     def display_account_update(self, data: dict):
         """显示账户更新."""
         if self.display_format == "none":
             return
-        
+
         if self.display_format == "json":
-            console.print(Panel(
-                json.dumps(data, indent=2, ensure_ascii=False),
-                title="[cyan]Gate.io 账户更新[/cyan]",
-                border_style="cyan"
-            ))
+            console.print(
+                Panel(
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                    title="[cyan]Gate.io 账户更新[/cyan]",
+                    border_style="cyan",
+                )
+            )
             return
-        
+
         # 表格显示
         result = data.get("result", [])
         if not result:
             return
-        
-        table = Table(title=f"💰 Gate.io账户余额 - {datetime.now().strftime('%H:%M:%S')}", box=box.ROUNDED)
+
+        table = Table(
+            title=f"💰 Gate.io账户余额 - {datetime.now().strftime('%H:%M:%S')}",
+            box=box.ROUNDED,
+        )
         table.add_column("币种", style="cyan bold")
         table.add_column("余额", style="white", justify="right")
         table.add_column("变动", style="white", justify="right")
         table.add_column("类型", style="cyan", justify="left")
-        
+
         for balance in result:
             currency = balance.get("currency", "")
             # Gate.io字段: balance, change, type
             balance_amount = _safe_float(balance.get("balance"), 0)
             change = _safe_float(balance.get("change"), 0)
             update_type = balance.get("type", "")
-            
+
             if balance_amount == 0:
                 continue
-            
+
             change_str = f"+{change:.4f}" if change > 0 else f"{change:.4f}"
             change_style = "green" if change > 0 else "red" if change < 0 else "white"
-            
+
             table.add_row(
                 currency.upper(),
                 f"{balance_amount:.4f}",
                 f"[{change_style}]{change_str}[/{change_style}]",
-                update_type
+                update_type,
             )
-        
+
         if table.row_count > 0:
             console.print(table)
-    
+
     def display_position_update(self, data: dict):
         """显示持仓更新."""
         if self.display_format == "none":
             return
-        
+
         if self.display_format == "json":
-            console.print(Panel(
-                json.dumps(data, indent=2, ensure_ascii=False),
-                title="[cyan]Gate.io 持仓更新[/cyan]",
-                border_style="cyan"
-            ))
+            console.print(
+                Panel(
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                    title="[cyan]Gate.io 持仓更新[/cyan]",
+                    border_style="cyan",
+                )
+            )
             return
-        
+
         # 表格显示
         result = data.get("result", [])
         if not result:
             return
-        
-        table = Table(title=f"📊 Gate.io持仓更新 - {datetime.now().strftime('%H:%M:%S')}", box=box.ROUNDED)
+
+        table = Table(
+            title=f"📊 Gate.io持仓更新 - {datetime.now().strftime('%H:%M:%S')}",
+            box=box.ROUNDED,
+        )
         table.add_column("合约", style="cyan bold")
         table.add_column("方向", style="yellow", justify="center")
         table.add_column("持仓量", style="white", justify="right")
@@ -456,17 +493,17 @@ class GateUserStreamService:
         table.add_column("强平价", style="red", justify="right")
         table.add_column("已实现盈亏", style="white", justify="right")
         table.add_column("最后平仓", style="white", justify="right")
-        
+
         for pos in result:
             size = _safe_float(pos.get("size"), 0)
             if size == 0:
                 continue
-            
+
             contract = pos.get("contract", "")
             # Gate.io用size正负表示方向
             side = "多" if size > 0 else "空"
             side_style = "green" if size > 0 else "red"
-            
+
             # Gate.io字段:
             # - entry_price: 开仓均价
             # - leverage: 杠杆（全仓模式为0）
@@ -482,15 +519,12 @@ class GateUserStreamService:
             realised_pnl = _safe_float(pos.get("realised_pnl"), 0)
             last_close_pnl = _safe_float(pos.get("last_close_pnl"), 0)
             liq_price = _safe_float(pos.get("liq_price"), 0)
-            
+
             # 持仓模式
             mode = pos.get("mode", "")
-            mode_map = {
-                "single": "单向",
-                "dual": "双向"
-            }
+            mode_map = {"single": "单向", "dual": "双向"}
             mode_display = mode_map.get(mode, mode)
-            
+
             # 杠杆显示（leverage=0通常表示全仓模式）
             if leverage > 0:
                 leverage_str = f"{leverage:.0f}x"
@@ -500,16 +534,28 @@ class GateUserStreamService:
                 leverage_str = f"全仓(max {leverage_max:.0f}x)"
             else:
                 leverage_str = "全仓"
-            
+
             # 格式化盈亏
-            pnl_str = f"+{realised_pnl:.4f}" if realised_pnl > 0 else f"{realised_pnl:.4f}"
-            pnl_style = "green" if realised_pnl > 0 else "red" if realised_pnl < 0 else "white"
-            
-            close_pnl_str = f"+{last_close_pnl:.4f}" if last_close_pnl > 0 else f"{last_close_pnl:.4f}"
-            close_pnl_style = "green" if last_close_pnl > 0 else "red" if last_close_pnl < 0 else "white"
-            
+            pnl_str = (
+                f"+{realised_pnl:.4f}" if realised_pnl > 0 else f"{realised_pnl:.4f}"
+            )
+            pnl_style = (
+                "green" if realised_pnl > 0 else "red" if realised_pnl < 0 else "white"
+            )
+
+            close_pnl_str = (
+                f"+{last_close_pnl:.4f}"
+                if last_close_pnl > 0
+                else f"{last_close_pnl:.4f}"
+            )
+            close_pnl_style = (
+                "green"
+                if last_close_pnl > 0
+                else "red" if last_close_pnl < 0 else "white"
+            )
+
             liq_str = f"{liq_price:.2f}" if liq_price > 0 else "N/A"
-            
+
             table.add_row(
                 contract,
                 f"[{side_style}]{side}[/{side_style}]",
@@ -519,48 +565,50 @@ class GateUserStreamService:
                 leverage_str,
                 liq_str,
                 f"[{pnl_style}]{pnl_str}[/{pnl_style}]",
-                f"[{close_pnl_style}]{close_pnl_str}[/{close_pnl_style}]"
+                f"[{close_pnl_style}]{close_pnl_str}[/{close_pnl_style}]",
             )
-        
+
         if table.row_count > 0:
             console.print(table)
-    
+
     def display_order_update(self, data: dict):
         """显示订单更新."""
         if self.display_format == "none":
             return
-        
+
         if self.display_format == "json":
-            console.print(Panel(
-                json.dumps(data, indent=2, ensure_ascii=False),
-                title="[cyan]Gate.io 订单更新[/cyan]",
-                border_style="cyan"
-            ))
+            console.print(
+                Panel(
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                    title="[cyan]Gate.io 订单更新[/cyan]",
+                    border_style="cyan",
+                )
+            )
             return
-        
+
         # 表格显示
         result = data.get("result", [])
         if not result:
             return
-        
+
         for order in result:
             order_id = order.get("id", "")
             contract = order.get("contract", "")
             size = _safe_float(order.get("size"), 0)
             side = "买入" if size > 0 else "卖出"
             side_style = "green" if size > 0 else "red"
-            
+
             # Gate.io字段:
             # - price: 限价（市价单为0）
             # - fill_price: 实际成交价格（已成交时）
             limit_price = _safe_float(order.get("price"), 0)
             fill_price = _safe_float(order.get("fill_price"), 0)
             display_price = fill_price if fill_price > 0 else limit_price
-            
+
             left = _safe_float(order.get("left"), 0)
             filled = abs(size) - abs(left)
             fill_pct = (filled / abs(size) * 100) if size != 0 else 0
-            
+
             # 订单类型
             tif = order.get("tif", "")
             tif_map = {
@@ -570,12 +618,14 @@ class GateUserStreamService:
                 "fok": "FOK(全部成交)",
             }
             order_type = tif_map.get(tif, tif.upper())
-            
+
             # 手续费和角色
             fee = _safe_float(order.get("fee"), 0)
             role = order.get("role", "")
-            role_display = "Maker" if role == "maker" else "Taker" if role == "taker" else role
-            
+            role_display = (
+                "Maker" if role == "maker" else "Taker" if role == "taker" else role
+            )
+
             status = order.get("status", "")
             status_map = {
                 "open": "🟢 挂单中",
@@ -583,23 +633,33 @@ class GateUserStreamService:
                 "cancelled": "❌ 已取消",
             }
             status_display = status_map.get(status, status)
-            
+
             # 创建订单表格
-            table = Table(title=f"📝 Gate.io订单更新 - {datetime.now().strftime('%H:%M:%S')}", box=box.ROUNDED)
+            table = Table(
+                title=f"📝 Gate.io订单更新 - {datetime.now().strftime('%H:%M:%S')}",
+                box=box.ROUNDED,
+            )
             table.add_column("字段", style="cyan", width=12)
             table.add_column("值", style="white")
-            
+
             table.add_row("订单ID", str(order_id))
             table.add_row("合约", contract)
             table.add_row("方向", f"[{side_style}]{side}[/{side_style}]")
-            
+
             # Gate.io 通过 size 正负表示多空：正数=多，负数=空
             position_side = "LONG" if size > 0 else "SHORT" if size < 0 else "NET"
-            position_color = "bright_green" if position_side == "LONG" else "bright_red" if position_side == "SHORT" else "white"
-            table.add_row("持仓方向（多空）", f"[{position_color}]{position_side}[/{position_color}]")
-            
+            position_color = (
+                "bright_green"
+                if position_side == "LONG"
+                else "bright_red" if position_side == "SHORT" else "white"
+            )
+            table.add_row(
+                "持仓方向（多空）",
+                f"[{position_color}]{position_side}[/{position_color}]",
+            )
+
             table.add_row("类型", order_type)
-            
+
             # 价格显示逻辑
             if fill_price > 0:
                 table.add_row("成交价", f"[green]{fill_price:.4f}[/green]")
@@ -609,64 +669,69 @@ class GateUserStreamService:
                 table.add_row("限价", f"{limit_price:.4f}")
             else:
                 table.add_row("价格", "市价")
-            
+
             table.add_row("数量", f"{abs(size):.0f}")
             table.add_row("已成交", f"{filled:.0f} ({fill_pct:.1f}%)")
             table.add_row("剩余", f"{abs(left):.0f}")
-            
+
             if fee > 0:
                 table.add_row("手续费", f"[yellow]{fee:.6f} USDT[/yellow]")
             if role:
                 table.add_row("角色", role_display)
-            
+
             table.add_row("状态", status_display)
-            
+
             console.print(table)
-    
+
     async def handle_message(self, message: str):
         """处理WebSocket消息."""
         try:
             data = json.loads(message)
             logger.debug("Gate message received", data=data)
-            
+
             # 处理订阅响应
             if data.get("event") == "subscribe":
                 status = data.get("result", {}).get("status", "unknown")
                 if status == "success":
-                    logger.info("✅ Channel subscribed successfully", channel=data.get("channel"))
+                    logger.info(
+                        "✅ Channel subscribed successfully",
+                        channel=data.get("channel"),
+                    )
                 else:
-                    logger.error("❌ Channel subscription failed", 
-                                channel=data.get("channel"), 
-                                error=data.get("error"))
+                    logger.error(
+                        "❌ Channel subscription failed",
+                        channel=data.get("channel"),
+                        error=data.get("error"),
+                    )
                 return
-            
+
             # 处理数据推送
             channel = data.get("channel", "")
-            
+
             if "futures.balances" in channel and "account" in self.enabled_channels:
                 if self._has_account_changed(data):
                     self.display_account_update(data)
                     await self.save_account_update(data)
                 else:
                     logger.debug("Account data unchanged, skipping")
-                
+
             elif "futures.positions" in channel and "position" in self.enabled_channels:
                 if self._has_position_changed(data):
                     self.display_position_update(data)
                     await self.save_position_update(data)
                 else:
                     logger.debug("Position data unchanged, skipping")
-                
+
             elif "futures.orders" in channel and "order" in self.enabled_channels:
                 # 订单更新通常都是重要的，不跳过
                 self.display_order_update(data)
                 await self.save_order_update(data)
-        
+
         except json.JSONDecodeError as e:
             logger.error("Failed to decode message", error=str(e))
         except Exception as e:
             logger.error("Failed to handle message", error=str(e))
-    
+
     async def save_account_update(self, data: dict):
         """保存账户更新."""
         try:
@@ -678,21 +743,23 @@ class GateUserStreamService:
                     # change -> available (变动，暂存到available字段)
                     # 没有unrealised_pnl字段
                     balance_amount = _safe_decimal(balance.get("balance"))
-                    
+
                     record = GateAccountBalance(
                         update_time=datetime.utcnow(),
                         user_id=int(balance.get("user", 0)),
                         currency=balance.get("currency"),
                         total=balance_amount,
                         available=balance_amount,  # Gate.io没有分离的available
-                        unrealised_pnl=_safe_decimal(balance.get("change")),  # 使用change字段
+                        unrealised_pnl=_safe_decimal(
+                            balance.get("change")
+                        ),  # 使用change字段
                         raw_data=json.dumps(data),
                     )
                     session.add(record)
             logger.info("Gate account update saved")
         except Exception as e:
             logger.error("Failed to save account update", error=str(e))
-    
+
     async def save_position_update(self, data: dict):
         """保存持仓更新."""
         try:
@@ -717,7 +784,7 @@ class GateUserStreamService:
             logger.info("Gate position update saved", count=len(result))
         except Exception as e:
             logger.error("Failed to save position update", error=str(e))
-    
+
     async def save_order_update(self, data: dict):
         """保存订单更新."""
         try:
@@ -725,55 +792,73 @@ class GateUserStreamService:
             for order in result:
                 async with self.db_manager.session() as session:
                     from sqlalchemy.dialects.postgresql import insert
-                    
+
                     # 准备订单数据
                     order_data = {
-                        'order_id': str(order.get("id")),
-                        'contract': order.get("contract"),
-                        'size': _safe_decimal(order.get("size")),
-                        'price': _safe_decimal(order.get("price")),
-                        'left': _safe_decimal(order.get("left")),
-                        'filled_total': _safe_decimal(order.get("fill_price")),
-                        'status': order.get("status"),
-                        'create_time': datetime.fromtimestamp(order.get("create_time", 0)) if order.get("create_time") else None,
-                        'finish_time': datetime.fromtimestamp(order.get("finish_time", 0)) if order.get("finish_time") else None,
-                        'update_time': datetime.utcnow(),
-                        'reduce_only': order.get("reduce_only", False),
-                        'tif': order.get("tif"),
-                        'text': order.get("text"),
-                        'raw_data': json.dumps(data),
+                        "order_id": str(order.get("id")),
+                        "contract": order.get("contract"),
+                        "size": _safe_decimal(order.get("size")),
+                        "price": _safe_decimal(order.get("price")),
+                        "left": _safe_decimal(order.get("left")),
+                        "filled_total": _safe_decimal(order.get("fill_price")),
+                        "status": order.get("status"),
+                        "create_time": (
+                            datetime.fromtimestamp(order.get("create_time", 0))
+                            if order.get("create_time")
+                            else None
+                        ),
+                        "finish_time": (
+                            datetime.fromtimestamp(order.get("finish_time", 0))
+                            if order.get("finish_time")
+                            else None
+                        ),
+                        "update_time": datetime.utcnow(),
+                        "reduce_only": order.get("reduce_only", False),
+                        "tif": order.get("tif"),
+                        "text": order.get("text"),
+                        "raw_data": json.dumps(data),
                     }
-                    
+
                     # 使用 INSERT ... ON CONFLICT 处理重复的 order_id + update_time
                     stmt = insert(GateOrder).values(**order_data)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=['order_id', 'update_time'],
+                        index_elements=["order_id", "update_time"],
                         set_={
-                            'contract': stmt.excluded.contract,
-                            'size': stmt.excluded.size,
-                            'price': stmt.excluded.price,
-                            'left': stmt.excluded.left,
-                            'filled_total': stmt.excluded.filled_total,
-                            'status': stmt.excluded.status,
-                            'create_time': stmt.excluded.create_time,
-                            'finish_time': stmt.excluded.finish_time,
-                            'reduce_only': stmt.excluded.reduce_only,
-                            'tif': stmt.excluded.tif,
-                            'text': stmt.excluded.text,
-                            'raw_data': stmt.excluded.raw_data,
-                        }
+                            "contract": stmt.excluded.contract,
+                            "size": stmt.excluded.size,
+                            "price": stmt.excluded.price,
+                            "left": stmt.excluded.left,
+                            "filled_total": stmt.excluded.filled_total,
+                            "status": stmt.excluded.status,
+                            "create_time": stmt.excluded.create_time,
+                            "finish_time": stmt.excluded.finish_time,
+                            "reduce_only": stmt.excluded.reduce_only,
+                            "tif": stmt.excluded.tif,
+                            "text": stmt.excluded.text,
+                            "raw_data": stmt.excluded.raw_data,
+                        },
                     )
                     await session.execute(stmt)
                     await session.commit()
-                    
+
                     # 更新 Prometheus metrics
                     try:
                         # 订阅服务使用端口 9601
                         ensure_metrics_server(9601)
                         # Gate.io 通过 size 正负表示多空
                         order_with_position = order.copy()
-                        order_with_position["positionSide"] = "LONG" if _safe_float(order.get("size"), 0) > 0 else "SHORT" if _safe_float(order.get("size"), 0) < 0 else "NET"
-                        order_with_position["side"] = "BUY" if _safe_float(order.get("size"), 0) > 0 else "SELL"
+                        order_with_position["positionSide"] = (
+                            "LONG"
+                            if _safe_float(order.get("size"), 0) > 0
+                            else (
+                                "SHORT"
+                                if _safe_float(order.get("size"), 0) < 0
+                                else "NET"
+                            )
+                        )
+                        order_with_position["side"] = (
+                            "BUY" if _safe_float(order.get("size"), 0) > 0 else "SELL"
+                        )
                         update_order_metrics(
                             exchange="gate",
                             exchange_type="perp",
@@ -782,7 +867,7 @@ class GateUserStreamService:
                         )
                     except Exception as metric_error:
                         logger.debug(f"Failed to update order metrics: {metric_error}")
-                    
+
             logger.info("Gate order update saved", count=len(result))
         except Exception as e:
             logger.error("Failed to save order update", error=str(e))
@@ -846,9 +931,15 @@ class GateUserStreamService:
                         last_disconnected_at=status.last_disconnected_at,
                     )
                     if status.last_disconnected_at:
-                        gap_seconds = int((datetime.now() - status.last_disconnected_at).total_seconds())
+                        gap_seconds = int(
+                            (
+                                datetime.now() - status.last_disconnected_at
+                            ).total_seconds()
+                        )
                         status.last_data_gap_seconds = gap_seconds
-                        status.total_reconnect_count = (status.total_reconnect_count or 0) + 1
+                        status.total_reconnect_count = (
+                            status.total_reconnect_count or 0
+                        ) + 1
                         logger.info(
                             "Gate reconnected after disconnection",
                             gap_seconds=gap_seconds,
@@ -952,7 +1043,11 @@ class GateUserStreamService:
                         recovered_orders += 1
 
             except Exception as e:
-                logger.error(f"Failed to query Gate order data for {symbol}", error=str(e), exc_info=True)
+                logger.error(
+                    f"Failed to query Gate order data for {symbol}",
+                    error=str(e),
+                    exc_info=True,
+                )
                 continue
 
         # 计算去重统计
@@ -1004,48 +1099,56 @@ class GateUserStreamService:
             bool: True 表示新数据已保存，False 表示数据已存在（去重）
         """
         order_id = str(order_data.get("id", ""))
-        finish_time = datetime.fromtimestamp(order_data.get("finish_time", 0)) if order_data.get("finish_time") else None
+        finish_time = (
+            datetime.fromtimestamp(order_data.get("finish_time", 0))
+            if order_data.get("finish_time")
+            else None
+        )
 
         try:
             async with self.db_manager.session() as session:
                 from sqlalchemy.dialects.postgresql import insert
-                
+
                 # 准备订单数据
                 order_record = {
-                    'order_id': order_id,
-                    'contract': order_data.get("contract"),
-                    'size': _safe_decimal(order_data.get("size")),
-                    'price': _safe_decimal(order_data.get("price")),
-                    'left': _safe_decimal(order_data.get("left")),
-                    'filled_total': _safe_decimal(order_data.get("fill_price")),
-                    'status': order_data.get("status"),
-                    'create_time': datetime.fromtimestamp(order_data.get("create_time", 0)) if order_data.get("create_time") else None,
-                    'finish_time': finish_time,
-                    'update_time': datetime.utcnow(),
-                    'reduce_only': order_data.get("reduce_only", False),
-                    'tif': order_data.get("tif"),
-                    'text': order_data.get("text"),
-                    'raw_data': json.dumps(order_data),
+                    "order_id": order_id,
+                    "contract": order_data.get("contract"),
+                    "size": _safe_decimal(order_data.get("size")),
+                    "price": _safe_decimal(order_data.get("price")),
+                    "left": _safe_decimal(order_data.get("left")),
+                    "filled_total": _safe_decimal(order_data.get("fill_price")),
+                    "status": order_data.get("status"),
+                    "create_time": (
+                        datetime.fromtimestamp(order_data.get("create_time", 0))
+                        if order_data.get("create_time")
+                        else None
+                    ),
+                    "finish_time": finish_time,
+                    "update_time": datetime.utcnow(),
+                    "reduce_only": order_data.get("reduce_only", False),
+                    "tif": order_data.get("tif"),
+                    "text": order_data.get("text"),
+                    "raw_data": json.dumps(order_data),
                 }
-                
+
                 # 使用 INSERT ... ON CONFLICT 处理重复的 order_id + update_time
                 stmt = insert(GateOrder).values(**order_record)
                 stmt = stmt.on_conflict_do_update(
-                    index_elements=['order_id', 'update_time'],
+                    index_elements=["order_id", "update_time"],
                     set_={
-                        'contract': stmt.excluded.contract,
-                        'size': stmt.excluded.size,
-                        'price': stmt.excluded.price,
-                        'left': stmt.excluded.left,
-                        'filled_total': stmt.excluded.filled_total,
-                        'status': stmt.excluded.status,
-                        'create_time': stmt.excluded.create_time,
-                        'finish_time': stmt.excluded.finish_time,
-                        'reduce_only': stmt.excluded.reduce_only,
-                        'tif': stmt.excluded.tif,
-                        'text': stmt.excluded.text,
-                        'raw_data': stmt.excluded.raw_data,
-                    }
+                        "contract": stmt.excluded.contract,
+                        "size": stmt.excluded.size,
+                        "price": stmt.excluded.price,
+                        "left": stmt.excluded.left,
+                        "filled_total": stmt.excluded.filled_total,
+                        "status": stmt.excluded.status,
+                        "create_time": stmt.excluded.create_time,
+                        "finish_time": stmt.excluded.finish_time,
+                        "reduce_only": stmt.excluded.reduce_only,
+                        "tif": stmt.excluded.tif,
+                        "text": stmt.excluded.text,
+                        "raw_data": stmt.excluded.raw_data,
+                    },
                 )
                 result = await session.execute(stmt)
                 await session.commit()
@@ -1058,12 +1161,12 @@ class GateUserStreamService:
                 )
                 return True
         except Exception as e:
-            logger.debug(
-                f"Gate order {order_id} save failed: {e}"
-            )
+            logger.debug(f"Gate order {order_id} save failed: {e}")
             return False
 
-    async def _check_needs_recovery(self, status: ConnectionStatus) -> tuple[bool, str, datetime | None]:
+    async def _check_needs_recovery(
+        self, status: ConnectionStatus
+    ) -> tuple[bool, str, datetime | None]:
         """检查是否需要数据恢复.
 
         Args:
@@ -1076,15 +1179,29 @@ class GateUserStreamService:
             return False, "", None
 
         if not status.is_connected:
-            return True, "connection status shows disconnected", status.last_disconnected_at
+            return (
+                True,
+                "connection status shows disconnected",
+                status.last_disconnected_at,
+            )
         elif status.last_connected_at is None:
-            return True, "never connected but has disconnection record", status.last_disconnected_at
+            return (
+                True,
+                "never connected but has disconnection record",
+                status.last_disconnected_at,
+            )
         elif status.last_disconnected_at > status.last_connected_at:
-            return True, "disconnection time is later than last connection time", status.last_disconnected_at
+            return (
+                True,
+                "disconnection time is later than last connection time",
+                status.last_disconnected_at,
+            )
 
         return False, "", None
 
-    async def _recover_data_with_retry(self, max_retries: int = 3, retry_delay: int = 2):
+    async def _recover_data_with_retry(
+        self, max_retries: int = 3, retry_delay: int = 2
+    ):
         """带重试机制的订单数据恢复.
 
         Args:
@@ -1101,7 +1218,9 @@ class GateUserStreamService:
 
                 # 执行订单数据恢复
                 await self.query_missing_data()
-                logger.info("Gate order data recovery completed successfully", attempt=attempt)
+                logger.info(
+                    "Gate order data recovery completed successfully", attempt=attempt
+                )
                 return
 
             except Exception as e:
@@ -1113,7 +1232,9 @@ class GateUserStreamService:
                 )
 
                 if attempt < max_retries:
-                    logger.info(f"Retrying Gate order data recovery in {retry_delay} seconds...")
+                    logger.info(
+                        f"Retrying Gate order data recovery in {retry_delay} seconds..."
+                    )
                     await asyncio.sleep(retry_delay)
                 else:
                     logger.error(
@@ -1131,7 +1252,9 @@ class GateUserStreamService:
             status = await self.get_or_create_connection_status()
 
             # 检查是否需要数据恢复（但不立即执行）
-            needs_recovery, recovery_reason, disconnect_time = await self._check_needs_recovery(status)
+            needs_recovery, recovery_reason, disconnect_time = (
+                await self._check_needs_recovery(status)
+            )
 
             if needs_recovery and disconnect_time:
                 gap_seconds = int((datetime.now() - disconnect_time).total_seconds())
@@ -1139,7 +1262,11 @@ class GateUserStreamService:
                     "Detected previous Gate disconnection, will recover order data after WebSocket connection",
                     reason=recovery_reason,
                     last_disconnected_at=disconnect_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    last_connected_at=status.last_connected_at.strftime("%Y-%m-%d %H:%M:%S") if status.last_connected_at else "Never",
+                    last_connected_at=(
+                        status.last_connected_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if status.last_connected_at
+                        else "Never"
+                    ),
                     gap_seconds=gap_seconds,
                     gap_minutes=round(gap_seconds / 60, 2),
                 )
@@ -1147,8 +1274,16 @@ class GateUserStreamService:
             else:
                 logger.info(
                     "No Gate order data recovery needed",
-                    last_disconnected_at=status.last_disconnected_at.strftime("%Y-%m-%d %H:%M:%S") if status.last_disconnected_at else "Never",
-                    last_connected_at=status.last_connected_at.strftime("%Y-%m-%d %H:%M:%S") if status.last_connected_at else "Never",
+                    last_disconnected_at=(
+                        status.last_disconnected_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if status.last_disconnected_at
+                        else "Never"
+                    ),
+                    last_connected_at=(
+                        status.last_connected_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if status.last_connected_at
+                        else "Never"
+                    ),
                 )
 
             logger.info("Connecting to Gate WebSocket", url=self.ws_url)
@@ -1165,7 +1300,9 @@ class GateUserStreamService:
 
                 # 在WebSocket连接成功后执行订单数据恢复（如果需要）
                 if needs_recovery and disconnect_time:
-                    disconnect_duration = int((datetime.now() - disconnect_time).total_seconds())
+                    disconnect_duration = int(
+                        (datetime.now() - disconnect_time).total_seconds()
+                    )
                     logger.info(
                         "Reconnected after disconnection, triggering order data reconciliation",
                         disconnect_duration=disconnect_duration,
@@ -1174,8 +1311,13 @@ class GateUserStreamService:
                     try:
                         # 回溯时间为断线时长 + 额外缓冲时间（300秒）
                         lookback = max(disconnect_duration + 300, 600)  # 至少回溯10分钟
-                        await self.reconciliation_service.reconcile_once(lookback_seconds=lookback)
-                        logger.info("Gate reconnection order data reconciliation completed", lookback_seconds=lookback)
+                        await self.reconciliation_service.reconcile_once(
+                            lookback_seconds=lookback
+                        )
+                        logger.info(
+                            "Gate reconnection order data reconciliation completed",
+                            lookback_seconds=lookback,
+                        )
                     except Exception as e:
                         logger.error(
                             "Gate reconnection order data reconciliation failed",
@@ -1216,7 +1358,7 @@ class GateUserStreamService:
                 await self.start()
             else:
                 raise
-    
+
     async def stop(self):
         """停止用户数据流订阅."""
         self.is_running = False
@@ -1226,4 +1368,3 @@ class GateUserStreamService:
         if self.websocket:
             await self.websocket.close()
         logger.info("Gate user data stream stopped")
-

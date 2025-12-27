@@ -20,7 +20,7 @@ def validate_symbol(symbol: str) -> str:
     symbol = symbol.strip().upper()
 
     # 检查格式：XXX/YYY
-    pattern = r'^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}$'
+    pattern = r"^[A-Z0-9]{2,10}/[A-Z0-9]{2,10}$"
     if not re.match(pattern, symbol):
         raise ValueError(
             f"交易对格式无效: {symbol}\n"
@@ -46,10 +46,7 @@ def validate_leverage(leverage: int) -> int:
         raise ValueError(f"杠杆倍数必须是整数，收到: {type(leverage).__name__}")
 
     if leverage < 1 or leverage > 125:
-        raise ValueError(
-            f"杠杆倍数超出范围: {leverage}\n"
-            f"有效范围: 1-125"
-        )
+        raise ValueError(f"杠杆倍数超出范围: {leverage}\n" f"有效范围: 1-125")
 
     return leverage
 
@@ -70,10 +67,7 @@ def validate_interval(interval: int) -> int:
         raise ValueError(f"刷新间隔必须是整数，收到: {type(interval).__name__}")
 
     if interval < 1 or interval > 60:
-        raise ValueError(
-            f"刷新间隔超出范围: {interval} 秒\n"
-            f"有效范围: 1-60 秒"
-        )
+        raise ValueError(f"刷新间隔超出范围: {interval} 秒\n" f"有效范围: 1-60 秒")
 
     return interval
 
@@ -97,8 +91,7 @@ def validate_limit(limit: int, min_limit: int = 5, max_limit: int = 50) -> int:
 
     if limit < min_limit or limit > max_limit:
         raise ValueError(
-            f"档数超出范围: {limit}\n"
-            f"有效范围: {min_limit}-{max_limit}"
+            f"档数超出范围: {limit}\n" f"有效范围: {min_limit}-{max_limit}"
         )
 
     return limit

@@ -17,6 +17,7 @@ from tri_arb.exchanges.base import BaseExchange
 
 # Test Fixtures
 
+
 @pytest.fixture
 def btc_usdt_pair() -> TradingPair:
     """BTC/USDT trading pair for single ticker tests."""
@@ -41,10 +42,10 @@ async def connected_exchange(exchange: BaseExchange) -> BaseExchange:
 
 # Contract Tests: Single Ticker Query (Backward Compatibility)
 
+
 @pytest.mark.asyncio
 async def test_single_ticker_returns_price_object(
-    connected_exchange: BaseExchange,
-    btc_usdt_pair: TradingPair
+    connected_exchange: BaseExchange, btc_usdt_pair: TradingPair
 ):
     """CONTRACT: get_ticker(trading_pair) MUST return single Price object."""
     result = await connected_exchange.get_ticker(btc_usdt_pair)
@@ -55,8 +56,7 @@ async def test_single_ticker_returns_price_object(
 
 @pytest.mark.asyncio
 async def test_single_ticker_price_data_valid(
-    connected_exchange: BaseExchange,
-    btc_usdt_pair: TradingPair
+    connected_exchange: BaseExchange, btc_usdt_pair: TradingPair
 ):
     """CONTRACT: Returned Price object MUST satisfy data constraints."""
     price = await connected_exchange.get_ticker(btc_usdt_pair)
@@ -82,11 +82,10 @@ async def test_single_ticker_price_data_valid(
 @pytest.mark.asyncio
 @pytest.mark.benchmark
 async def test_single_ticker_performance(
-    connected_exchange: BaseExchange,
-    btc_usdt_pair: TradingPair,
-    benchmark
+    connected_exchange: BaseExchange, btc_usdt_pair: TradingPair, benchmark
 ):
     """CONTRACT: Single ticker query MUST complete in <50ms p95."""
+
     async def query():
         return await connected_exchange.get_ticker(btc_usdt_pair)
 
@@ -95,17 +94,16 @@ async def test_single_ticker_performance(
     # pytest-benchmark provides percentile stats
     # Assert p95 latency < 50ms
     stats = benchmark.stats
-    p95_ms = stats.get('p95', 0) * 1000  # Convert to ms
+    p95_ms = stats.get("p95", 0) * 1000  # Convert to ms
 
     assert p95_ms < 50, f"p95 latency {p95_ms:.2f}ms exceeds 50ms target"
 
 
 # Contract Tests: Batch Ticker Query (New Feature)
 
+
 @pytest.mark.asyncio
-async def test_batch_ticker_returns_list(
-    connected_exchange: BaseExchange
-):
+async def test_batch_ticker_returns_list(connected_exchange: BaseExchange):
     """CONTRACT: get_ticker(None) MUST return List[Price]."""
     result = await connected_exchange.get_ticker(None)
 
@@ -114,9 +112,7 @@ async def test_batch_ticker_returns_list(
 
 
 @pytest.mark.asyncio
-async def test_batch_ticker_no_duplicates(
-    connected_exchange: BaseExchange
-):
+async def test_batch_ticker_no_duplicates(connected_exchange: BaseExchange):
     """CONTRACT: Batch ticker MUST not return duplicate trading pairs."""
     prices = await connected_exchange.get_ticker(None)
 
@@ -130,9 +126,7 @@ async def test_batch_ticker_no_duplicates(
 
 
 @pytest.mark.asyncio
-async def test_batch_ticker_each_price_valid(
-    connected_exchange: BaseExchange
-):
+async def test_batch_ticker_each_price_valid(connected_exchange: BaseExchange):
     """CONTRACT: Each Price in batch result MUST satisfy data constraints."""
     prices = await connected_exchange.get_ticker(None)
 
@@ -147,16 +141,16 @@ async def test_batch_ticker_each_price_valid(
 
         # Timestamp freshness
         age = datetime.now(price.timestamp.tzinfo) - price.timestamp
-        assert age < timedelta(seconds=10), f"Stale data for {price.trading_pair}: {age.total_seconds()}s"
+        assert age < timedelta(
+            seconds=10
+        ), f"Stale data for {price.trading_pair}: {age.total_seconds()}s"
 
 
 @pytest.mark.asyncio
 @pytest.mark.benchmark
-async def test_batch_ticker_performance(
-    connected_exchange: BaseExchange,
-    benchmark
-):
+async def test_batch_ticker_performance(connected_exchange: BaseExchange, benchmark):
     """CONTRACT: Batch ticker query MUST complete in <1000ms p95."""
+
     async def query():
         return await connected_exchange.get_ticker(None)
 
@@ -164,15 +158,13 @@ async def test_batch_ticker_performance(
 
     # Assert p95 latency < 1000ms
     stats = benchmark.stats
-    p95_ms = stats.get('p95', 0) * 1000
+    p95_ms = stats.get("p95", 0) * 1000
 
     assert p95_ms < 1000, f"p95 latency {p95_ms:.2f}ms exceeds 1000ms target"
 
 
 @pytest.mark.asyncio
-async def test_batch_ticker_scalability(
-    connected_exchange: BaseExchange
-):
+async def test_batch_ticker_scalability(connected_exchange: BaseExchange):
     """CONTRACT: Batch query MUST support ≥500 trading pairs (NFR-002)."""
     prices = await connected_exchange.get_ticker(None)
 
@@ -190,9 +182,10 @@ async def test_batch_ticker_scalability(
 
 # Contract Tests: Error Handling
 
+
 @pytest.mark.asyncio
 async def test_batch_query_unsupported_raises_not_implemented(
-    base_exchange: BaseExchange  # Concrete BaseExchange instance, not subclass
+    base_exchange: BaseExchange,  # Concrete BaseExchange instance, not subclass
 ):
     """CONTRACT: Unsupported batch query MUST raise NotImplementedError."""
     with pytest.raises(NotImplementedError) as exc_info:
@@ -205,8 +198,7 @@ async def test_batch_query_unsupported_raises_not_implemented(
 
 @pytest.mark.asyncio
 async def test_not_connected_raises_error(
-    exchange: BaseExchange,
-    btc_usdt_pair: TradingPair
+    exchange: BaseExchange, btc_usdt_pair: TradingPair
 ):
     """CONTRACT: Calling get_ticker without connect() MUST raise error."""
     # Do NOT connect
@@ -219,9 +211,7 @@ async def test_not_connected_raises_error(
 
 
 @pytest.mark.asyncio
-async def test_invalid_trading_pair_raises_error(
-    connected_exchange: BaseExchange
-):
+async def test_invalid_trading_pair_raises_error(connected_exchange: BaseExchange):
     """CONTRACT: Invalid trading pair MUST be rejected."""
     invalid_pair = TradingPair(
         base_currency="",  # Invalid: empty string
@@ -239,10 +229,10 @@ async def test_invalid_trading_pair_raises_error(
 
 # Contract Tests: Partial Failure Handling (Batch)
 
+
 @pytest.mark.asyncio
 async def test_batch_partial_failure_returns_success_subset(
-    connected_exchange: BaseExchange,
-    monkeypatch
+    connected_exchange: BaseExchange, monkeypatch
 ):
     """CONTRACT: Batch query with partial failures MUST return successful subset."""
     # This test requires mocking to inject failures
@@ -258,9 +248,7 @@ async def test_batch_partial_failure_returns_success_subset(
         return original_parse(ticker_data)
 
     monkeypatch.setattr(
-        connected_exchange,
-        "_parse_ticker_to_price",
-        mock_parse_with_failures
+        connected_exchange, "_parse_ticker_to_price", mock_parse_with_failures
     )
 
     prices = await connected_exchange.get_ticker(None)
@@ -274,18 +262,16 @@ async def test_batch_partial_failure_returns_success_subset(
 
 @pytest.mark.asyncio
 async def test_batch_all_failures_returns_empty_list(
-    connected_exchange: BaseExchange,
-    monkeypatch
+    connected_exchange: BaseExchange, monkeypatch
 ):
     """CONTRACT: Batch query with all failures MUST return empty list."""
+
     # Mock parsing to fail for all tickers
     def mock_parse_always_fails(ticker_data):
         raise ValueError("Simulated total failure")
 
     monkeypatch.setattr(
-        connected_exchange,
-        "_parse_ticker_to_price",
-        mock_parse_always_fails
+        connected_exchange, "_parse_ticker_to_price", mock_parse_always_fails
     )
 
     prices = await connected_exchange.get_ticker(None)
@@ -294,6 +280,7 @@ async def test_batch_all_failures_returns_empty_list(
 
 
 # Contract Tests: Type Safety
+
 
 def test_return_type_annotation():
     """CONTRACT: get_ticker signature MUST have correct type annotations."""
@@ -312,15 +299,16 @@ def test_return_type_annotation():
 
 # Pytest Configuration
 
+
 def pytest_configure(config):
     """Register custom markers for contract tests."""
     config.addinivalue_line(
-        "markers",
-        "benchmark: Performance benchmark tests (require pytest-benchmark)"
+        "markers", "benchmark: Performance benchmark tests (require pytest-benchmark)"
     )
 
 
 # Test Parametrization for Multiple Exchanges
+
 
 @pytest.mark.parametrize("exchange_name", ["xt", "binance", "okx"])
 @pytest.mark.asyncio

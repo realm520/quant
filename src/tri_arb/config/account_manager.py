@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AccountConfig:
     """账号配置."""
-    
+
     account_id: str
     name: str
     exchange: str
@@ -28,9 +28,11 @@ class AccountConfig:
     lark_webhook: Optional[str] = None
     lark_secret: Optional[str] = None
     passphrase: Optional[str] = None  # OKX 交易所需要
-    watch_tasks: Optional[Dict[str, Any]] = None  # watch-balance, watch-account, watch-positions 配置
+    watch_tasks: Optional[Dict[str, Any]] = (
+        None  # watch-balance, watch-account, watch-positions 配置
+    )
     enable_lark: bool = False  # 是否启用 Lark 告警
-    
+
     def __post_init__(self):
         if self.channels is None:
             self.channels = ["account", "position"]
@@ -38,10 +40,10 @@ class AccountConfig:
 
 class AccountManager:
     """账号配置管理器."""
-    
+
     def __init__(self, config_path: str | Path):
         """初始化账号管理器.
-        
+
         Args:
             config_path: JSON 配置文件路径
         """
@@ -49,24 +51,24 @@ class AccountManager:
         self.accounts: Dict[str, AccountConfig] = {}
         self.global_settings: Dict[str, Any] = {}
         self._load_config()
-    
+
     def _load_config(self):
         """加载配置文件."""
         if not self.config_path.exists():
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
-        
-        with open(self.config_path, 'r', encoding='utf-8') as f:
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
+
         # 加载全局设置
         self.global_settings = data.get("global_settings", {})
-        
+
         # 处理环境变量替换
         database_url = self.global_settings.get("database_url", "")
         if database_url.startswith("${") and database_url.endswith("}"):
             env_var = database_url[2:-1]
             self.global_settings["database_url"] = os.getenv(env_var, "")
-        
+
         # 加载账号配置
         accounts_data = data.get("accounts", {})
         for account_id, account_data in accounts_data.items():
@@ -84,40 +86,43 @@ class AccountManager:
                     lark_secret=account_data.get("lark_secret"),
                     passphrase=account_data.get("passphrase"),  # OKX 交易所需要
                     watch_tasks=account_data.get("watch_tasks"),  # watch-all 任务配置
-                    enable_lark=account_data.get("enable_lark", False),  # 是否启用 Lark 告警
+                    enable_lark=account_data.get(
+                        "enable_lark", False
+                    ),  # 是否启用 Lark 告警
                 )
-                
+
                 # 验证交易所名称（支持: xt, binance, okx, gate）
                 supported_exchanges = ["xt", "binance", "okx", "gate"]
                 if config.exchange.lower() not in supported_exchanges:
-                    logger.warning(f"账号 {account_id} 使用不支持的交易所: {config.exchange}，支持的交易所: {', '.join(supported_exchanges)}")
+                    logger.warning(
+                        f"账号 {account_id} 使用不支持的交易所: {config.exchange}，支持的交易所: {', '.join(supported_exchanges)}"
+                    )
                     continue
-                
+
                 if not config.api_key or not config.api_secret:
                     logger.warning(f"账号 {account_id} 缺少 API 凭证")
                     continue
-                
+
                 self.accounts[account_id] = config
                 logger.info(f"加载账号配置: {account_id} ({config.name})")
             except Exception as e:
                 logger.error(f"加载账号 {account_id} 配置失败: {e}", exc_info=True)
-        
+
         logger.info(f"共加载 {len(self.accounts)} 个账号配置")
-    
+
     def get_account(self, account_id: str) -> Optional[AccountConfig]:
         """获取账号配置."""
         return self.accounts.get(account_id)
-    
+
     def get_enabled_accounts(self) -> list[AccountConfig]:
         """获取所有启用的账号."""
         return [acc for acc in self.accounts.values() if acc.enabled]
-    
+
     def get_all_accounts(self) -> list[AccountConfig]:
         """获取所有账号."""
         return list(self.accounts.values())
-    
+
     def reload(self):
         """重新加载配置."""
         self.accounts.clear()
         self._load_config()
-

@@ -39,7 +39,7 @@ class TestJsonFormatter:
         data = {
             "symbol": "BTC/USDT",
             "price": Decimal("50000.50"),
-            "timestamp": datetime(2025, 1, 15, 10, 30, 45)
+            "timestamp": datetime(2025, 1, 15, 10, 30, 45),
         }
 
         result = format_json(data)
@@ -51,6 +51,7 @@ class TestJsonFormatter:
 
     def test_format_json_with_object(self):
         """Test formatting an object with __dict__."""
+
         class TestObject:
             def __init__(self):
                 self.name = "test"
@@ -65,6 +66,7 @@ class TestJsonFormatter:
 
     def test_format_json_with_list_of_objects(self):
         """Test formatting a list of objects."""
+
         class TestObject:
             def __init__(self, name, value):
                 self.name = name
@@ -72,7 +74,7 @@ class TestJsonFormatter:
 
         objects = [
             TestObject("first", Decimal("100")),
-            TestObject("second", Decimal("200"))
+            TestObject("second", Decimal("200")),
         ]
 
         result = format_json(objects)
@@ -133,7 +135,7 @@ class TestCsvFormatter:
         """Test formatting multiple rows."""
         data = [
             {"symbol": "BTC/USDT", "price": "50000", "volume": "1000"},
-            {"symbol": "ETH/USDT", "price": "3000", "volume": "5000"}
+            {"symbol": "ETH/USDT", "price": "3000", "volume": "5000"},
         ]
         result = format_csv(data)
 
@@ -145,10 +147,7 @@ class TestCsvFormatter:
 
     def test_format_csv_preserves_field_order(self):
         """Test that field order is preserved from first dict."""
-        data = [
-            {"c": "3", "a": "1", "b": "2"},
-            {"c": "6", "a": "4", "b": "5"}
-        ]
+        data = [{"c": "3", "a": "1", "b": "2"}, {"c": "6", "a": "4", "b": "5"}]
         result = format_csv(data)
 
         lines = [line.strip() for line in result.strip().split("\n")]

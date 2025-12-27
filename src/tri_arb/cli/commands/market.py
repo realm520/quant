@@ -7,14 +7,22 @@ import typer
 from rich.console import Console
 from rich.live import Live
 
-from tri_arb.cli.utils.exchange_factory import ExchangeType, ExchangeName, create_exchange
+from tri_arb.cli.utils.exchange_factory import (
+    ExchangeType,
+    ExchangeName,
+    create_exchange,
+)
 from tri_arb.cli.formatters.table import (
     format_ticker_table,
     format_orderbook_table,
 )
 from tri_arb.cli.formatters.json import print_json
 from tri_arb.cli.formatters.csv import print_csv
-from tri_arb.cli.utils.validators import validate_symbol, validate_interval, validate_limit
+from tri_arb.cli.utils.validators import (
+    validate_symbol,
+    validate_interval,
+    validate_limit,
+)
 
 app = typer.Typer(help="市场行情命令")
 console = Console()
@@ -26,44 +34,27 @@ def ticker(
         ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 perp)"
+        help="交易类型 (spot 或 perp，默认 perp)",
     ),
     exchange: ExchangeName = typer.Option(
-        ExchangeName.XT,
-        "--exchange",
-        "-x",
-        help="交易所 (xt 或 binance)，默认 xt"
+        ExchangeName.XT, "--exchange", "-x", help="交易所 (xt 或 binance)，默认 xt"
     ),
     symbol: Optional[str] = typer.Option(
-        None,
-        "--symbol",
-        "-s",
-        help="交易对（例如 BTC/USDT），不指定则显示所有"
+        None, "--symbol", "-s", help="交易对（例如 BTC/USDT），不指定则显示所有"
     ),
     api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-key", help="API 密钥（覆盖环境变量）"
     ),
     api_secret: Optional[str] = typer.Option(
-        None,
-        "--api-secret",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-secret", help="API 密钥（覆盖环境变量）"
     ),
     output: str = typer.Option(
-        "table",
-        "--output",
-        "-o",
-        help="输出格式 (table, json, csv)"
+        "table", "--output", "-o", help="输出格式 (table, json, csv)"
     ),
-    debug: bool = typer.Option(
-        False,
-        "--debug",
-        help="启用调试模式"
-    )
+    debug: bool = typer.Option(False, "--debug", help="启用调试模式"),
 ):
     """查询实时价格.
-    
+
     示例:
         cextools market ticker
         cextools market ticker --symbol BTC/USDT
@@ -76,7 +67,9 @@ def ticker(
             symbol = validate_symbol(symbol)
 
         # 创建 exchange 实例
-        exchange_instance = create_exchange(exchange_type, api_key, api_secret, exchange)
+        exchange_instance = create_exchange(
+            exchange_type, api_key, api_secret, exchange
+        )
 
         # 异步获取行情
         async def get_ticker_data():
@@ -105,26 +98,30 @@ def ticker(
         elif output == "csv":
             csv_data = []
             for t in tickers:
-                if hasattr(t, 'trading_pair'):
+                if hasattr(t, "trading_pair"):
                     # Price object
-                    csv_data.append({
-                        "symbol": f"{t.trading_pair.base_currency}/{t.trading_pair.quote_currency}",
-                        "bid": str(t.bid_price),
-                        "ask": str(t.ask_price),
-                        "last": str(t.mid_price),
-                        "change_24h": "0",
-                        "volume_24h": str(t.bid_volume + t.ask_volume)
-                    })
+                    csv_data.append(
+                        {
+                            "symbol": f"{t.trading_pair.base_currency}/{t.trading_pair.quote_currency}",
+                            "bid": str(t.bid_price),
+                            "ask": str(t.ask_price),
+                            "last": str(t.mid_price),
+                            "change_24h": "0",
+                            "volume_24h": str(t.bid_volume + t.ask_volume),
+                        }
+                    )
                 else:
                     # Dict format
-                    csv_data.append({
-                        "symbol": t.get("symbol", ""),
-                        "bid": str(t.get("bid", 0)),
-                        "ask": str(t.get("ask", 0)),
-                        "last": str(t.get("last", 0)),
-                        "change_24h": str(t.get("change_24h", 0)),
-                        "volume_24h": str(t.get("volume_24h", 0))
-                    })
+                    csv_data.append(
+                        {
+                            "symbol": t.get("symbol", ""),
+                            "bid": str(t.get("bid", 0)),
+                            "ask": str(t.get("ask", 0)),
+                            "last": str(t.get("last", 0)),
+                            "change_24h": str(t.get("change_24h", 0)),
+                            "volume_24h": str(t.get("volume_24h", 0)),
+                        }
+                    )
             print_csv(csv_data)
         else:  # table (default)
             format_ticker_table(tickers)
@@ -142,48 +139,27 @@ def ticker(
 
 @app.command("depth")
 def depth(
-    symbol: str = typer.Option(
-        ...,
-        "--symbol",
-        "-s",
-        help="交易对（例如 BTC/USDT）"
-    ),
+    symbol: str = typer.Option(..., "--symbol", "-s", help="交易对（例如 BTC/USDT）"),
     exchange_type: ExchangeType = typer.Option(
         ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 perp)"
+        help="交易类型 (spot 或 perp，默认 perp)",
     ),
-    limit: int = typer.Option(
-        10,
-        "--limit",
-        "-l",
-        help="档数 (5-50，默认 10)"
-    ),
+    limit: int = typer.Option(10, "--limit", "-l", help="档数 (5-50，默认 10)"),
     api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-key", help="API 密钥（覆盖环境变量）"
     ),
     api_secret: Optional[str] = typer.Option(
-        None,
-        "--api-secret",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-secret", help="API 密钥（覆盖环境变量）"
     ),
     output: str = typer.Option(
-        "table",
-        "--output",
-        "-o",
-        help="输出格式 (table, json, csv)"
+        "table", "--output", "-o", help="输出格式 (table, json, csv)"
     ),
-    debug: bool = typer.Option(
-        False,
-        "--debug",
-        help="启用调试模式"
-    )
+    debug: bool = typer.Option(False, "--debug", help="启用调试模式"),
 ):
     """查询订单簿深度.
-    
+
     示例:
         cextools market depth --symbol BTC/USDT
         cextools market depth -s ETH/USDT -e perp --limit 20
@@ -241,42 +217,23 @@ def depth(
 
 @app.command("funding")
 def funding(
-    symbol: str = typer.Option(
-        ...,
-        "--symbol",
-        "-s",
-        help="交易对（例如 BTC/USDT）"
-    ),
+    symbol: str = typer.Option(..., "--symbol", "-s", help="交易对（例如 BTC/USDT）"),
     exchange_type: ExchangeType = typer.Option(
-        ...,
-        "--exchange-type",
-        "-e",
-        help="交易类型（必须为 perp）"
+        ..., "--exchange-type", "-e", help="交易类型（必须为 perp）"
     ),
     api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-key", help="API 密钥（覆盖环境变量）"
     ),
     api_secret: Optional[str] = typer.Option(
-        None,
-        "--api-secret",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-secret", help="API 密钥（覆盖环境变量）"
     ),
     output: str = typer.Option(
-        "table",
-        "--output",
-        "-o",
-        help="输出格式 (table, json, csv)"
+        "table", "--output", "-o", help="输出格式 (table, json, csv)"
     ),
-    debug: bool = typer.Option(
-        False,
-        "--debug",
-        help="启用调试模式"
-    )
+    debug: bool = typer.Option(False, "--debug", help="启用调试模式"),
 ):
     """查询资金费率（仅永续合约）.
-    
+
     示例:
         cextools market funding -s BTC/USDT -e perp
         cextools market funding --symbol ETH/USDT -e perp -o json
@@ -312,22 +269,27 @@ def funding(
         if output == "json":
             print_json(funding_info)
         elif output == "csv":
-            csv_data = [{
-                "symbol": funding_info.get("symbol", ""),
-                "funding_rate": str(funding_info.get("funding_rate", 0)),
-                "next_funding_time": str(funding_info.get("next_funding_time", ""))
-            }]
+            csv_data = [
+                {
+                    "symbol": funding_info.get("symbol", ""),
+                    "funding_rate": str(funding_info.get("funding_rate", 0)),
+                    "next_funding_time": str(funding_info.get("next_funding_time", "")),
+                }
+            ]
             print_csv(csv_data)
         else:  # table (default)
             from rich.table import Table
-            table = Table(title="Funding Rate", show_header=True, header_style="bold magenta")
+
+            table = Table(
+                title="Funding Rate", show_header=True, header_style="bold magenta"
+            )
             table.add_column("Symbol", style="cyan")
             table.add_column("Funding Rate", justify="right", style="green")
             table.add_column("Next Funding Time", style="yellow")
             table.add_row(
                 funding_info.get("symbol", ""),
                 f"{float(funding_info.get('funding_rate', 0)) * 100:.4f}%",
-                str(funding_info.get("next_funding_time", ""))
+                str(funding_info.get("next_funding_time", "")),
             )
             console.print(table)
 
@@ -344,42 +306,26 @@ def funding(
 
 @app.command("watch")
 def watch(
-    symbol: str = typer.Option(
-        ...,
-        "--symbol",
-        "-s",
-        help="交易对（例如 BTC/USDT）"
-    ),
+    symbol: str = typer.Option(..., "--symbol", "-s", help="交易对（例如 BTC/USDT）"),
     exchange_type: ExchangeType = typer.Option(
         ExchangeType.PERP,
         "--exchange-type",
         "-e",
-        help="交易类型 (spot 或 perp，默认 perp)"
+        help="交易类型 (spot 或 perp，默认 perp)",
     ),
     interval: int = typer.Option(
-        5,
-        "--interval",
-        "-i",
-        help="刷新间隔（秒，1-60，默认 5）"
+        5, "--interval", "-i", help="刷新间隔（秒，1-60，默认 5）"
     ),
     api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-key", help="API 密钥（覆盖环境变量）"
     ),
     api_secret: Optional[str] = typer.Option(
-        None,
-        "--api-secret",
-        help="API 密钥（覆盖环境变量）"
+        None, "--api-secret", help="API 密钥（覆盖环境变量）"
     ),
-    debug: bool = typer.Option(
-        False,
-        "--debug",
-        help="启用调试模式"
-    )
+    debug: bool = typer.Option(False, "--debug", help="启用调试模式"),
 ):
     """实时监控价格变化.
-    
+
     示例:
         cextools market watch --symbol BTC/USDT
         cextools market watch -s ETH/USDT -e perp --interval 10
@@ -392,7 +338,9 @@ def watch(
         # 创建 exchange 实例
         exchange = create_exchange(exchange_type, api_key, api_secret)
 
-        console.print(f"[cyan]开始监控 {symbol} (刷新间隔: {interval}秒，按 Ctrl+C 退出)[/cyan]\n")
+        console.print(
+            f"[cyan]开始监控 {symbol} (刷新间隔: {interval}秒，按 Ctrl+C 退出)[/cyan]\n"
+        )
 
         # 实时刷新显示
         async def watch_ticker():
@@ -403,6 +351,7 @@ def watch(
                         ticker_data = await exchange.get_ticker(symbol)
                         if ticker_data:
                             from rich.table import Table
+
                             table = Table(show_header=True, header_style="bold magenta")
                             table.add_column("Symbol", style="cyan")
                             table.add_column("Bid", justify="right", style="green")
@@ -412,14 +361,16 @@ def watch(
 
                             change = float(ticker_data.get("change_24h", 0))
                             change_style = "green" if change >= 0 else "red"
-                            change_text = f"[{change_style}]{change:+.2f}%[/{change_style}]"
+                            change_text = (
+                                f"[{change_style}]{change:+.2f}%[/{change_style}]"
+                            )
 
                             table.add_row(
                                 ticker_data.get("symbol", ""),
                                 str(ticker_data.get("bid", 0)),
                                 str(ticker_data.get("ask", 0)),
                                 str(ticker_data.get("last", 0)),
-                                change_text
+                                change_text,
                             )
                             live.update(table)
 

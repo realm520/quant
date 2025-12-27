@@ -161,12 +161,16 @@ def monitor(
         if e.response.status_code == 429:
             console.print("[red]✗ XT API 限流，请稍后重试[/red]")
         elif e.response.status_code == 401:
-            console.print("[red]✗ XT API 密钥无效，请检查 XT_API_KEY 和 XT_API_SECRET[/red]")
+            console.print(
+                "[red]✗ XT API 密钥无效，请检查 XT_API_KEY 和 XT_API_SECRET[/red]"
+            )
         elif e.response.status_code == 403:
             console.print("[red]✗ XT API 访问被拒绝，请检查 API 权限[/red]")
         else:
             console.print(f"[red]✗ XT API 错误 (HTTP {e.response.status_code})[/red]")
-        logger.error("XT API HTTP error", status_code=e.response.status_code, error=str(e))
+        logger.error(
+            "XT API HTTP error", status_code=e.response.status_code, error=str(e)
+        )
         raise typer.Exit(code=2) from e
     except httpx.TimeoutException as e:
         console.print("[red]✗ XT API 请求超时，请检查网络连接[/red]")
@@ -258,7 +262,9 @@ async def _async_monitor(
         from tri_arb.arbitrage.adapters import XTExchangeAdapter
 
         console.print("[cyan]ℹ 使用 XT Exchange（公开模式 - 仅监控功能）[/cyan]")
-        console.print("[dim]提示: 设置 XT_API_KEY 和 XT_API_SECRET 以启用交易功能[/dim]")
+        console.print(
+            "[dim]提示: 设置 XT_API_KEY 和 XT_API_SECRET 以启用交易功能[/dim]"
+        )
 
         try:
             exchange_adapter = XTExchangeAdapter()  # No credentials
@@ -266,8 +272,13 @@ async def _async_monitor(
             monitor._exchange = exchange_adapter
             logger.info("Connected to XT Exchange (public mode)")
         except Exception as e:
-            console.print(f"[yellow]⚠️  无法连接 XT Exchange，使用模拟数据: {e}[/yellow]")
-            logger.warning("XT Exchange connection failed, falling back to MockExchange", error=str(e))
+            console.print(
+                f"[yellow]⚠️  无法连接 XT Exchange，使用模拟数据: {e}[/yellow]"
+            )
+            logger.warning(
+                "XT Exchange connection failed, falling back to MockExchange",
+                error=str(e),
+            )
             monitor._exchange = MockExchange()
 
     # Execute scan based on mode
@@ -284,7 +295,9 @@ async def _async_monitor(
                 tickers_list = await monitor._exchange.get_ticker(symbol=None)
                 tickers_dict = {t.symbol: t for t in tickers_list}
 
-                high_value_opps = _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+                high_value_opps = _display_opportunities(
+                    opportunities, min_profit, tickers_dict, liquidity_usage
+                )
 
                 # Execute opportunities if requested (only high-value ones)
                 if (execute or dry_run) and high_value_opps:
@@ -293,7 +306,7 @@ async def _async_monitor(
                     await _execute_opportunities(
                         opportunities=filtered_opportunities,
                         exchange_adapter=exchange_adapter,
-                        dry_run=dry_run
+                        dry_run=dry_run,
                     )
 
             except NetworkError as e:
@@ -304,20 +317,28 @@ async def _async_monitor(
                 f"[bold]开始实时监控（每 {refresh_interval} 秒刷新）...[/bold]"
             )
             console.print("[dim]按 Ctrl+C 停止[/dim]\n")
-            logger.info("Starting realtime monitoring", refresh_interval=refresh_interval)
+            logger.info(
+                "Starting realtime monitoring", refresh_interval=refresh_interval
+            )
 
             try:
                 iteration = 0
                 async for opportunities in monitor.scan_realtime():
                     iteration += 1
-                    logger.info("Scan iteration completed", iteration=iteration, opportunities_found=len(opportunities))
+                    logger.info(
+                        "Scan iteration completed",
+                        iteration=iteration,
+                        opportunities_found=len(opportunities),
+                    )
 
                     # Get tickers for liquidity display
                     tickers_list = await monitor._exchange.get_ticker(symbol=None)
                     tickers_dict = {t.symbol: t for t in tickers_list}
 
                     console.print(f"\n[bold cyan]═══ 扫描 {iteration} ═══[/bold cyan]")
-                    high_value_opps = _display_opportunities(opportunities, min_profit, tickers_dict, liquidity_usage)
+                    high_value_opps = _display_opportunities(
+                        opportunities, min_profit, tickers_dict, liquidity_usage
+                    )
 
                     # Execute opportunities if requested (only high-value ones)
                     if (execute or dry_run) and high_value_opps:
@@ -326,7 +347,7 @@ async def _async_monitor(
                         await _execute_opportunities(
                             opportunities=filtered_opportunities,
                             exchange_adapter=exchange_adapter,
-                            dry_run=dry_run
+                            dry_run=dry_run,
                         )
 
                     if not monitor._shutdown_requested:
@@ -354,7 +375,7 @@ def _calculate_max_safe_amount(
     opportunity,
     tickers: dict,
     liquidity_usage_rate: Decimal,
-    fee_rate: Decimal = Decimal("0.001")
+    fee_rate: Decimal = Decimal("0.001"),
 ) -> tuple[Decimal, int]:
     """Calculate maximum safe amount based on liquidity constraints.
 
@@ -419,7 +440,7 @@ def _reverse_calculate_start_amount(
     tickers: dict,
     target_step_idx: int,
     liquidity_usage_rate: Decimal,
-    fee_rate: Decimal
+    fee_rate: Decimal,
 ) -> Decimal:
     """Reverse calculate starting amount for a given bottleneck step.
 
@@ -473,16 +494,16 @@ def _calculate_step_details(
     opportunity,
     tickers: dict,
     initial_amount: Decimal,
-    fee_rate: Decimal = Decimal("0.001")
+    fee_rate: Decimal = Decimal("0.001"),
 ) -> list[dict]:
     """Calculate detailed step-by-step trading information.
-    
+
     Args:
         opportunity: ArbitrageOpportunity object
         tickers: Dictionary mapping symbol to Ticker (for liquidity data)
         initial_amount: Initial investment amount
         fee_rate: Fee rate per trade (default 0.1%)
-    
+
     Returns:
         List of dicts with step details (type, pair, price, amount_before, amount_after, fee, liquidity, usage_rate)
     """
@@ -526,7 +547,11 @@ def _calculate_step_details(
         current_amount = amount_after
 
         # Calculate fee in the resulting currency
-        fee_amount = amount_before * fee_rate if trade_type == "sell" else (amount_before / price) * fee_rate
+        fee_amount = (
+            amount_before * fee_rate
+            if trade_type == "sell"
+            else (amount_before / price) * fee_rate
+        )
 
         # Calculate liquidity usage rate
         # For buy: compare amount_after (base we get) with ask_volume
@@ -538,21 +563,23 @@ def _calculate_step_details(
         else:
             usage_rate = Decimal("0")
 
-        steps.append({
-            "step": i + 1,
-            "type": trade_type,
-            "pair": pair,
-            "price": price,
-            "amount_before": amount_before,
-            "currency_before": currency_before,
-            "amount_after": amount_after,
-            "currency_after": current_currency,
-            "fee": fee_amount,
-            "fee_currency": current_currency,
-            "available_liquidity": available_liquidity,
-            "liquidity_currency": liquidity_currency,
-            "usage_rate": usage_rate
-        })
+        steps.append(
+            {
+                "step": i + 1,
+                "type": trade_type,
+                "pair": pair,
+                "price": price,
+                "amount_before": amount_before,
+                "currency_before": currency_before,
+                "amount_after": amount_after,
+                "currency_after": current_currency,
+                "fee": fee_amount,
+                "fee_currency": current_currency,
+                "available_liquidity": available_liquidity,
+                "liquidity_currency": liquidity_currency,
+                "usage_rate": usage_rate,
+            }
+        )
 
     return steps
 
@@ -587,7 +614,7 @@ def _display_connectivity_report(tickers: dict, opportunities: list) -> None:
     hubs = sorted(
         [(curr, len(neighbors)) for curr, neighbors in currency_pairs.items()],
         key=lambda x: x[1],
-        reverse=True
+        reverse=True,
     )[:5]
 
     # Count currencies that can participate in arbitrage
@@ -600,7 +627,9 @@ def _display_connectivity_report(tickers: dict, opportunities: list) -> None:
             arbitrage_currencies.add(quote)
 
     arbitrageable_count = len(arbitrage_currencies)
-    arbitrage_ratio = (arbitrageable_count / total_currencies * 100) if total_currencies > 0 else 0
+    arbitrage_ratio = (
+        (arbitrageable_count / total_currencies * 100) if total_currencies > 0 else 0
+    )
 
     # Count isolated currencies (degree == 1)
     isolated_count = sum(1 for deg in degree_counts if deg == 1)
@@ -638,9 +667,7 @@ def _display_opportunities(
         List of tuples (original_index, opportunity, max_safe_amount) for high-value opportunities
     """
     if not opportunities:
-        console.print(
-            f"[yellow]未发现套利机会（阈值: {min_profit}%）[/yellow]"
-        )
+        console.print(f"[yellow]未发现套利机会（阈值: {min_profit}%）[/yellow]")
         return []
 
     # Display market connectivity analysis if tickers available
@@ -670,9 +697,11 @@ def _display_opportunities(
             low_value_count += 1
             logger.debug(
                 "low_value_opportunity_filtered",
-                path=" → ".join([opp.path.start_currency] + list(opp.path.trading_pairs)),
+                path=" → ".join(
+                    [opp.path.start_currency] + list(opp.path.trading_pairs)
+                ),
                 amount=float(max_safe),
-                profit_rate=float(opp.expected_profit_rate)
+                profit_rate=float(opp.expected_profit_rate),
             )
 
     # Create Rich table for high-value opportunities
@@ -688,7 +717,9 @@ def _display_opportunities(
     table.add_column("最大安全金额", justify="right", style="yellow")
 
     # Populate table with high-value opportunities only
-    for display_idx, (_original_idx, opp, max_safe) in enumerate(high_value_opportunities, 1):
+    for display_idx, (_original_idx, opp, max_safe) in enumerate(
+        high_value_opportunities, 1
+    ):
         # Format path: USDT → BTC → ETH → USDT
         path_parts = []
         current = opp.path.start_currency
@@ -714,14 +745,18 @@ def _display_opportunities(
 
     # Display low-value opportunities statistics
     if low_value_count > 0:
-        console.print(f"\n[dim]ℹ️  已过滤 {low_value_count} 条可成交金额 <1 USDT 的套利机会[/dim]")
+        console.print(
+            f"\n[dim]ℹ️  已过滤 {low_value_count} 条可成交金额 <1 USDT 的套利机会[/dim]"
+        )
         logger.info("low_value_opportunities_filtered", count=low_value_count)
 
     # Display detailed breakdown for high-value opportunities only
     console.print()  # Empty line for spacing
 
     # Display detailed breakdown for high-value opportunities only
-    for display_idx, (_original_idx, opp, max_safe_amount) in enumerate(high_value_opportunities, 1):
+    for display_idx, (_original_idx, opp, max_safe_amount) in enumerate(
+        high_value_opportunities, 1
+    ):
         # Calculate step details using safe amount
         steps = _calculate_step_details(opp, tickers or {}, max_safe_amount)
 
@@ -730,7 +765,7 @@ def _display_opportunities(
             title=f"#{display_idx} 交易路径详情",
             show_header=True,
             header_style="bold cyan",
-            expand=False
+            expand=False,
         )
         detail_table.add_column("步骤", justify="center", style="cyan", no_wrap=True)
         detail_table.add_column("操作", justify="center", no_wrap=True)
@@ -748,16 +783,28 @@ def _display_opportunities(
 
             # Format amounts with appropriate precision
             if step["amount_before"] < Decimal("1"):
-                amount_before_str = f"{step['amount_before']:.6f} {step['currency_before']}"
+                amount_before_str = (
+                    f"{step['amount_before']:.6f} {step['currency_before']}"
+                )
             else:
-                amount_before_str = f"{step['amount_before']:.2f} {step['currency_before']}"
+                amount_before_str = (
+                    f"{step['amount_before']:.2f} {step['currency_before']}"
+                )
 
             if step["amount_after"] < Decimal("1"):
-                amount_after_str = f"{step['amount_after']:.6f} {step['currency_after']}"
+                amount_after_str = (
+                    f"{step['amount_after']:.6f} {step['currency_after']}"
+                )
             else:
-                amount_after_str = f"{step['amount_after']:.2f} {step['currency_after']}"
+                amount_after_str = (
+                    f"{step['amount_after']:.2f} {step['currency_after']}"
+                )
 
-            fee_str = f"{step['fee']:.6f}" if step["fee"] < Decimal("1") else f"{step['fee']:.2f}"
+            fee_str = (
+                f"{step['fee']:.6f}"
+                if step["fee"] < Decimal("1")
+                else f"{step['fee']:.2f}"
+            )
 
             # Format liquidity
             liquidity = step.get("available_liquidity", Decimal("0"))
@@ -779,12 +826,16 @@ def _display_opportunities(
                 f"{step['step']}",
                 type_display,
                 step["pair"],
-                f"{step['price']:.6f}" if step["price"] < Decimal("10") else f"{step['price']:.2f}",
+                (
+                    f"{step['price']:.6f}"
+                    if step["price"] < Decimal("10")
+                    else f"{step['price']:.2f}"
+                ),
                 amount_before_str,
                 amount_after_str,
                 fee_str,
                 liquidity_str,
-                usage_str
+                usage_str,
             )
 
         # Add summary row
@@ -813,7 +864,9 @@ def _display_opportunities(
         # Add liquidity analysis summary
         if tickers:
             # Find bottleneck step (highest usage rate)
-            bottleneck_step = max(steps, key=lambda s: s.get("usage_rate", Decimal("0")))
+            bottleneck_step = max(
+                steps, key=lambda s: s.get("usage_rate", Decimal("0"))
+            )
 
             liquidity_summary_lines = []
             liquidity_summary_lines.append("[bold cyan]📊 流动性分析:[/bold cyan]")
@@ -861,9 +914,7 @@ def _display_opportunities(
 
 
 async def _execute_opportunities(
-    opportunities: list,
-    exchange_adapter,
-    dry_run: bool = False
+    opportunities: list, exchange_adapter, dry_run: bool = False
 ) -> None:
     """Execute discovered arbitrage opportunities.
 
@@ -898,7 +949,9 @@ async def _execute_opportunities(
 
         console.print(f"路径: {path_str}")
         console.print(f"预期收益率: {opportunity.expected_profit_rate:.2f}%")
-        console.print(f"建议金额: {opportunity.recommended_amount:.2f} {opportunity.path.start_currency}")
+        console.print(
+            f"建议金额: {opportunity.recommended_amount:.2f} {opportunity.path.start_currency}"
+        )
 
         if dry_run:
             # Simulate execution
@@ -910,7 +963,9 @@ async def _execute_opportunities(
                 _display_execution_result(execution)
             except Exception as e:
                 console.print(f"[red]✗ 执行失败: {e}[/red]")
-                logger.error("Execution failed", opportunity_index=i, error=str(e), exc_info=True)
+                logger.error(
+                    "Execution failed", opportunity_index=i, error=str(e), exc_info=True
+                )
 
         console.print()  # Empty line between executions
 
@@ -951,7 +1006,9 @@ def _display_dry_run_execution(opportunity) -> None:
     console.print(f"\n[yellow]预期结果:[/yellow]")
     console.print(f"  初始: {initial_amount:.2f} {opportunity.path.start_currency}")
     console.print(f"  最终: {current_amount:.2f} {opportunity.path.start_currency}")
-    console.print(f"  利润: {profit:+.2f} {opportunity.path.start_currency} ({profit_rate:+.2f}%)")
+    console.print(
+        f"  利润: {profit:+.2f} {opportunity.path.start_currency} ({profit_rate:+.2f}%)"
+    )
 
 
 def _display_execution_result(execution: ArbitrageExecution) -> None:
@@ -989,7 +1046,10 @@ def _display_execution_result(execution: ArbitrageExecution) -> None:
                 console.print(f"     成交价: {step.filled_price}")
 
     # Display profit/loss
-    if execution.status == ExecutionStatus.COMPLETED and execution.net_profit is not None:
+    if (
+        execution.status == ExecutionStatus.COMPLETED
+        and execution.net_profit is not None
+    ):
         console.print("\n[bold]盈亏结果:[/bold]")
         console.print(f"  初始金额: {execution.initial_amount:.2f} USDT")
         console.print(f"  最终金额: {execution.final_amount:.2f} USDT")

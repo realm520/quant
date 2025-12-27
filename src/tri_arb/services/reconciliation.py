@@ -61,7 +61,9 @@ class BaseReconciliationService(ABC):
         pass
 
     @abstractmethod
-    async def reconcile_orders(self, session: AsyncSession, start_time: datetime, end_time: datetime) -> Dict[str, int]:
+    async def reconcile_orders(
+        self, session: AsyncSession, start_time: datetime, end_time: datetime
+    ) -> Dict[str, int]:
         """对账订单数据.
 
         Args:
@@ -75,7 +77,9 @@ class BaseReconciliationService(ABC):
         pass
 
     @abstractmethod
-    async def reconcile_trades(self, session: AsyncSession, start_time: datetime, end_time: datetime) -> Dict[str, int]:
+    async def reconcile_trades(
+        self, session: AsyncSession, start_time: datetime, end_time: datetime
+    ) -> Dict[str, int]:
         """对账成交数据.
 
         Args:
@@ -91,7 +95,9 @@ class BaseReconciliationService(ABC):
     async def start(self):
         """启动对账服务."""
         if self._running:
-            logger.warning("Reconciliation service already running", exchange=self.exchange_name)
+            logger.warning(
+                "Reconciliation service already running", exchange=self.exchange_name
+            )
             return
 
         self._running = True
@@ -122,7 +128,9 @@ class BaseReconciliationService(ABC):
                 await self._run_reconciliation()
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
-                logger.info("Reconciliation loop cancelled", exchange=self.exchange_name)
+                logger.info(
+                    "Reconciliation loop cancelled", exchange=self.exchange_name
+                )
                 break
             except Exception as e:
                 logger.error(
@@ -145,7 +153,9 @@ class BaseReconciliationService(ABC):
     async def _run_reconciliation(self, lookback_seconds: Optional[int] = None):
         """执行一次对账."""
         end_time = datetime.utcnow()
-        lookback = lookback_seconds if lookback_seconds is not None else self.lookback_window
+        lookback = (
+            lookback_seconds if lookback_seconds is not None else self.lookback_window
+        )
         start_time = end_time - timedelta(seconds=lookback)
 
         logger.debug(

@@ -224,9 +224,7 @@ class BaseExchange(ABC):
         pass
 
     @abstractmethod
-    async def subscribe_ticker(
-        self, trading_pair: TradingPair
-    ) -> AsyncIterator[Price]:
+    async def subscribe_ticker(self, trading_pair: TradingPair) -> AsyncIterator[Price]:
         """Subscribe to real-time ticker updates.
 
         Args:
@@ -438,9 +436,7 @@ class BaseExchange(ABC):
 
         return result
 
-    async def get_orderbook_by_symbol(
-        self, symbol: str, depth: int = 20
-    ) -> OrderBook:
+    async def get_orderbook_by_symbol(self, symbol: str, depth: int = 20) -> OrderBook:
         """Get order book by symbol string.
 
         Convenience method for CLI tools. Converts symbol to TradingPair

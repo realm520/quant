@@ -78,7 +78,7 @@ class XTSpotExchange(BaseExchange):
             name: Exchange identifier (default: "xt")
             api_key: XT API key (optional, required only for trading operations)
             api_secret: XT API secret (optional, required only for trading operations)
-            
+
         Note:
             Public API operations (get_ticker, get_orderbook, get_trading_pair_info)
             work without credentials. Trading operations require valid credentials.
@@ -166,10 +166,10 @@ class XTSpotExchange(BaseExchange):
 
     def _require_credentials(self) -> None:
         """Check if API credentials are available.
-        
+
         Raises:
             ValueError: If API key or secret is missing
-            
+
         Note:
             This method should be called at the start of all trading operations
             (place_order, cancel_order, get_order_status, get_trade_history).
@@ -180,7 +180,9 @@ class XTSpotExchange(BaseExchange):
                 "Please set XT_API_KEY and XT_API_SECRET environment variables."
             )
 
-    async def get_ticker(self, trading_pair: TradingPair | None = None) -> Price | list[Price]:
+    async def get_ticker(
+        self, trading_pair: TradingPair | None = None
+    ) -> Price | list[Price]:
         """Get current ticker price for a trading pair or all markets.
 
         Args:
@@ -209,7 +211,9 @@ class XTSpotExchange(BaseExchange):
 
             # Result should be a list of tickers for batch query
             if not isinstance(result_raw, list):
-                raise ValueError(f"Expected list result for batch query, got {type(result_raw)}")
+                raise ValueError(
+                    f"Expected list result for batch query, got {type(result_raw)}"
+                )
 
             # Parse each ticker to Price object
             prices: list[Price] = []
@@ -274,7 +278,9 @@ class XTSpotExchange(BaseExchange):
         # Use helper method to parse ticker data to Price object
         return self._parse_ticker_to_price(result, trading_pair)
 
-    async def get_orderbook(self, trading_pair: TradingPair, depth: int = 20) -> OrderBook:
+    async def get_orderbook(
+        self, trading_pair: TradingPair, depth: int = 20
+    ) -> OrderBook:
         """Get order book for a trading pair.
 
         Args:
@@ -332,7 +338,7 @@ class XTSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         self._require_credentials()  # Check credentials before trading
-        
+
         symbol = self._to_xt_symbol(order.trading_pair)
 
         # Build request body for XT API
@@ -364,7 +370,9 @@ class XTSpotExchange(BaseExchange):
 
         # Ensure result is a dict (some endpoints return lists)
         if not isinstance(result, dict):
-            raise ValueError(f"Expected dict result for order placement, got {type(result)}")
+            raise ValueError(
+                f"Expected dict result for order placement, got {type(result)}"
+            )
 
         # Update order with exchange order ID and status
         order.exchange_order_id = str(result.get("orderId"))
@@ -403,7 +411,7 @@ class XTSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         self._require_credentials()  # Check credentials before trading
-        
+
         # XT API DELETE uses query parameters (similar to GET), not body
         params = {
             "orderId": order_id,
@@ -454,7 +462,7 @@ class XTSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails or order not found
         """
         self._require_credentials()  # Check credentials before querying orders
-        
+
         response = await self._request(
             method="GET",
             path=f"/{self.API_VERSION}/order",
@@ -467,7 +475,9 @@ class XTSpotExchange(BaseExchange):
 
         # Ensure result is a dict
         if not isinstance(result, dict):
-            raise ValueError(f"Expected dict result for order status, got {type(result)}")
+            raise ValueError(
+                f"Expected dict result for order status, got {type(result)}"
+            )
 
         # Parse XT symbol to trading pair
         symbol = result.get("symbol", "")
@@ -512,7 +522,9 @@ class XTSpotExchange(BaseExchange):
             trading_pair=trading_pair,
             side=side,
             order_type=order_type,
-            price=Decimal(str(result.get("price", "0"))) if result.get("price") else None,
+            price=(
+                Decimal(str(result.get("price", "0"))) if result.get("price") else None
+            ),
             quantity=Decimal(str(result.get("origQty", "0"))),
             status=status,
             created_at=datetime.fromtimestamp(
@@ -523,7 +535,9 @@ class XTSpotExchange(BaseExchange):
             exchange="xt",
         )
 
-    async def get_trade_history(self, trading_pair: TradingPair, limit: int = 100) -> list[Trade]:
+    async def get_trade_history(
+        self, trading_pair: TradingPair, limit: int = 100
+    ) -> list[Trade]:
         """Get recent trade history for a trading pair.
 
         Args:
@@ -538,7 +552,7 @@ class XTSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         self._require_credentials()  # Check credentials before querying trade history
-        
+
         symbol = self._to_xt_symbol(trading_pair)
 
         response = await self._request(
@@ -629,7 +643,7 @@ class XTSpotExchange(BaseExchange):
             "Raw balance API response",
             response_type=type(data).__name__,
             is_list=isinstance(data, list),
-            sample_data=str(data)[:500] if data else "empty"
+            sample_data=str(data)[:500] if data else "empty",
         )
 
         # Handle two possible response formats:
@@ -642,7 +656,9 @@ class XTSpotExchange(BaseExchange):
         else:
             # Standard XT response with rc/result wrapper
             result = self._check_response(data)
-            logger.info("Using standard XT response format", result_type=type(result).__name__)
+            logger.info(
+                "Using standard XT response format", result_type=type(result).__name__
+            )
 
         # Parse balance data
         balances: dict[str, dict[str, Any]] = {}
@@ -674,7 +690,7 @@ class XTSpotExchange(BaseExchange):
                 available=str(available),
                 frozen=str(frozen),
                 total=str(total),
-                will_include=total > 0
+                will_include=total > 0,
             )
 
             # Only include non-zero balances
@@ -685,7 +701,11 @@ class XTSpotExchange(BaseExchange):
                     "total": total,
                 }
 
-        logger.info("Account balance retrieved", currency_count=len(balances), currencies=list(balances.keys()))
+        logger.info(
+            "Account balance retrieved",
+            currency_count=len(balances),
+            currencies=list(balances.keys()),
+        )
         return balances
 
     async def subscribe_ticker(  # type: ignore[override, misc]
@@ -801,10 +821,12 @@ class XTSpotExchange(BaseExchange):
             if isinstance(result, dict):
                 # Extract symbols array from dict
                 result = result.get("symbols", [])
-            
+
             # Result should be a list for batch query
             if not isinstance(result, list):
-                raise ValueError(f"Expected list result for batch query, got {type(result)}")
+                raise ValueError(
+                    f"Expected list result for batch query, got {type(result)}"
+                )
 
             # Parse each symbol info to TradingPair
             trading_pairs: list[TradingPair] = []
@@ -957,9 +979,11 @@ class XTSpotExchange(BaseExchange):
         # Handle XT API response format: may return dict with 'symbols' key or direct list
         if isinstance(result, dict):
             result = result.get("symbols", [])
-        
+
         if not isinstance(result, list):
-            raise ValueError(f"Expected list result for batch query, got {type(result)}")
+            raise ValueError(
+                f"Expected list result for batch query, got {type(result)}"
+            )
 
         # Parse and cache each trading pair
         cached_count = 0
@@ -1030,7 +1054,9 @@ class XTSpotExchange(BaseExchange):
             error_code = data.get("mc", "UNKNOWN")
             error_messages = data.get("ma", [])
             error_detail = (
-                ", ".join(str(msg) for msg in error_messages) if error_messages else "No details"
+                ", ".join(str(msg) for msg in error_messages)
+                if error_messages
+                else "No details"
             )
             raise ValueError(f"XT API error [rc={rc}]: {error_code} - {error_detail}")
 
@@ -1081,7 +1107,9 @@ class XTSpotExchange(BaseExchange):
             query_string = self._build_sorted_query(params or {})
             # Serialize JSON with default format (with spaces) to match xt_spot_api.py
             body_string = json.dumps(json_data) if json_data else ""
-            headers, _ = self._generate_signature(method, path, query_string, body_string)
+            headers, _ = self._generate_signature(
+                method, path, query_string, body_string
+            )
 
         try:
             # For POST/DELETE authenticated requests, use content= to ensure
@@ -1093,7 +1121,9 @@ class XTSpotExchange(BaseExchange):
                     path=path,
                     content_length=len(body_string),
                     content_bytes_length=len(body_string.encode("utf-8")),
-                    body_preview=body_string[:200] if len(body_string) > 200 else body_string,
+                    body_preview=(
+                        body_string[:200] if len(body_string) > 200 else body_string
+                    ),
                     headers_keys=list(headers.keys()),
                     all_headers=headers,
                 )
@@ -1312,23 +1342,33 @@ class XTSpotExchange(BaseExchange):
         filters = symbol_data.get("filters", [])
 
         # Parse PRICE_FILTER
-        price_filter = next((f for f in filters if f.get("filter") == "PRICE_FILTER"), None)
+        price_filter = next(
+            (f for f in filters if f.get("filter") == "PRICE_FILTER"), None
+        )
         price_min = None
         price_max = None
         price_step = None
         if price_filter:
             price_min = (
-                Decimal(str(price_filter["minPrice"])) if price_filter.get("minPrice") else None
+                Decimal(str(price_filter["minPrice"]))
+                if price_filter.get("minPrice")
+                else None
             )
             price_max = (
-                Decimal(str(price_filter["maxPrice"])) if price_filter.get("maxPrice") else None
+                Decimal(str(price_filter["maxPrice"]))
+                if price_filter.get("maxPrice")
+                else None
             )
             price_step = (
-                Decimal(str(price_filter["tickSize"])) if price_filter.get("tickSize") else None
+                Decimal(str(price_filter["tickSize"]))
+                if price_filter.get("tickSize")
+                else None
             )
 
         # Parse LOT_SIZE filter
-        lot_size_filter = next((f for f in filters if f.get("filter") == "LOT_SIZE"), None)
+        lot_size_filter = next(
+            (f for f in filters if f.get("filter") == "LOT_SIZE"), None
+        )
         quantity_min = None
         quantity_max = None
         quantity_step = None
@@ -1337,10 +1377,14 @@ class XTSpotExchange(BaseExchange):
 
         if lot_size_filter:
             quantity_min = (
-                Decimal(str(lot_size_filter["minQty"])) if lot_size_filter.get("minQty") else None
+                Decimal(str(lot_size_filter["minQty"]))
+                if lot_size_filter.get("minQty")
+                else None
             )
             quantity_max = (
-                Decimal(str(lot_size_filter["maxQty"])) if lot_size_filter.get("maxQty") else None
+                Decimal(str(lot_size_filter["maxQty"]))
+                if lot_size_filter.get("maxQty")
+                else None
             )
             quantity_step = (
                 Decimal(str(lot_size_filter["stepSize"]))
@@ -1355,7 +1399,9 @@ class XTSpotExchange(BaseExchange):
                 max_order_size = quantity_max
 
         # Parse MIN_NOTIONAL filter
-        min_notional_filter = next((f for f in filters if f.get("filter") == "MIN_NOTIONAL"), None)
+        min_notional_filter = next(
+            (f for f in filters if f.get("filter") == "MIN_NOTIONAL"), None
+        )
         min_notional = None
         if min_notional_filter:
             min_notional = (

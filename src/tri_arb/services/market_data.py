@@ -91,9 +91,7 @@ class MarketDataService:
         logger.debug("Returning None (placeholder)", operation="get_orderbook")
         return None
 
-    async def get_aggregated_price(
-        self, trading_pair: TradingPair
-    ) -> Optional[Price]:
+    async def get_aggregated_price(self, trading_pair: TradingPair) -> Optional[Price]:
         """Get aggregated price across all exchanges.
 
         Args:
@@ -140,7 +138,9 @@ class MarketDataService:
         )
 
         # Placeholder: Return empty list
-        logger.debug("Returning empty list (placeholder)", operation="get_recent_trades")
+        logger.debug(
+            "Returning empty list (placeholder)", operation="get_recent_trades"
+        )
         return []
 
     async def subscribe_prices(

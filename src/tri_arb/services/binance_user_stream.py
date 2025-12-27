@@ -39,11 +39,11 @@ console = Console()
 
 class BinanceUserStreamService:
     """Binance用户数据流订阅服务.
-    
+
     订阅Binance WebSocket用户数据流，接收账户更新、订单更新和成交信息。
     将接收到的数据存储到PostgreSQL数据库。
     """
-    
+
     def __init__(
         self,
         api_key: str,
@@ -100,35 +100,35 @@ class BinanceUserStreamService:
             enabled_channels=list(self.enabled_channels),
             reconciliation_mode="on_reconnect",
         )
-    
+
     async def get_listen_key(self) -> str:
         """获取ListenKey用于WebSocket连接.
-        
+
         Returns:
             ListenKey字符串
         """
         await self.exchange.connect()
-        
+
         response = await self.exchange._request(
             method="POST",
             path="/fapi/v1/listenKey",
             authenticated=True,
         )
-        
+
         data = response.json()
         listen_key = data.get("listenKey")
-        
+
         if not listen_key:
             raise ValueError("Failed to get listen key from Binance")
-        
+
         logger.info("Listen key obtained", listen_key_prefix=listen_key[:8])
         return listen_key
-    
+
     async def keepalive_listen_key(self, listen_key: str):
         """保持ListenKey有效.
-        
+
         ListenKey每60分钟过期，需要定期发送keepalive请求。
-        
+
         Args:
             listen_key: 要保持活跃的ListenKey
         """
@@ -137,12 +137,12 @@ class BinanceUserStreamService:
             path="/fapi/v1/listenKey",
             authenticated=True,
         )
-        
+
         if response.status_code == 200:
             logger.debug("Listen key keepalive sent", listen_key_prefix=listen_key[:8])
         else:
             logger.warning("Listen key keepalive failed", status=response.status_code)
-    
+
     async def close_listen_key(self, listen_key: str):
         """关闭ListenKey.
 
@@ -167,7 +167,9 @@ class BinanceUserStreamService:
         """
         async with self.db_manager.session() as session:
             result = await session.execute(
-                select(ConnectionStatus).where(ConnectionStatus.exchange == "binance_perp")
+                select(ConnectionStatus).where(
+                    ConnectionStatus.exchange == "binance_perp"
+                )
             )
             status = result.scalar_one_or_none()
 
@@ -208,7 +210,9 @@ class BinanceUserStreamService:
         """
         async with self.db_manager.session() as session:
             result = await session.execute(
-                select(ConnectionStatus).where(ConnectionStatus.exchange == "binance_perp")
+                select(ConnectionStatus).where(
+                    ConnectionStatus.exchange == "binance_perp"
+                )
             )
             status = result.scalar_one_or_none()
 
@@ -227,9 +231,15 @@ class BinanceUserStreamService:
                         last_disconnected_at=status.last_disconnected_at,
                     )
                     if status.last_disconnected_at:
-                        gap_seconds = int((datetime.now() - status.last_disconnected_at).total_seconds())
+                        gap_seconds = int(
+                            (
+                                datetime.now() - status.last_disconnected_at
+                            ).total_seconds()
+                        )
                         status.last_data_gap_seconds = gap_seconds
-                        status.total_reconnect_count = (status.total_reconnect_count or 0) + 1
+                        status.total_reconnect_count = (
+                            status.total_reconnect_count or 0
+                        ) + 1
                         logger.info(
                             "Reconnected after disconnection",
                             gap_seconds=gap_seconds,
@@ -278,11 +288,13 @@ class BinanceUserStreamService:
 
         # 显示数据恢复开始信息
         if self.display_format != "none":
-            console.print(Panel(
-                "[yellow]⏳ 正在启动数据恢复流程...[/yellow]",
-                title="[bold cyan]📦 数据恢复[/bold cyan]",
-                border_style="cyan"
-            ))
+            console.print(
+                Panel(
+                    "[yellow]⏳ 正在启动数据恢复流程...[/yellow]",
+                    title="[bold cyan]📦 数据恢复[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
 
         # 确保 exchange 已连接（数据恢复需要调用 API）
         if not self.exchange.is_connected:
@@ -313,9 +325,15 @@ class BinanceUserStreamService:
 
         # 显示断线时间信息
         if self.display_format != "none":
-            console.print(f"[cyan]断线开始: {start_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
-            console.print(f"[cyan]恢复时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
-            console.print(f"[yellow]断线时长: {gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)[/yellow]\n")
+            console.print(
+                f"[cyan]断线开始: {start_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]"
+            )
+            console.print(
+                f"[cyan]恢复时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]"
+            )
+            console.print(
+                f"[yellow]断线时长: {gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)[/yellow]\n"
+            )
 
         # 如果没有指定交易对，从数据库中获取最近活跃的交易对
         if symbols is None:
@@ -389,7 +407,9 @@ class BinanceUserStreamService:
                         recovered_trades += 1
 
             except Exception as e:
-                logger.error(f"Failed to query data for {symbol}", error=str(e), exc_info=True)
+                logger.error(
+                    f"Failed to query data for {symbol}", error=str(e), exc_info=True
+                )
                 continue
 
         # 计算去重统计
@@ -411,14 +431,15 @@ class BinanceUserStreamService:
         # 显示数据恢复汇总表格
         if self.display_format != "none":
             console.print()  # 空行
-            table = Table(title="📊 数据恢复汇总", box=box.ROUNDED, border_style="green")
+            table = Table(
+                title="📊 数据恢复汇总", box=box.ROUNDED, border_style="green"
+            )
             table.add_column("项目", style="cyan", justify="left", width=20)
             table.add_column("数量", style="white", justify="right", width=15)
 
             # 断线时长
             table.add_row(
-                "断线时长",
-                f"{gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)"
+                "断线时长", f"{gap_seconds} 秒 ({round(gap_seconds / 60, 2)} 分钟)"
             )
 
             # 订单统计
@@ -434,10 +455,12 @@ class BinanceUserStreamService:
             table.add_row("重复成交(跳过)", f"[red]{duplicate_trades}[/red]")
 
             console.print(table)
-            console.print(Panel(
-                "[green]✅ 数据恢复完成！所有丢失的订单和成交已恢复。[/green]",
-                border_style="green"
-            ))
+            console.print(
+                Panel(
+                    "[green]✅ 数据恢复完成！所有丢失的订单和成交已恢复。[/green]",
+                    border_style="green",
+                )
+            )
 
     async def _get_active_symbols(self) -> list[str]:
         """从数据库中获取最近活跃的交易对.
@@ -479,7 +502,9 @@ class BinanceUserStreamService:
                 )
             else:
                 # 如果24小时内没有数据，尝试扩展到7天
-                logger.info("No symbols found in last 24 hours, extending search to 7 days")
+                logger.info(
+                    "No symbols found in last 24 hours, extending search to 7 days"
+                )
                 cutoff_time = datetime.now() - timedelta(days=7)
 
                 # 从订单表获取
@@ -554,7 +579,9 @@ class BinanceUserStreamService:
                     order_status=order_data.get("status"),
                     order_id=order_id,
                     last_filled_quantity=Decimal("0"),
-                    cumulative_filled_quantity=Decimal(str(order_data.get("executedQty", "0"))),
+                    cumulative_filled_quantity=Decimal(
+                        str(order_data.get("executedQty", "0"))
+                    ),
                     last_filled_price=Decimal("0"),
                     commission_amount=Decimal("0"),
                     commission_asset=None,
@@ -585,7 +612,7 @@ class BinanceUserStreamService:
                         "FILLED": "green",
                         "CANCELED": "red",
                         "REJECTED": "red",
-                        "EXPIRED": "red"
+                        "EXPIRED": "red",
                     }
                     status_color = status_colors.get(status, "white")
                     side_color = "green" if side == "BUY" else "red"
@@ -690,103 +717,123 @@ class BinanceUserStreamService:
 
     def display_account_update(self, event: dict):
         """显示账户更新信息.
-        
+
         Args:
             event: 账户更新事件数据
         """
         if self.display_format == "none":
             return
-        
+
         if self.display_format == "json":
-            console.print(Panel(
-                json.dumps(event, indent=2, ensure_ascii=False),
-                title="[cyan]账户更新 (ACCOUNT_UPDATE)[/cyan]",
-                border_style="cyan"
-            ))
+            console.print(
+                Panel(
+                    json.dumps(event, indent=2, ensure_ascii=False),
+                    title="[cyan]账户更新 (ACCOUNT_UPDATE)[/cyan]",
+                    border_style="cyan",
+                )
+            )
             return
-        
+
         # 表格显示
         event_time = datetime.fromtimestamp(event.get("E", 0) / 1000)
-        
+
         # 余额更新表格
         if "a" in event and "B" in event["a"] and event["a"]["B"]:
-            table = Table(title=f"💰 账户余额更新 - {event_time.strftime('%H:%M:%S')}", box=box.ROUNDED)
+            table = Table(
+                title=f"💰 账户余额更新 - {event_time.strftime('%H:%M:%S')}",
+                box=box.ROUNDED,
+            )
             table.add_column("资产", style="cyan", justify="center")
             table.add_column("钱包余额", style="green", justify="right")
             table.add_column("可用余额", style="yellow", justify="right")
             table.add_column("余额变化", style="magenta", justify="right")
-            
+
             for balance in event["a"]["B"]:
                 wallet_bal = float(balance.get("wb", 0))
                 cross_bal = float(balance.get("cw", 0))
                 change = float(balance.get("bc", 0))
-                
+
                 change_str = f"+{change:.4f}" if change > 0 else f"{change:.4f}"
-                change_style = "green" if change > 0 else "red" if change < 0 else "white"
-                
+                change_style = (
+                    "green" if change > 0 else "red" if change < 0 else "white"
+                )
+
                 table.add_row(
                     balance.get("a", ""),
                     f"{wallet_bal:.4f}",
                     f"{cross_bal:.4f}",
-                    f"[{change_style}]{change_str}[/{change_style}]"
+                    f"[{change_style}]{change_str}[/{change_style}]",
                 )
-            
+
             console.print(table)
-        
+
         # 持仓更新表格
         if "a" in event and "P" in event["a"] and event["a"]["P"]:
-            table = Table(title=f"📊 持仓更新 - {event_time.strftime('%H:%M:%S')}", box=box.ROUNDED)
+            table = Table(
+                title=f"📊 持仓更新 - {event_time.strftime('%H:%M:%S')}",
+                box=box.ROUNDED,
+            )
             table.add_column("交易对", style="cyan", justify="center")
             table.add_column("方向", style="yellow", justify="center")
             table.add_column("持仓量", style="white", justify="right")
             table.add_column("开仓均价", style="white", justify="right")
             table.add_column("未实现盈亏", style="white", justify="right")
-            
+
             for position in event["a"]["P"]:
                 pos_amt = float(position.get("pa", 0))
                 if pos_amt == 0:
                     continue  # 跳过零持仓
-                
+
                 symbol = position.get("s", "")
                 pos_side = position.get("ps", "")
                 entry_price = float(position.get("ep", 0))
                 unrealized_pnl = float(position.get("up", 0))
-                
-                pnl_str = f"+{unrealized_pnl:.4f}" if unrealized_pnl > 0 else f"{unrealized_pnl:.4f}"
-                pnl_style = "green" if unrealized_pnl > 0 else "red" if unrealized_pnl < 0 else "white"
-                
+
+                pnl_str = (
+                    f"+{unrealized_pnl:.4f}"
+                    if unrealized_pnl > 0
+                    else f"{unrealized_pnl:.4f}"
+                )
+                pnl_style = (
+                    "green"
+                    if unrealized_pnl > 0
+                    else "red" if unrealized_pnl < 0 else "white"
+                )
+
                 table.add_row(
                     symbol,
                     pos_side,
                     f"{pos_amt:.8f}",
                     f"{entry_price:.4f}",
-                    f"[{pnl_style}]{pnl_str}[/{pnl_style}]"
+                    f"[{pnl_style}]{pnl_str}[/{pnl_style}]",
                 )
-            
+
             if table.row_count > 0:
                 console.print(table)
-    
+
     def display_order_update(self, event: dict):
         """显示订单更新信息.
-        
+
         Args:
             event: 订单更新事件数据
         """
         if self.display_format == "none":
             return
-        
+
         if self.display_format == "json":
-            console.print(Panel(
-                json.dumps(event, indent=2, ensure_ascii=False),
-                title="[yellow]订单更新 (ORDER_TRADE_UPDATE)[/yellow]",
-                border_style="yellow"
-            ))
+            console.print(
+                Panel(
+                    json.dumps(event, indent=2, ensure_ascii=False),
+                    title="[yellow]订单更新 (ORDER_TRADE_UPDATE)[/yellow]",
+                    border_style="yellow",
+                )
+            )
             return
-        
+
         # 表格显示
         event_time = datetime.fromtimestamp(event.get("E", 0) / 1000)
         order = event.get("o", {})
-        
+
         # 订单状态颜色
         status = order.get("X", "")
         status_colors = {
@@ -795,56 +842,68 @@ class BinanceUserStreamService:
             "FILLED": "green",
             "CANCELED": "red",
             "REJECTED": "red",
-            "EXPIRED": "red"
+            "EXPIRED": "red",
         }
         status_color = status_colors.get(status, "white")
-        
-        table = Table(title=f"📝 订单更新 - {event_time.strftime('%H:%M:%S')}", box=box.ROUNDED)
+
+        table = Table(
+            title=f"📝 订单更新 - {event_time.strftime('%H:%M:%S')}", box=box.ROUNDED
+        )
         table.add_column("字段", style="cyan", justify="left")
         table.add_column("值", style="white", justify="left")
-        
+
         # 订单基本信息
         table.add_row("交易对", order.get("s", ""))
         table.add_row("订单ID", str(order.get("i", "")))
         table.add_row("客户订单ID", order.get("c", ""))
         table.add_row("状态", f"[{status_color}]{status}[/{status_color}]")
-        
+
         # 订单详情
         side = order.get("S", "")
         side_color = "green" if side == "BUY" else "red"
         table.add_row("方向", f"[{side_color}]{side}[/{side_color}]")
         table.add_row("类型", order.get("o", ""))
-        
+
         # 持仓方向（多空）- 高亮显示
         position_side = order.get("ps", "NET")
-        position_color = "bright_green" if position_side == "LONG" else "bright_red" if position_side == "SHORT" else "white"
-        table.add_row("持仓方向（多空）", f"[{position_color}]{position_side}[/{position_color}]")
-        
+        position_color = (
+            "bright_green"
+            if position_side == "LONG"
+            else "bright_red" if position_side == "SHORT" else "white"
+        )
+        table.add_row(
+            "持仓方向（多空）", f"[{position_color}]{position_side}[/{position_color}]"
+        )
+
         # 价格和数量
         table.add_row("价格", f"{float(order.get('p', 0)):.4f}")
         table.add_row("数量", f"{float(order.get('q', 0)):.8f}")
         table.add_row("已成交", f"{float(order.get('z', 0)):.8f}")
-        
+
         # 成交信息
         if float(order.get("l", 0)) > 0:
             table.add_row("最后成交量", f"{float(order.get('l', 0)):.8f}")
             table.add_row("最后成交价", f"{float(order.get('L', 0)):.4f}")
-        
+
         # 平均价格
         if float(order.get("ap", 0)) > 0:
             table.add_row("平均成交价", f"{float(order.get('ap', 0)):.4f}")
-        
+
         # 手续费
         if float(order.get("n", 0)) > 0:
-            table.add_row("手续费", f"{float(order.get('n', 0)):.8f} {order.get('N', '')}")
-        
+            table.add_row(
+                "手续费", f"{float(order.get('n', 0)):.8f} {order.get('N', '')}"
+            )
+
         console.print(table)
-        
+
         # 如果有成交，额外显示成交信息
         if status in ["PARTIALLY_FILLED", "FILLED"] and float(order.get("l", 0)) > 0:
             trade_value = float(order.get("l", 0)) * float(order.get("L", 0))
-            console.print(f"[green]✅ 成交: {float(order.get('l', 0)):.8f} @ {float(order.get('L', 0)):.4f} = {trade_value:.4f} USDT[/green]")
-    
+            console.print(
+                f"[green]✅ 成交: {float(order.get('l', 0)):.8f} @ {float(order.get('L', 0)):.4f} = {trade_value:.4f} USDT[/green]"
+            )
+
     async def handle_account_update(self, event: dict):
         """处理账户更新事件.
 
@@ -860,7 +919,7 @@ class BinanceUserStreamService:
 
             # 更新最后消息时间
             self.last_message_time = event_time
-            
+
             account_id = self.account_id or None
 
             # 处理余额更新
@@ -880,9 +939,11 @@ class BinanceUserStreamService:
                             raw_data=json.dumps(event),
                         )
                         session.add(update)
-                
-                logger.info("Account balance update saved", assets_count=len(event["a"]["B"]))
-            
+
+                logger.info(
+                    "Account balance update saved", assets_count=len(event["a"]["B"])
+                )
+
             # 处理持仓更新
             if "a" in event and "P" in event["a"]:
                 for position in event["a"]["P"]:
@@ -901,8 +962,10 @@ class BinanceUserStreamService:
                             raw_data=json.dumps(event),
                         )
                         session.add(update)
-                
-                logger.info("Position update saved", positions_count=len(event["a"]["P"]))
+
+                logger.info(
+                    "Position update saved", positions_count=len(event["a"]["P"])
+                )
 
             # 更新连接状态时间戳
             await self.update_connection_status(
@@ -912,7 +975,7 @@ class BinanceUserStreamService:
 
         except Exception as e:
             logger.error("Failed to handle account update", error=str(e))
-    
+
     async def handle_order_update(self, event: dict):
         """处理订单更新事件.
 
@@ -993,7 +1056,8 @@ class BinanceUserStreamService:
                             side=order.get("S"),
                             price=Decimal(order.get("L", "0")),  # 最后成交价
                             quantity=Decimal(order.get("l", "0")),  # 最后成交量
-                            quote_quantity=Decimal(order.get("L", "0")) * Decimal(order.get("l", "0")),
+                            quote_quantity=Decimal(order.get("L", "0"))
+                            * Decimal(order.get("l", "0")),
                             commission=Decimal(order.get("n", "0")),
                             commission_asset=order.get("N"),
                             is_maker=order.get("m", False),
@@ -1011,7 +1075,7 @@ class BinanceUserStreamService:
                         quantity=order.get("l"),
                         price=order.get("L"),
                     )
-                    
+
                     # 更新成交的 Prometheus metrics
                     try:
                         account_id = self.account_id or "default"
@@ -1029,11 +1093,18 @@ class BinanceUserStreamService:
                                 "positionSide": order.get("ps"),
                             },
                         )
-                        logger.debug(f"成功更新成交 metrics (account_id={account_id}, trade_id={trade_id})")
+                        logger.debug(
+                            f"成功更新成交 metrics (account_id={account_id}, trade_id={trade_id})"
+                        )
                     except Exception as metric_error:
-                        logger.error(f"Failed to update trade metrics: {metric_error}", exc_info=True)
+                        logger.error(
+                            f"Failed to update trade metrics: {metric_error}",
+                            exc_info=True,
+                        )
                 except IntegrityError:
-                    logger.debug(f"Trade duplicate detected (trade_id={trade_id}), skipping")
+                    logger.debug(
+                        f"Trade duplicate detected (trade_id={trade_id}), skipping"
+                    )
 
             # 更新订单的 Prometheus metrics
             # 订阅服务使用端口 9601
@@ -1051,30 +1122,34 @@ class BinanceUserStreamService:
                 is_connected=True,
                 order_event_time=event_time,
                 order_id=int(order.get("i", 0)),
-                trade_event_time=event_time if order.get("l") and Decimal(order.get("l", "0")) > 0 else None,
+                trade_event_time=(
+                    event_time
+                    if order.get("l") and Decimal(order.get("l", "0")) > 0
+                    else None
+                ),
                 trade_id=int(order.get("t", 0)) if order.get("t") else None,
             )
 
         except Exception as e:
             logger.error("Failed to handle order update", error=str(e))
-    
+
     async def process_message(self, message: str):
         """处理WebSocket消息.
-        
+
         Args:
             message: WebSocket接收到的消息
         """
         try:
             data = json.loads(message)
             event_type = data.get("e")
-            
+
             if event_type == "ACCOUNT_UPDATE":
                 # 检查是否启用了account频道
                 if "account" in self.enabled_channels:
                     await self.handle_account_update(data)
                 else:
                     logger.debug("Account update received but channel disabled")
-                    
+
             elif event_type == "ORDER_TRADE_UPDATE":
                 # 检查是否启用了order频道
                 if "order" in self.enabled_channels:
@@ -1083,12 +1158,14 @@ class BinanceUserStreamService:
                     logger.debug("Order update received but channel disabled")
             else:
                 logger.debug("Received unknown event type", event_type=event_type)
-                
+
         except json.JSONDecodeError as e:
-            logger.error("Failed to decode message", error=str(e), message=message[:200])
+            logger.error(
+                "Failed to decode message", error=str(e), message=message[:200]
+            )
         except Exception as e:
             logger.error("Failed to process message", error=str(e))
-    
+
     async def keepalive_task(self):
         """定期发送keepalive保持ListenKey有效."""
         while self.is_running:
@@ -1098,8 +1175,10 @@ class BinanceUserStreamService:
                     await self.keepalive_listen_key(self.listen_key)
             except Exception as e:
                 logger.error("Keepalive task error", error=str(e))
-    
-    async def _check_needs_recovery(self, status: ConnectionStatus) -> tuple[bool, str, datetime | None]:
+
+    async def _check_needs_recovery(
+        self, status: ConnectionStatus
+    ) -> tuple[bool, str, datetime | None]:
         """检查是否需要数据恢复.
 
         Args:
@@ -1113,15 +1192,29 @@ class BinanceUserStreamService:
 
         # 检查是否需要恢复
         if not status.is_connected:
-            return True, "connection status shows disconnected", status.last_disconnected_at
+            return (
+                True,
+                "connection status shows disconnected",
+                status.last_disconnected_at,
+            )
         elif status.last_connected_at is None:
-            return True, "never connected but has disconnection record", status.last_disconnected_at
+            return (
+                True,
+                "never connected but has disconnection record",
+                status.last_disconnected_at,
+            )
         elif status.last_disconnected_at > status.last_connected_at:
-            return True, "disconnection time is later than last connection time", status.last_disconnected_at
+            return (
+                True,
+                "disconnection time is later than last connection time",
+                status.last_disconnected_at,
+            )
 
         return False, "", None
 
-    async def _recover_data_with_retry(self, max_retries: int = 3, retry_delay: int = 2):
+    async def _recover_data_with_retry(
+        self, max_retries: int = 3, retry_delay: int = 2
+    ):
         """带重试机制的数据恢复.
 
         Args:
@@ -1191,7 +1284,9 @@ class BinanceUserStreamService:
 
                 # 如果是重连（有断线时间记录），则触发对账
                 if self.disconnect_time is not None:
-                    disconnect_duration = int((datetime.now() - self.disconnect_time).total_seconds())
+                    disconnect_duration = int(
+                        (datetime.now() - self.disconnect_time).total_seconds()
+                    )
                     logger.info(
                         "Reconnected after disconnection, triggering reconciliation",
                         disconnect_duration=disconnect_duration,
@@ -1200,8 +1295,13 @@ class BinanceUserStreamService:
                     try:
                         # 回溯时间为断线时长 + 额外缓冲时间（300秒）
                         lookback = max(disconnect_duration + 300, 600)  # 至少回溯10分钟
-                        await self.reconciliation_service.reconcile_once(lookback_seconds=lookback)
-                        logger.info("Reconnection reconciliation completed", lookback_seconds=lookback)
+                        await self.reconciliation_service.reconcile_once(
+                            lookback_seconds=lookback
+                        )
+                        logger.info(
+                            "Reconnection reconciliation completed",
+                            lookback_seconds=lookback,
+                        )
                     except Exception as e:
                         logger.error(
                             "Reconnection reconciliation failed",
@@ -1253,7 +1353,7 @@ class BinanceUserStreamService:
             if self.listen_key:
                 await self.close_listen_key(self.listen_key)
             await self.exchange.disconnect()
-    
+
     async def stop(self):
         """停止用户数据流订阅."""
         self.is_running = False
@@ -1263,4 +1363,3 @@ class BinanceUserStreamService:
         if self.websocket:
             await self.websocket.close()
         logger.info("User data stream stopped")
-

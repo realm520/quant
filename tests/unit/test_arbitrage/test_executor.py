@@ -94,7 +94,9 @@ def sample_opportunity():
 
 
 @pytest.mark.asyncio
-async def test_execute_opportunity_success(mock_exchange, execution_config, sample_opportunity):
+async def test_execute_opportunity_success(
+    mock_exchange, execution_config, sample_opportunity
+):
     """Test successful arbitrage execution."""
     executor = ArbitrageExecutor(exchange=mock_exchange, config=execution_config)
 
@@ -148,8 +150,11 @@ async def test_execute_opportunity_below_minimum(mock_exchange, execution_config
 
 
 @pytest.mark.asyncio
-async def test_execute_opportunity_order_timeout(mock_exchange, execution_config, sample_opportunity):
+async def test_execute_opportunity_order_timeout(
+    mock_exchange, execution_config, sample_opportunity
+):
     """Test execution fails when order times out."""
+
     # Mock get_order_status to never return FILLED status
     async def mock_timeout_status(order_id: str) -> Order:
         order = Order(
@@ -191,8 +196,11 @@ async def test_execute_opportunity_order_timeout(mock_exchange, execution_config
 
 
 @pytest.mark.asyncio
-async def test_execute_opportunity_order_rejected(mock_exchange, execution_config, sample_opportunity):
+async def test_execute_opportunity_order_rejected(
+    mock_exchange, execution_config, sample_opportunity
+):
     """Test execution fails when order is rejected."""
+
     # Mock get_order_status to return REJECTED
     async def mock_rejected_status(order_id: str) -> Order:
         order = Order(
@@ -227,7 +235,9 @@ async def test_execute_opportunity_order_rejected(mock_exchange, execution_confi
 
 
 @pytest.mark.asyncio
-async def test_execute_opportunity_partial_execution(mock_exchange, execution_config, sample_opportunity):
+async def test_execute_opportunity_partial_execution(
+    mock_exchange, execution_config, sample_opportunity
+):
     """Test execution handles partial completion correctly."""
     # Mock first order succeeds, second order fails
     order_count = 0
@@ -275,7 +285,9 @@ async def test_execute_opportunity_partial_execution(mock_exchange, execution_co
 
 
 @pytest.mark.asyncio
-async def test_create_order_with_correct_parameters(mock_exchange, execution_config, sample_opportunity):
+async def test_create_order_with_correct_parameters(
+    mock_exchange, execution_config, sample_opportunity
+):
     """Test order creation with correct parameters."""
     executor = ArbitrageExecutor(exchange=mock_exchange, config=execution_config)
 

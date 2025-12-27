@@ -4,7 +4,6 @@ Provides factory pattern implementation for creating exchange instances
 with a registration system for extensibility.
 """
 
-
 from tri_arb.config.logging import get_logger
 from tri_arb.core.exceptions import ExchangeConnectionError
 from tri_arb.exchanges.base import BaseExchange
@@ -50,7 +49,9 @@ class ExchangeFactory:
             )
 
         self._registry[name] = exchange_class
-        logger.info("Exchange registered", name=name, class_name=exchange_class.__name__)
+        logger.info(
+            "Exchange registered", name=name, class_name=exchange_class.__name__
+        )
 
     def unregister(self, name: str) -> None:
         """Unregister an exchange implementation.
@@ -147,7 +148,7 @@ def register_exchange(name: str, exchange_class: type[BaseExchange]) -> None:
 
 def create_exchange(name: str, **kwargs) -> BaseExchange:
     """Convenience function to create exchange from global factory.
-    
+
     Automatically loads API credentials from environment variables if not provided:
     - XT Exchange: XT_API_KEY, XT_API_SECRET
     - Binance: BINANCE_API_KEY, BINANCE_API_SECRET
@@ -163,19 +164,19 @@ def create_exchange(name: str, **kwargs) -> BaseExchange:
         Exchange adapter instance
     """
     import os
-    
+
     # Auto-load credentials from environment if not provided
     if "api_key" not in kwargs or "api_secret" not in kwargs:
         env_prefix = name.upper()
         api_key = os.getenv(f"{env_prefix}_API_KEY", "")
         api_secret = os.getenv(f"{env_prefix}_API_SECRET", "")
-        
+
         # Only set if found in environment
         if api_key:
             kwargs.setdefault("api_key", api_key)
         if api_secret:
             kwargs.setdefault("api_secret", api_secret)
-        
+
         if api_key or api_secret:
             logger.debug(
                 "Loaded credentials from environment",
@@ -183,7 +184,7 @@ def create_exchange(name: str, **kwargs) -> BaseExchange:
                 has_key=bool(api_key),
                 has_secret=bool(api_secret),
             )
-    
+
     return exchange_factory.create(name, **kwargs)
 
 
@@ -208,12 +209,12 @@ def _register_default_exchanges() -> None:
 
     # Register XT Exchange (for tri-arb usage)
     exchange_factory.register("xt", XTSpotExchange)
-    
+
     # Register Binance Spot Exchange (for tri-arb usage)
     # Note: CLI tools use their own factory in cli/utils/exchange_factory.py
     # which handles both spot and perp separately
     exchange_factory.register("binance", BinanceSpotExchange)
-    
+
     logger.info("Default exchanges registered", exchanges=["xt", "binance"])
 
 

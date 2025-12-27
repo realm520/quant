@@ -33,6 +33,7 @@ from tri_arb.core.models import (
 # TradingPair Model Tests
 # ============================================================================
 
+
 @pytest.fixture
 def valid_trading_pair_data():
     """Valid TradingPair data for successful creation."""
@@ -110,6 +111,7 @@ class TestOrderSizeValidation:
 # Price Model Tests
 # ============================================================================
 
+
 class TestPriceCreation:
     """Test Price model creation and validation."""
 
@@ -125,7 +127,7 @@ class TestPriceCreation:
             bid_volume=Decimal("1.5"),
             ask_volume=Decimal("2.0"),
             timestamp=timestamp,
-            exchange="binance"
+            exchange="binance",
         )
 
         assert price.trading_pair == trading_pair
@@ -144,7 +146,7 @@ class TestPriceCreation:
                 bid_volume=Decimal("1.5"),
                 ask_volume=Decimal("2.0"),
                 timestamp=datetime.utcnow(),
-                exchange="binance"
+                exchange="binance",
             )
 
         assert "ask_price" in str(exc_info.value)
@@ -164,7 +166,7 @@ class TestPriceComputedProperties:
             bid_volume=Decimal("1.5"),
             ask_volume=Decimal("2.0"),
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
 
         assert price.mid_price == Decimal("50005.00")
@@ -181,7 +183,7 @@ class TestPriceComputedProperties:
             bid_volume=Decimal("1.5"),
             ask_volume=Decimal("2.0"),
             timestamp=recent_timestamp,
-            exchange="binance"
+            exchange="binance",
         )
 
         assert price.is_stale is False
@@ -198,7 +200,7 @@ class TestPriceComputedProperties:
             bid_volume=Decimal("1.5"),
             ask_volume=Decimal("2.0"),
             timestamp=old_timestamp,
-            exchange="binance"
+            exchange="binance",
         )
 
         assert price.is_stale is True
@@ -207,6 +209,7 @@ class TestPriceComputedProperties:
 # ============================================================================
 # OrderBook Model Tests
 # ============================================================================
+
 
 class TestOrderBookSorting:
     """Test OrderBook sorting validation."""
@@ -220,7 +223,7 @@ class TestOrderBookSorting:
             bids=[(Decimal("100"), Decimal("1.0")), (Decimal("99"), Decimal("2.0"))],
             asks=[(Decimal("101"), Decimal("1.0")), (Decimal("102"), Decimal("2.0"))],
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
 
         assert orderbook.bids[0][0] > orderbook.bids[1][0]
@@ -234,7 +237,7 @@ class TestOrderBookSorting:
             bids=[(Decimal("100"), Decimal("1.0")), (Decimal("99"), Decimal("2.0"))],
             asks=[(Decimal("101"), Decimal("1.0")), (Decimal("102"), Decimal("2.0"))],
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
 
         assert orderbook.asks[0][0] < orderbook.asks[1][0]
@@ -246,10 +249,13 @@ class TestOrderBookSorting:
         with pytest.raises(ValidationError) as exc_info:
             OrderBook(
                 trading_pair=trading_pair,
-                bids=[(Decimal("99"), Decimal("1.0")), (Decimal("100"), Decimal("2.0"))],
+                bids=[
+                    (Decimal("99"), Decimal("1.0")),
+                    (Decimal("100"), Decimal("2.0")),
+                ],
                 asks=[(Decimal("101"), Decimal("1.0"))],
                 timestamp=datetime.utcnow(),
-                exchange="binance"
+                exchange="binance",
             )
 
         assert "bids" in str(exc_info.value).lower()
@@ -258,6 +264,7 @@ class TestOrderBookSorting:
 # ============================================================================
 # Order Model Tests
 # ============================================================================
+
 
 @pytest.fixture
 def sample_trading_pair(valid_trading_pair_data):
@@ -311,6 +318,7 @@ class TestOrderPriceValidation:
 # Trade Model Tests
 # ============================================================================
 
+
 @pytest.fixture
 def valid_trade_data(sample_trading_pair):
     """Valid trade data."""
@@ -355,6 +363,7 @@ class TestTradePriceValidation:
 # ArbitrageOpportunity Model Tests
 # ============================================================================
 
+
 class TestArbitrageOpportunityCreation:
     """Test ArbitrageOpportunity creation."""
 
@@ -389,7 +398,7 @@ class TestArbitrageOpportunityCreation:
             bid_volume=Decimal("1.0"),
             ask_volume=Decimal("1.0"),
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
         price2 = Price(
             trading_pair=pair2,
@@ -398,7 +407,7 @@ class TestArbitrageOpportunityCreation:
             bid_volume=Decimal("10.0"),
             ask_volume=Decimal("10.0"),
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
         price3 = Price(
             trading_pair=pair3,
@@ -407,7 +416,7 @@ class TestArbitrageOpportunityCreation:
             bid_volume=Decimal("1.0"),
             ask_volume=Decimal("1.0"),
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
 
         opportunity = ArbitrageOpportunity(
@@ -421,7 +430,7 @@ class TestArbitrageOpportunityCreation:
             detected_at=datetime.utcnow(),
             expires_at=datetime.utcnow() + timedelta(seconds=30),
             exchange="binance",
-            is_viable=True
+            is_viable=True,
         )
 
         assert opportunity.opportunity_id == "opp_001"
@@ -442,7 +451,7 @@ class TestArbitrageTriangleValidation:
             bid_volume=Decimal("1.0"),
             ask_volume=Decimal("1.0"),
             timestamp=datetime.utcnow(),
-            exchange="binance"
+            exchange="binance",
         )
 
         # Try with only 2 pairs
@@ -457,7 +466,7 @@ class TestArbitrageTriangleValidation:
                 slippage_tolerance=Decimal("0.003"),
                 detected_at=datetime.utcnow(),
                 expires_at=datetime.utcnow() + timedelta(seconds=30),
-                exchange="binance"
+                exchange="binance",
             )
 
         assert "path" in str(exc_info.value).lower()

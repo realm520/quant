@@ -24,7 +24,9 @@ _position_cache_lock = threading.Lock()
 
 # 跟踪每个账户的当前订单标签，用于清除已取消/成交的订单
 # 标签格式: (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
-_order_labels_cache: dict[tuple[str, str, str], set[tuple[str, str, str, str, str, str, str]]] = {}
+_order_labels_cache: dict[
+    tuple[str, str, str], set[tuple[str, str, str, str, str, str, str]]
+] = {}
 _order_cache_lock = threading.Lock()
 
 _balance_available = Gauge(
@@ -59,19 +61,43 @@ _query_status_counter = Counter(
 _order_count = Gauge(
     "exchange_order_count",
     "Number of active orders per account, exchange, symbol, side, position side, and order type.",
-    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side", "order_type", "status"],
+    [
+        "exchange",
+        "exchange_type",
+        "account_id",
+        "symbol",
+        "side",
+        "position_side",
+        "order_type",
+        "status",
+    ],
 )
 
 _order_notional = Gauge(
     "exchange_order_notional",
     "Total notional value of orders per account, exchange, symbol, side, position side, and order type.",
-    ["exchange", "exchange_type", "account_id", "symbol", "side", "position_side", "order_type"],
+    [
+        "exchange",
+        "exchange_type",
+        "account_id",
+        "symbol",
+        "side",
+        "position_side",
+        "order_type",
+    ],
 )
 
 _order_update_total = Counter(
     "exchange_order_update_total",
     "Total number of order updates received.",
-    ["exchange", "exchange_type", "account_id", "order_status", "side", "position_side"],
+    [
+        "exchange",
+        "exchange_type",
+        "account_id",
+        "order_status",
+        "side",
+        "position_side",
+    ],
 )
 
 # 成交相关指标
@@ -114,13 +140,13 @@ _position_leverage = Gauge(
 
 def _is_port_available(port: int) -> bool:
     """Check if a port is available for binding.
-    
+
     Checks if the port is available on 0.0.0.0 (all interfaces),
     which is what prometheus_client.start_http_server uses by default.
-    
+
     Args:
         port: Port number to check
-        
+
     Returns:
         True if port is available, False otherwise
     """
@@ -135,11 +161,11 @@ def _is_port_available(port: int) -> bool:
 
 def ensure_metrics_server(port: int | None = None) -> None:
     """Start the Prometheus HTTP server if it hasn't been started yet.
-    
+
     If the port is already in use (e.g., by another process), this function
     will skip starting the server and log a warning. This allows multiple
     processes to share the same metrics endpoint.
-    
+
     Note: This function uses a global lock to prevent multiple threads from
     starting the server simultaneously. However, if the server fails to start,
     it will still mark as started to avoid repeated attempts. In this case,
@@ -153,9 +179,10 @@ def ensure_metrics_server(port: int | None = None) -> None:
         target_port = port or _DEFAULT_PORT
         try:
             import socket
+
             test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             test_socket.settimeout(0.1)
-            result = test_socket.connect_ex(('localhost', target_port))
+            result = test_socket.connect_ex(("localhost", target_port))
             test_socket.close()
             if result == 0:
                 # Port is open, server is likely running
@@ -170,14 +197,14 @@ def ensure_metrics_server(port: int | None = None) -> None:
         except Exception:
             # If check fails, assume server might be running and return
             pass
-    
+
     with _SERVER_LOCK:
         # Check again after acquiring lock
         if _SERVER_STARTED:
             return
-        
+
         target_port = port or _DEFAULT_PORT
-        
+
         # Check if port is already in use
         if not _is_port_available(target_port):
             logger.warning(
@@ -187,7 +214,7 @@ def ensure_metrics_server(port: int | None = None) -> None:
             # Still mark as started to avoid repeated checks
             _SERVER_STARTED = True
             return
-        
+
         try:
             start_http_server(target_port)
             _SERVER_STARTED = True
@@ -195,16 +222,23 @@ def ensure_metrics_server(port: int | None = None) -> None:
             # Verify server is actually accessible
             try:
                 import socket
+
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 test_socket.settimeout(0.5)
-                result = test_socket.connect_ex(('localhost', target_port))
+                result = test_socket.connect_ex(("localhost", target_port))
                 test_socket.close()
                 if result == 0:
-                    logger.info(f"Verified: Metrics server is accessible on port {target_port}")
+                    logger.info(
+                        f"Verified: Metrics server is accessible on port {target_port}"
+                    )
                 else:
-                    logger.warning(f"Metrics server started but port {target_port} is not accessible")
+                    logger.warning(
+                        f"Metrics server started but port {target_port} is not accessible"
+                    )
             except Exception as verify_error:
-                logger.warning(f"Could not verify metrics server accessibility: {verify_error}")
+                logger.warning(
+                    f"Could not verify metrics server accessibility: {verify_error}"
+                )
         except OSError as e:
             logger.error(
                 f"Failed to start Prometheus metrics server on port {target_port}: {e}. "
@@ -249,7 +283,11 @@ def update_balance_metrics(
                 asset=asset,
                 data_keys=list(data.keys()),
                 totalAmount_raw=data.get("totalAmount"),
-                totalAmount_type=type(data.get("totalAmount")).__name__ if data.get("totalAmount") is not None else None,
+                totalAmount_type=(
+                    type(data.get("totalAmount")).__name__
+                    if data.get("totalAmount") is not None
+                    else None
+                ),
                 openOrderMarginFrozen=data.get("openOrderMarginFrozen"),
                 isolatedMargin=data.get("isolatedMargin"),
                 crossedMargin=data.get("crossedMargin"),
@@ -265,7 +303,7 @@ def update_balance_metrics(
         _balance_available.labels(*labels).set(available)
         _balance_frozen.labels(*labels).set(frozen)
         _balance_total.labels(*labels).set(total)
-        
+
         # 计算保证金占用率
         margin_usage_ratio = 0.0
         if exchange.lower() == "binance":
@@ -284,16 +322,20 @@ def update_balance_metrics(
             if asset_label != "USDT":
                 # 非 USDT 资产通常不需要计算保证金占用率，跳过
                 continue
-            
-            open_order_margin_frozen = _to_float(data.get("openOrderMarginFrozen", data.get("frozen", 0)))
+
+            open_order_margin_frozen = _to_float(
+                data.get("openOrderMarginFrozen", data.get("frozen", 0))
+            )
             isolated_margin = _to_float(data.get("isolatedMargin", 0))
             crossed_margin = _to_float(data.get("crossedMargin", 0))
             # totalAmount 是 API 返回的总权益，必须使用 API 返回的 totalAmount 字段
             # 注意：不要使用 marginBalance，因为 marginBalance 是保证金余额，不是总权益
             # 也不要使用 walletBalance，因为 walletBalance 是钱包余额，不是总权益
             total_amount_raw = data.get("totalAmount")
-            total_amount = _to_float(total_amount_raw) if total_amount_raw is not None else 0.0
-            
+            total_amount = (
+                _to_float(total_amount_raw) if total_amount_raw is not None else 0.0
+            )
+
             if total_amount <= 0:
                 # 如果 totalAmount 不存在或为 0，记录错误并尝试使用 walletBalance 作为备选
                 logger.warning(
@@ -303,7 +345,9 @@ def update_balance_metrics(
                     has_totalAmount="totalAmount" in data,
                     totalAmount_value=total_amount_raw,
                     totalAmount_float=total_amount,
-                    available_keys=list(data.keys())[:10],  # 只显示前10个键，避免日志过长
+                    available_keys=list(data.keys())[
+                        :10
+                    ],  # 只显示前10个键，避免日志过长
                 )
                 # 尝试使用 walletBalance 作为备选（虽然不准确，但比 0 好）
                 wallet_balance = _to_float(data.get("walletBalance", 0))
@@ -324,9 +368,11 @@ def update_balance_metrics(
                     )
                     _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)
                     continue  # 跳过这个资产
-            
+
             if total_amount > 0:
-                margin_usage = open_order_margin_frozen + isolated_margin + crossed_margin
+                margin_usage = (
+                    open_order_margin_frozen + isolated_margin + crossed_margin
+                )
                 margin_usage_ratio = (margin_usage / total_amount) * 100.0
                 logger.info(
                     "Calculated XT margin usage ratio",
@@ -348,7 +394,7 @@ def update_balance_metrics(
                     total_amount_raw=total_amount_raw,
                     total_amount=total_amount,
                 )
-        
+
         _margin_usage_ratio.labels(*labels).set(margin_usage_ratio)
 
 
@@ -371,7 +417,7 @@ def update_order_metrics(
     order_data: Mapping[str, Any],
 ) -> None:
     """Update Prometheus metrics for order updates.
-    
+
     Args:
         exchange: Exchange name (e.g., "binance", "xt")
         exchange_type: Exchange type (e.g., "perp", "spot")
@@ -380,20 +426,20 @@ def update_order_metrics(
     """
     # 提取订单信息（支持不同交易所格式）
     symbol = (
-        order_data.get("symbol") 
+        order_data.get("symbol")
         or order_data.get("s")  # Binance
         or order_data.get("instId")  # OKX
         or order_data.get("contract")  # Gate
         or ""
     ).upper()
-    
+
     side = (
-        order_data.get("side") 
+        order_data.get("side")
         or order_data.get("S")  # Binance
         or order_data.get("orderSide")  # XT
         or ""
     ).upper()
-    
+
     # 持仓方向（多空）
     position_side = (
         order_data.get("positionSide")
@@ -402,14 +448,14 @@ def update_order_metrics(
         or order_data.get("position_side")
         or "NET"  # 默认
     ).upper()
-    
+
     status = (
         order_data.get("status")
         or order_data.get("X")  # Binance
         or order_data.get("state")  # OKX
         or ""
     ).upper()
-    
+
     # 订单类型（LIMIT, MARKET, STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET 等）
     order_type = (
         order_data.get("orderType")
@@ -418,7 +464,7 @@ def update_order_metrics(
         or order_data.get("order_type")
         or "LIMIT"  # 默认
     ).upper()
-    
+
     # 订单数量
     quantity = _to_float(
         order_data.get("quantity")
@@ -428,7 +474,7 @@ def update_order_metrics(
         or order_data.get("origQty")  # XT
         or 0
     )
-    
+
     # 订单价格
     price = _to_float(
         order_data.get("price")
@@ -436,16 +482,24 @@ def update_order_metrics(
         or order_data.get("px")  # OKX
         or 0
     )
-    
+
     notional = abs(quantity) * price if price > 0 else 0
-    
+
     # 更新指标（包含订单类型）
-    labels = (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
-    
+    labels = (
+        exchange,
+        exchange_type,
+        account_id,
+        symbol,
+        side,
+        position_side,
+        order_type,
+    )
+
     # 活跃订单状态列表
     active_statuses = ["NEW", "LIVE", "PARTIALLY_FILLED", "OPEN"]
     is_active = status in active_statuses
-    
+
     # 更新订单数量（活跃订单为1，非活跃为0）
     # 注意：这里使用 Gauge，每次更新都会覆盖之前的值
     # 如果需要跟踪总活跃订单数，需要维护一个状态映射
@@ -455,16 +509,18 @@ def update_order_metrics(
         _order_count.labels(*labels, status).set(1)
     else:
         _order_count.labels(*labels, status).set(0)
-    
+
     # 更新订单名义价值（仅活跃订单）
     if is_active and notional > 0:
         _order_notional.labels(*labels).set(notional)
     elif not is_active:
         # 订单已完成或取消，清除名义价值
         _order_notional.labels(*labels).set(0)
-    
+
     # 记录订单更新计数
-    _order_update_total.labels(exchange, exchange_type, account_id, status, side, position_side).inc()
+    _order_update_total.labels(
+        exchange, exchange_type, account_id, status, side, position_side
+    ).inc()
 
 
 def update_active_orders_metrics(
@@ -474,9 +530,9 @@ def update_active_orders_metrics(
     orders: list[Mapping[str, Any]],
 ) -> None:
     """批量更新所有活跃订单的 Prometheus metrics.
-    
+
     这个函数用于定期查询所有活跃订单并更新 metrics，确保 metrics 反映当前实际的挂单数量。
-    
+
     Args:
         exchange: Exchange name (e.g., "binance", "xt")
         exchange_type: Exchange type (e.g., "perp", "spot")
@@ -485,32 +541,32 @@ def update_active_orders_metrics(
     """
     # 活跃订单状态列表
     active_statuses = ["NEW", "LIVE", "PARTIALLY_FILLED", "OPEN"]
-    
+
     # 用于跟踪所有订单的标签组合（包含订单类型）
     # 标签格式: (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
     all_order_labels: set[tuple[str, str, str, str, str, str, str]] = set()
-    
+
     # 处理每个订单
     for order_data in orders:
         # 提取订单信息（支持不同交易所格式）
         symbol = (
-            order_data.get("symbol") 
+            order_data.get("symbol")
             or order_data.get("s")  # Binance
             or order_data.get("instId")  # OKX
             or order_data.get("contract")  # Gate
             or ""
         ).upper()
-        
+
         if not symbol:
             continue  # 跳过没有交易对的订单
-        
+
         side = (
-            order_data.get("side") 
+            order_data.get("side")
             or order_data.get("S")  # Binance
             or order_data.get("orderSide")  # XT
             or ""
         ).upper()
-        
+
         # 持仓方向（多空）
         position_side = (
             order_data.get("positionSide")
@@ -519,14 +575,14 @@ def update_active_orders_metrics(
             or order_data.get("position_side")
             or "NET"  # 默认
         ).upper()
-        
+
         status = (
             order_data.get("status")
             or order_data.get("X")  # Binance
             or order_data.get("state")  # OKX
             or ""
         ).upper()
-        
+
         # 订单类型（LIMIT, MARKET, STOP, STOP_MARKET, TAKE_PROFIT, TAKE_PROFIT_MARKET 等）
         order_type = (
             order_data.get("orderType")
@@ -535,7 +591,7 @@ def update_active_orders_metrics(
             or order_data.get("order_type")
             or "LIMIT"  # 默认
         ).upper()
-        
+
         # 订单数量
         quantity = _to_float(
             order_data.get("quantity")
@@ -545,7 +601,7 @@ def update_active_orders_metrics(
             or order_data.get("origQty")  # XT
             or 0
         )
-        
+
         # 订单价格
         price = _to_float(
             order_data.get("price")
@@ -553,15 +609,23 @@ def update_active_orders_metrics(
             or order_data.get("px")  # OKX
             or 0
         )
-        
+
         notional = abs(quantity) * price if price > 0 else 0
-        
+
         # 更新指标（包含订单类型）
-        labels = (exchange, exchange_type, account_id, symbol, side, position_side, order_type)
+        labels = (
+            exchange,
+            exchange_type,
+            account_id,
+            symbol,
+            side,
+            position_side,
+            order_type,
+        )
         all_order_labels.add(labels)
-        
+
         is_active = status in active_statuses
-        
+
         # 更新订单数量（活跃订单为1，非活跃为0）
         for active_status in active_statuses:
             _order_count.labels(*labels, active_status).set(0)
@@ -569,20 +633,20 @@ def update_active_orders_metrics(
             _order_count.labels(*labels, status).set(1)
         else:
             _order_count.labels(*labels, status).set(0)
-        
+
         # 更新订单名义价值（仅活跃订单）
         if is_active and notional > 0:
             _order_notional.labels(*labels).set(notional)
         elif not is_active:
             _order_notional.labels(*labels).set(0)
-    
+
     # 清除不再存在的订单的 metrics（设置为 0）
     # 使用缓存机制跟踪当前活跃的订单，清除已取消/成交的订单
     account_key = (exchange, exchange_type, account_id)
     with _order_cache_lock:
         # 获取之前缓存的订单标签
         previous_labels = _order_labels_cache.get(account_key, set())
-        
+
         # 清除不再存在的订单的 metrics
         for old_labels in previous_labels:
             if old_labels not in all_order_labels:
@@ -590,7 +654,7 @@ def update_active_orders_metrics(
                 for active_status in active_statuses:
                     _order_count.labels(*old_labels, active_status).set(0)
                 _order_notional.labels(*old_labels).set(0)
-        
+
         # 更新缓存
         _order_labels_cache[account_key] = all_order_labels
 
@@ -602,7 +666,7 @@ def update_trade_metrics(
     trade_data: Mapping[str, Any],
 ) -> None:
     """Update Prometheus metrics for trade updates.
-    
+
     Args:
         exchange: Exchange name (e.g., "binance", "xt")
         exchange_type: Exchange type (e.g., "perp", "spot")
@@ -619,30 +683,35 @@ def update_trade_metrics(
     elif isinstance(trade_data, list):
         # 如果 trade_data 本身就是列表
         trades = trade_data
-    elif "orderId" in trade_data or "order_id" in trade_data or "trade_id" in trade_data or "tradeId" in trade_data:
+    elif (
+        "orderId" in trade_data
+        or "order_id" in trade_data
+        or "trade_id" in trade_data
+        or "tradeId" in trade_data
+    ):
         # 单个成交对象（包括 XT 格式），转换为列表
         trades = [trade_data]
-    
+
     for trade in trades:
         # 提取成交信息（支持不同交易所格式）
         symbol = (
-            trade.get("symbol") 
+            trade.get("symbol")
             or trade.get("s")  # Binance
             or trade.get("instId")  # OKX
             or ""
         ).upper()
-        
+
         if not symbol:
             continue  # 跳过没有交易对的成交
-        
+
         # XT 使用 orderSide，其他使用 side
         side = (
             trade.get("orderSide")  # XT
-            or trade.get("side") 
+            or trade.get("side")
             or trade.get("S")  # Binance
             or ""
         ).upper()
-        
+
         # 持仓方向（多空）
         position_side = (
             trade.get("positionSide")
@@ -651,9 +720,11 @@ def update_trade_metrics(
             or trade.get("position_side")
             or "NET"  # 默认
         ).upper()
-        
+
         # 记录成交更新计数
-        _trade_update_total.labels(exchange, exchange_type, account_id, symbol, side, position_side).inc()
+        _trade_update_total.labels(
+            exchange, exchange_type, account_id, symbol, side, position_side
+        ).inc()
 
 
 def update_position_metrics(
@@ -663,14 +734,14 @@ def update_position_metrics(
     positions: Mapping[str, Any] | list[Mapping[str, Any]] | None,
 ) -> None:
     """Update Prometheus gauges for position snapshots.
-    
+
     This function will:
     1. Clear metrics for positions that no longer exist (closed positions)
     2. Update metrics for current positions
     """
     account_key = (exchange, exchange_type, account_id)
     current_labels: set[tuple[str, str]] = set()
-    
+
     if positions:
         if isinstance(positions, Mapping):
             iterable = [positions]
@@ -734,12 +805,12 @@ def update_position_metrics(
                 _position_leverage.labels(*labels).set(leverage)
             else:
                 _position_leverage.labels(*labels).set(0)
-    
+
     # 清除已平仓的仓位指标
     with _position_cache_lock:
         previous_labels = _position_labels_cache.get(account_key, set())
         closed_labels = previous_labels - current_labels
-        
+
         for symbol, position_side in closed_labels:
             labels = (exchange, exchange_type, account_id, symbol, position_side)
             # 将已平仓的仓位指标设置为 0
@@ -748,7 +819,7 @@ def update_position_metrics(
             _position_mark_price.labels(*labels).set(0)
             _position_unrealized_pnl.labels(*labels).set(0)
             _position_leverage.labels(*labels).set(0)
-        
+
         # 更新缓存
         _position_labels_cache[account_key] = current_labels
 
@@ -762,5 +833,3 @@ __all__ = [
     "update_trade_metrics",
     "update_position_metrics",
 ]
-
-

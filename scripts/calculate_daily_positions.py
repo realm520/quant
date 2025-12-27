@@ -39,49 +39,49 @@ def format_decimal(value: Decimal, precision: int = 2) -> str:
 async def main():
     """主函数."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="计算昨日持仓量和市值")
     parser.add_argument(
         "--hours-back",
         type=int,
         default=24,
-        help="往前回溯的小时数（默认24小时，即昨日）"
+        help="往前回溯的小时数（默认24小时，即昨日）",
     )
     parser.add_argument(
         "--account-id",
         type=str,
         nargs="+",
-        help="账号ID列表，格式：--account-id binance_main_001 xt_main_001"
+        help="账号ID列表，格式：--account-id binance_main_001 xt_main_001",
     )
     parser.add_argument(
         "--exchange",
         type=str,
         choices=["binance", "xt", "all"],
         default="all",
-        help="交易所（binance, xt, all），默认 all"
+        help="交易所（binance, xt, all），默认 all",
     )
     parser.add_argument(
         "--config",
         type=str,
         default="config/accounts.json",
-        help="账号配置文件路径（默认 config/accounts.json）"
+        help="账号配置文件路径（默认 config/accounts.json）",
     )
     parser.add_argument(
         "--output",
         type=str,
         choices=["table", "json"],
         default="table",
-        help="输出格式（table, json），默认 table"
+        help="输出格式（table, json），默认 table",
     )
-    
+
     args = parser.parse_args()
-    
+
     config = None
     db_manager: DatabaseManager
     account_ids = None
     xt_api_key: str | None = None
     xt_api_secret: str | None = None
-    
+
     # 如果有配置文件，优先从配置读取数据库 URL 和账号列表
     if Path(args.config).exists():
         try:
@@ -90,7 +90,7 @@ async def main():
         except Exception as e:
             console.print(f"[yellow]警告: 无法读取配置文件 {args.config}: {e}[/yellow]")
             config = None
-    
+
     # 初始化数据库管理器（如果配置中提供 database_url，则优先使用）
     if config and isinstance(config, dict):
         db_url = config.get("global_settings", {}).get("database_url")
@@ -100,7 +100,7 @@ async def main():
             db_manager = DatabaseManager()
     else:
         db_manager = DatabaseManager()
-    
+
     # 准备账号ID
     if args.account_id:
         # 从命令行参数解析账号ID
@@ -129,38 +129,42 @@ async def main():
                 # 使用配置 key 作为 account_id（与系统中 account_id 用法一致）
                 account_ids[exchange].append(acc_id)
                 # 记录一个 XT 账号的 API 凭证，用于后续获取合约乘数
-                if exchange == "xt" and not xt_api_key and acc_cfg.get("api_key") and acc_cfg.get("api_secret"):
+                if (
+                    exchange == "xt"
+                    and not xt_api_key
+                    and acc_cfg.get("api_key")
+                    and acc_cfg.get("api_secret")
+                ):
                     xt_api_key = acc_cfg.get("api_key")
                     xt_api_secret = acc_cfg.get("api_secret")
-    
+
     # 过滤交易所
     if args.exchange != "all":
         if account_ids:
             account_ids = {args.exchange: account_ids.get(args.exchange, [])}
         else:
             account_ids = {args.exchange: [None]}
-    
+
     # 创建合约乘数服务（如有可用的 XT 凭证）
     multiplier_service = None
     if xt_api_key and xt_api_secret:
         xt_exchange = XTPerpExchange(api_key=xt_api_key, api_secret=xt_api_secret)
         multiplier_service = ContractMultiplierService(xt_exchange=xt_exchange)
-    
+
     # 创建计算器（如果 multiplier_service 为 None，则内部会默认使用乘数 1）
     calculator = DailyPositionCalculator(
         db_manager,
         contract_multiplier_service=multiplier_service,
     )
-    
+
     # 计算持仓
     console.print(f"[cyan]正在计算过去 {args.hours_back} 小时的持仓量...[/cyan]")
-    
+
     try:
         results = await calculator.calculate_daily_positions(
-            hours_back=args.hours_back,
-            account_ids=account_ids
+            hours_back=args.hours_back, account_ids=account_ids
         )
-        
+
         # 输出结果
         if args.output == "json":
             # JSON 格式输出
@@ -168,14 +172,22 @@ async def main():
                 "timestamp": datetime.utcnow().isoformat(),
                 "hours_back": args.hours_back,
                 "results": {
-                    k: {k2: str(v2) for k2, v2 in v.items()} if isinstance(v, dict) else str(v)
+                    k: (
+                        {k2: str(v2) for k2, v2 in v.items()}
+                        if isinstance(v, dict)
+                        else str(v)
+                    )
                     for k, v in results.items()
-                }
+                },
             }
             console.print(json.dumps(output, indent=2, ensure_ascii=False))
         else:
             # 表格格式输出
-            table = Table(title=f"持仓量统计（过去 {args.hours_back} 小时）", show_header=True, header_style="bold magenta")
+            table = Table(
+                title=f"持仓量统计（过去 {args.hours_back} 小时）",
+                show_header=True,
+                header_style="bold magenta",
+            )
             table.add_column("交易所", justify="left", style="cyan")
             table.add_column("多头持仓量", justify="right", style="green")
             table.add_column("空头持仓量", justify="right", style="red")
@@ -183,7 +195,7 @@ async def main():
             table.add_column("空头市值 (USDT)", justify="right", style="red")
             table.add_column("BUY 成交量", justify="right")
             table.add_column("SELL 成交量", justify="right")
-            
+
             # Binance
             table.add_row(
                 "Binance",
@@ -194,7 +206,7 @@ async def main():
                 format_decimal(results["binance"]["buy_volume"], 8),
                 format_decimal(results["binance"]["sell_volume"], 8),
             )
-            
+
             # XT
             table.add_row(
                 "XT",
@@ -205,7 +217,7 @@ async def main():
                 format_decimal(results["xt"]["buy_volume"], 8),
                 format_decimal(results["xt"]["sell_volume"], 8),
             )
-            
+
             # 总计
             table.add_row(
                 "[bold]总计[/bold]",
@@ -216,36 +228,39 @@ async def main():
                 "-",
                 "-",
             )
-            
+
             console.print("\n")
             console.print(table)
-            
+
             # 详细信息
-            detail_table = Table(title="详细信息", show_header=True, header_style="bold blue")
+            detail_table = Table(
+                title="详细信息", show_header=True, header_style="bold blue"
+            )
             detail_table.add_column("交易所", justify="left")
             detail_table.add_column("指标", justify="left")
             detail_table.add_column("值", justify="right")
-            
+
             for exchange in ["binance", "xt"]:
                 detail_table.add_row(
                     exchange.upper(),
                     "区间开始时多头持仓",
-                    format_decimal(results[exchange]["initial_long_qty"], 8)
+                    format_decimal(results[exchange]["initial_long_qty"], 8),
                 )
                 detail_table.add_row(
                     exchange.upper(),
                     "区间开始时空头持仓",
-                    format_decimal(results[exchange]["initial_short_qty"], 8)
+                    format_decimal(results[exchange]["initial_short_qty"], 8),
                 )
-            
+
             console.print("\n")
             console.print(detail_table)
-        
+
         console.print(f"\n[green]✓[/green] 计算完成")
-        
+
     except Exception as e:
         console.print(f"[red]错误:[/red] {e}")
         import traceback
+
         console.print_exception()
         sys.exit(1)
     finally:
@@ -254,4 +269,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

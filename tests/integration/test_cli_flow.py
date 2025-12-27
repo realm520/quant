@@ -54,7 +54,9 @@ class TestCLIFlow:
         """
         result = runner.invoke(app, ["config", "validate"])
         assert result.exit_code == 0
-        assert "valid" in result.stdout.lower() or "placeholder" in result.stdout.lower()
+        assert (
+            "valid" in result.stdout.lower() or "placeholder" in result.stdout.lower()
+        )
 
     @pytest.mark.slow
     def test_status_command(self):
@@ -126,11 +128,11 @@ class TestConfigCommands:
 
         Verifies that configuration persistence works (placeholder mode).
         """
-        result = runner.invoke(
-            app, ["config", "set", "cache_ttl", "120", "--persist"]
-        )
+        result = runner.invoke(app, ["config", "set", "cache_ttl", "120", "--persist"])
         assert result.exit_code == 0
-        assert "placeholder" in result.stdout.lower() or "persist" in result.stdout.lower()
+        assert (
+            "placeholder" in result.stdout.lower() or "persist" in result.stdout.lower()
+        )
 
 
 @pytest.mark.integration

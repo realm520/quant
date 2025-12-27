@@ -126,12 +126,16 @@ async def _async_status(detailed: bool, json_output: bool) -> None:
         if "ttl_cache" in cache_stats:
             ttl_cache = cache_stats["ttl_cache"]
             typer.echo(f"  TTL Cache:")
-            typer.echo(f"    Size: {ttl_cache.get('size', 0)}/{ttl_cache.get('max_size', 0)}")
+            typer.echo(
+                f"    Size: {ttl_cache.get('size', 0)}/{ttl_cache.get('max_size', 0)}"
+            )
             typer.echo(f"    TTL: {ttl_cache.get('ttl', 0)}s")
         if "lru_cache" in cache_stats:
             lru_cache = cache_stats["lru_cache"]
             typer.echo(f"  LRU Cache:")
-            typer.echo(f"    Size: {lru_cache.get('size', 0)}/{lru_cache.get('max_size', 0)}")
+            typer.echo(
+                f"    Size: {lru_cache.get('size', 0)}/{lru_cache.get('max_size', 0)}"
+            )
 
         # Exchange status
         exchange_status = await monitoring_service.check_exchanges()

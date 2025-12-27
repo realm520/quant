@@ -15,7 +15,15 @@ from uuid import uuid4
 import httpx
 
 from tri_arb.config.logging import get_logger
-from tri_arb.core.models import Order, OrderBook, OrderSide, OrderStatus, Price, Trade, TradingPair
+from tri_arb.core.models import (
+    Order,
+    OrderBook,
+    OrderSide,
+    OrderStatus,
+    Price,
+    Trade,
+    TradingPair,
+)
 from tri_arb.exchanges.base import BaseExchange
 
 
@@ -55,14 +63,16 @@ class BinancePerpExchange(BaseExchange):
         self._client: httpx.AsyncClient | None = None
         # Binance recommend increasing recvWindow when network latency may exceed 5s
         self.recv_window = recv_window
-        
+
         logger.info(
             "BinancePerpExchange initialized",
             has_api_key=bool(api_key),
             has_api_secret=bool(api_secret),
         )
+
     def get_name(self) -> str:
         return "binance_perp"
+
     async def connect(self) -> None:
         """Establish connection to Binance Futures exchange."""
         if self._client is None:
@@ -70,22 +80,26 @@ class BinancePerpExchange(BaseExchange):
                 timeout=httpx.Timeout(30.0),
                 limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
             )
-        
+
         self.is_connected = True
-        logger.info("Connected to Binance Perpetual Futures exchange", exchange=self.name)
+        logger.info(
+            "Connected to Binance Perpetual Futures exchange", exchange=self.name
+        )
 
     async def disconnect(self) -> None:
         """Close connection to Binance Futures exchange."""
         if self._client:
             await self._client.aclose()
             self._client = None
-        
+
         self.is_connected = False
-        logger.info("Disconnected from Binance Perpetual Futures exchange", exchange=self.name)
+        logger.info(
+            "Disconnected from Binance Perpetual Futures exchange", exchange=self.name
+        )
 
     def _require_credentials(self) -> None:
         """Check if API credentials are available.
-        
+
         Raises:
             ValueError: If API key or secret is missing
         """
@@ -105,11 +119,10 @@ class BinancePerpExchange(BaseExchange):
             Hex signature string
         """
         return hmac.new(
-            self.api_secret.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
+            self.api_secret.encode("utf-8"),
+            query_string.encode("utf-8"),
+            hashlib.sha256,
         ).hexdigest()
-
 
     async def _request(
         self,
@@ -207,7 +220,9 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Trading pair info query not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Trading pair info query not yet implemented for Binance Futures"
+        )
 
     async def get_balance(self) -> dict[str, dict[str, Any]]:
         """Get account balances for all assets.
@@ -236,7 +251,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         logger.debug(
             "Raw Binance Futures balance response",
             response_type=type(data).__name__,
@@ -244,20 +259,20 @@ class BinancePerpExchange(BaseExchange):
         )
 
         balances: dict[str, dict[str, Any]] = {}
-        
+
         # Binance Futures response format: [{asset: "USDT", balance: "1000.0", crossUnPnl: "0.0", ...}, ...]
         if isinstance(data, list):
             for balance_item in data:
                 asset = balance_item.get("asset", "")
                 if not asset:
                     continue
-                    
+
                 total_balance = Decimal(balance_item.get("balance", "0"))
                 available_balance = Decimal(balance_item.get("availableBalance", "0"))
-                
+
                 # Frozen = Total - Available
                 frozen = max(Decimal("0"), total_balance - available_balance)
-                
+
                 # maxWithdrawAmount: 最大可转出余额（如果 API 返回）
                 max_withdraw_amount = balance_item.get("maxWithdrawAmount")
                 if max_withdraw_amount is not None:
@@ -265,7 +280,7 @@ class BinancePerpExchange(BaseExchange):
                 else:
                     # 如果没有 maxWithdrawAmount，用 availableBalance 作为近似值
                     max_withdraw_amount = available_balance
-                
+
                 # Only include assets with non-zero balances
                 if total_balance > 0:
                     balances[asset] = {
@@ -279,14 +294,20 @@ class BinancePerpExchange(BaseExchange):
             logger.error(
                 "Unexpected Binance Futures balance response format",
                 response_type=type(data).__name__,
-                data=str(data)[:500]
+                data=str(data)[:500],
             )
-            raise ValueError(f"Unexpected response format from Binance Futures API: {type(data).__name__}")
-        
+            raise ValueError(
+                f"Unexpected response format from Binance Futures API: {type(data).__name__}"
+            )
+
         logger.info(
             "Binance perpetual futures balances retrieved",
             currencies_count=len(balances),
-            currencies=list(balances.keys()) if balances else ["No balances with non-zero amounts"]
+            currencies=(
+                list(balances.keys())
+                if balances
+                else ["No balances with non-zero amounts"]
+            ),
         )
 
         return balances
@@ -298,7 +319,7 @@ class BinancePerpExchange(BaseExchange):
         This method returns positions with leverage and margin type information.
 
         Args:
-            symbol: Optional trading pair symbol (e.g., "BTCUSDT"). 
+            symbol: Optional trading pair symbol (e.g., "BTCUSDT").
                    If None, returns all positions.
 
         Returns:
@@ -346,7 +367,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         logger.debug(
             "Raw Binance Futures position response",
             response_type=type(data).__name__,
@@ -358,15 +379,17 @@ class BinancePerpExchange(BaseExchange):
             logger.error(
                 "Unexpected Binance Futures position response format",
                 response_type=type(data).__name__,
-                data=str(data)[:500]
+                data=str(data)[:500],
             )
-            raise ValueError(f"Unexpected response format from Binance Futures API: {type(data).__name__}")
+            raise ValueError(
+                f"Unexpected response format from Binance Futures API: {type(data).__name__}"
+            )
 
         # Convert numeric string fields to Decimal for precision
         positions = []
         for pos in data:
             position_amt = Decimal(pos.get("positionAmt", "0"))
-            
+
             # 只返回有实际持仓的数据（过滤掉空持仓）
             if position_amt != Decimal("0"):
                 position = {
@@ -388,7 +411,7 @@ class BinancePerpExchange(BaseExchange):
                     "updateTime": pos.get("updateTime", 0),
                 }
                 positions.append(position)
-        
+
         if symbol:
             logger.info(
                 "Binance perpetual futures position retrieved",
@@ -410,7 +433,7 @@ class BinancePerpExchange(BaseExchange):
         Query current open orders using Binance Futures API v1/openOrders endpoint.
 
         Args:
-            symbol: Optional trading pair symbol (e.g., "BTCUSDT"). 
+            symbol: Optional trading pair symbol (e.g., "BTCUSDT").
                    If None, returns all open orders (weight: 40).
                    If provided, returns orders for specific symbol (weight: 1).
 
@@ -467,7 +490,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         logger.debug(
             "Raw Binance Futures open orders response",
             response_type=type(data).__name__,
@@ -479,9 +502,11 @@ class BinancePerpExchange(BaseExchange):
             logger.error(
                 "Unexpected Binance Futures open orders response format",
                 response_type=type(data).__name__,
-                data=str(data)[:500]
+                data=str(data)[:500],
             )
-            raise ValueError(f"Unexpected response format from Binance Futures API: {type(data).__name__}")
+            raise ValueError(
+                f"Unexpected response format from Binance Futures API: {type(data).__name__}"
+            )
 
         # Convert numeric string fields to Decimal for precision
         orders = []
@@ -512,15 +537,17 @@ class BinancePerpExchange(BaseExchange):
                 "time": order.get("time", 0),
                 "updateTime": order.get("updateTime", 0),
             }
-            
+
             # 处理跟踪止损订单的特殊字段
             if order.get("activatePrice"):
-                formatted_order["activatePrice"] = Decimal(order.get("activatePrice", "0"))
+                formatted_order["activatePrice"] = Decimal(
+                    order.get("activatePrice", "0")
+                )
             if order.get("priceRate"):
                 formatted_order["priceRate"] = Decimal(order.get("priceRate", "0"))
-            
+
             orders.append(formatted_order)
-        
+
         if symbol:
             logger.info(
                 "Binance perpetual futures open orders retrieved",
@@ -550,7 +577,7 @@ class BinancePerpExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         symbol = f"{trading_pair.base_currency}{trading_pair.quote_currency}"
-        
+
         response = await self._request(
             method="GET",
             path="/fapi/v1/ticker/bookTicker",
@@ -559,7 +586,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         price = Price(
             trading_pair=trading_pair,
             bid_price=Decimal(data["bidPrice"]),
@@ -596,10 +623,10 @@ class BinancePerpExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         symbol = f"{trading_pair.base_currency}{trading_pair.quote_currency}"
-        
+
         # Binance Futures supports depth levels: 5, 10, 20, 50, 100, 500, 1000
         limit = min(depth, 1000)
-        
+
         response = await self._request(
             method="GET",
             path="/fapi/v1/depth",
@@ -608,7 +635,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         bids = [(Decimal(price), Decimal(qty)) for price, qty in data["bids"][:depth]]
         asks = [(Decimal(price), Decimal(qty)) for price, qty in data["asks"][:depth]]
 
@@ -717,7 +744,7 @@ class BinancePerpExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         logger.info(
             "Binance perpetual futures order placed",
             symbol=symbol,
@@ -741,7 +768,9 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order cancellation not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Order cancellation not yet implemented for Binance Futures"
+        )
 
     async def get_order_status(self, order_id: str) -> Order:
         """Get order status (not implemented yet).
@@ -755,7 +784,9 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order status query not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Order status query not yet implemented for Binance Futures"
+        )
 
     async def get_trade_history(
         self, trading_pair: TradingPair, limit: int = 100
@@ -772,11 +803,11 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Trade history not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Trade history not yet implemented for Binance Futures"
+        )
 
-    async def subscribe_ticker(
-        self, trading_pair: TradingPair
-    ) -> AsyncIterator[Price]:
+    async def subscribe_ticker(self, trading_pair: TradingPair) -> AsyncIterator[Price]:
         """Subscribe to ticker updates (not implemented yet).
 
         Args:
@@ -788,7 +819,9 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Ticker subscription not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Ticker subscription not yet implemented for Binance Futures"
+        )
         yield  # Make this a generator
 
     async def subscribe_orderbook(
@@ -806,7 +839,9 @@ class BinancePerpExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order book subscription not yet implemented for Binance Futures")
+        raise NotImplementedError(
+            "Order book subscription not yet implemented for Binance Futures"
+        )
         yield  # Make this a generator
 
     async def get_all_orders(

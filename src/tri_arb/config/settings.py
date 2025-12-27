@@ -1,4 +1,5 @@
 """Application settings using pydantic-settings."""
+
 from typing import Literal
 
 from pydantic import Field
@@ -26,8 +27,12 @@ class Settings(BaseSettings):
 
     # Database settings
     db_path: str = Field(default="tri_arb.db", description="SQLite database file path")
-    db_pool_size: int = Field(default=5, ge=1, le=20, description="Database connection pool size")
-    db_timeout: float = Field(default=5.0, gt=0, description="Database connection timeout (seconds)")
+    db_pool_size: int = Field(
+        default=5, ge=1, le=20, description="Database connection pool size"
+    )
+    db_timeout: float = Field(
+        default=5.0, gt=0, description="Database connection timeout (seconds)"
+    )
 
     # Cache settings
     cache_ttl: int = Field(default=60, ge=1, description="Cache TTL in seconds")
@@ -37,10 +42,14 @@ class Settings(BaseSettings):
     max_concurrent_requests: int = Field(
         default=10, ge=1, le=100, description="Maximum concurrent requests"
     )
-    request_timeout: int = Field(default=30, ge=1, description="HTTP request timeout (seconds)")
+    request_timeout: int = Field(
+        default=30, ge=1, description="HTTP request timeout (seconds)"
+    )
 
     # Monitoring settings
-    metrics_port: int = Field(default=9090, ge=1024, le=65535, description="Prometheus metrics port")
+    metrics_port: int = Field(
+        default=9090, ge=1024, le=65535, description="Prometheus metrics port"
+    )
     health_check_interval: int = Field(
         default=30, ge=1, description="Health check interval (seconds)"
     )

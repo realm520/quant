@@ -17,16 +17,20 @@ from tri_arb.exchanges.base import BaseExchange
 # This import will fail until XT Exchange is implemented
 try:
     from tri_arb.exchanges.xt_spot import XTSpotExchange
+
     XT_EXCHANGE_AVAILABLE = True
 except ImportError:
     XT_EXCHANGE_AVAILABLE = False
+
     # Create placeholder for type checking
     class XTSpotExchange:  # type: ignore
         pass
 
 
 @pytest.mark.contract
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 class TestXTSpotExchangeContract:
     """Test that XTSpotExchange implements BaseExchange contract."""
 
@@ -61,9 +65,7 @@ class TestXTSpotExchangeContract:
 
         # Verify all abstract methods are implemented
         missing_methods = abstract_methods - implemented_methods
-        assert (
-            not missing_methods
-        ), f"XTSpotExchange missing methods: {missing_methods}"
+        assert not missing_methods, f"XTSpotExchange missing methods: {missing_methods}"
 
     def test_exchange_method_signatures(self):
         """Verify XTSpotExchange method signatures match BaseExchange.
@@ -88,15 +90,11 @@ class TestXTSpotExchangeContract:
         for method_name, expected_params in expected_signatures.items():
             # Get method
             method = getattr(XTSpotExchange, method_name, None)
-            assert (
-                method is not None
-            ), f"XTSpotExchange missing method: {method_name}"
+            assert method is not None, f"XTSpotExchange missing method: {method_name}"
 
             # Get method parameters
             sig = inspect.signature(method)
-            params = [
-                p.name for p in sig.parameters.values() if p.name != "self"
-            ]
+            params = [p.name for p in sig.parameters.values() if p.name != "self"]
 
             # Verify parameters match (at least the required ones)
             for expected_param in expected_params:
@@ -107,7 +105,9 @@ class TestXTSpotExchangeContract:
 
 @pytest.mark.contract
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 class TestXTSpotExchangeConnectionContract:
     """Test XT exchange connection lifecycle contract."""
 
@@ -119,9 +119,7 @@ class TestXTSpotExchangeConnectionContract:
             XTSpotExchange instance with test credentials
         """
         return XTSpotExchange(
-            name="xt_test",
-            api_key="test_key",
-            api_secret="test_secret"
+            name="xt_test", api_key="test_key", api_secret="test_secret"
         )
 
     async def test_connect_disconnect(self, xt_exchange):
@@ -157,10 +155,10 @@ class TestXTSpotExchangeConnectionContract:
         to prevent resource leaks.
         """
         await xt_exchange.connect()
-        
+
         with pytest.raises(ValueError, match="Already connected"):
             await xt_exchange.connect()
-        
+
         await xt_exchange.disconnect()
 
     async def test_disconnect_not_connected_raises_error(self, xt_exchange):
@@ -175,7 +173,9 @@ class TestXTSpotExchangeConnectionContract:
 
 @pytest.mark.contract
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 class TestXTSpotExchangeMethodReturnTypes:
     """Test that XTSpotExchange methods return correct types."""
 
@@ -185,62 +185,86 @@ class TestXTSpotExchangeMethodReturnTypes:
         with respx.mock:
             # Mock ticker endpoint (using /ticker/book as per implementation)
             respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
-                return_value=Response(200, json={"rc": 0, "result": [{"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"}]})
+                return_value=Response(
+                    200,
+                    json={
+                        "rc": 0,
+                        "result": [
+                            {
+                                "s": "btc_usdt",
+                                "bp": "49950.00",
+                                "ap": "50050.00",
+                                "bq": "10.5",
+                                "aq": "8.3",
+                            }
+                        ],
+                    },
+                )
             )
             # Mock orderbook endpoint
             respx.get("https://sapi.xt.com/v4/public/depth").mock(
-                return_value=Response(200, json={
-                    "rc": 0,
-                    "result": {
-                        "bids": [["49000.00", "1.5"], ["48900.00", "2.0"]],
-                        "asks": [["50100.00", "1.0"], ["50200.00", "1.5"]]
-                    }
-                })
+                return_value=Response(
+                    200,
+                    json={
+                        "rc": 0,
+                        "result": {
+                            "bids": [["49000.00", "1.5"], ["48900.00", "2.0"]],
+                            "asks": [["50100.00", "1.0"], ["50200.00", "1.5"]],
+                        },
+                    },
+                )
             )
             # Mock place order endpoint
             respx.post("https://sapi.xt.com/v4/order").mock(
-                return_value=Response(200, json={
-                    "rc": 0,
-                    "result": {"orderId": "12345", "status": "NEW"}
-                })
+                return_value=Response(
+                    200, json={"rc": 0, "result": {"orderId": "12345", "status": "NEW"}}
+                )
             )
             # Mock cancel order endpoint
             respx.delete("https://sapi.xt.com/v4/order").mock(
-                return_value=Response(200, json={"rc": 0, "result": {"status": "CANCELED"}})
+                return_value=Response(
+                    200, json={"rc": 0, "result": {"status": "CANCELED"}}
+                )
             )
             # Mock get order status endpoint
             respx.get("https://sapi.xt.com/v4/order").mock(
-                return_value=Response(200, json={
-                    "rc": 0,
-                    "result": {
-                        "orderId": "12345",
-                        "symbol": "btc_usdt",
-                        "status": "FILLED",
-                        "type": "LIMIT",
-                        "side": "BUY",
-                        "price": "50000.00",
-                        "origQty": "1.0",
-                        "time": 1609459200000
-                    }
-                })
+                return_value=Response(
+                    200,
+                    json={
+                        "rc": 0,
+                        "result": {
+                            "orderId": "12345",
+                            "symbol": "btc_usdt",
+                            "status": "FILLED",
+                            "type": "LIMIT",
+                            "side": "BUY",
+                            "price": "50000.00",
+                            "origQty": "1.0",
+                            "time": 1609459200000,
+                        },
+                    },
+                )
             )
             # Mock trade history endpoint
             respx.get("https://sapi.xt.com/v4/trade").mock(
-                return_value=Response(200, json={
-                    "rc": 0,
-                    "result": [
-                        {
-                            "id": "1",
-                            "orderId": "12345",
-                            "side": "BUY",
-                            "price": "50000.00",
-                            "qty": "1.0",
-                            "commission": "0.1",
-                            "commissionAsset": "USDT",
-                            "time": 1609459200000
-                        }
-                    ]
-                })
+                return_value=Response(
+                    200,
+                    json={
+                        "rc": 0,
+                        "result": [
+                            {
+                                "id": "1",
+                                "orderId": "12345",
+                                "side": "BUY",
+                                "price": "50000.00",
+                                "qty": "1.0",
+                                "commission": "0.1",
+                                "commissionAsset": "USDT",
+                                "time": 1609459200000,
+                            }
+                        ],
+                    },
+                )
             )
             yield
 
@@ -248,9 +272,7 @@ class TestXTSpotExchangeMethodReturnTypes:
     def xt_exchange(self, mock_xt_api):
         """Create connected XT exchange instance."""
         return XTSpotExchange(
-            name="xt_test",
-            api_key="test_key",
-            api_secret="test_secret"
+            name="xt_test", api_key="test_key", api_secret="test_secret"
         )
 
     async def test_get_ticker_returns_price(self, xt_exchange, sample_trading_pair):
@@ -266,7 +288,9 @@ class TestXTSpotExchangeMethodReturnTypes:
         assert isinstance(ticker, Price)
         await xt_exchange.disconnect()
 
-    async def test_get_orderbook_returns_orderbook(self, xt_exchange, sample_trading_pair):
+    async def test_get_orderbook_returns_orderbook(
+        self, xt_exchange, sample_trading_pair
+    ):
         """Test get_orderbook returns OrderBook model.
 
         Verifies that get_orderbook returns correct type for type safety.
@@ -279,7 +303,9 @@ class TestXTSpotExchangeMethodReturnTypes:
         assert isinstance(orderbook, OrderBook)
         await xt_exchange.disconnect()
 
-    async def test_get_trade_history_returns_list(self, xt_exchange, sample_trading_pair):
+    async def test_get_trade_history_returns_list(
+        self, xt_exchange, sample_trading_pair
+    ):
         """Test get_trade_history returns list.
 
         Verifies that get_trade_history returns list type (may be empty).
@@ -315,7 +341,7 @@ class TestXTSpotExchangeMethodReturnTypes:
         placed_order = await xt_exchange.place_order(order)
         assert isinstance(placed_order, Order)
         assert placed_order.order_id is not None
-        
+
         await xt_exchange.disconnect()
 
     async def test_cancel_order_returns_bool(self, xt_exchange):
@@ -342,7 +368,9 @@ class TestXTSpotExchangeMethodReturnTypes:
 
 
 @pytest.mark.contract
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 class TestXTSpotExchangeFactoryIntegration:
     """Test XT exchange factory registration contract."""
 
@@ -390,6 +418,7 @@ class TestXTSpotExchangeImportability:
         """
         try:
             from tri_arb.exchanges.xt_spot import XTSpotExchange
+
             assert XTSpotExchange is not None
         except ImportError as e:
             pytest.fail(f"XTSpotExchange not yet implemented: {e}")
@@ -402,18 +431,21 @@ class TestXTSpotExchangeImportability:
         from tri_arb import exchanges
 
         # Check if XTSpotExchange is in __all__ (if __all__ exists)
-        if hasattr(exchanges, '__all__'):
-            assert 'XTSpotExchange' in exchanges.__all__, \
-                "XTSpotExchange should be in exchanges.__all__"
+        if hasattr(exchanges, "__all__"):
+            assert (
+                "XTSpotExchange" in exchanges.__all__
+            ), "XTSpotExchange should be in exchanges.__all__"
 
         # Check if XTSpotExchange can be imported from exchanges
-        assert hasattr(exchanges, 'XTSpotExchange'), \
-            "XTSpotExchange should be importable from tri_arb.exchanges"
+        assert hasattr(
+            exchanges, "XTSpotExchange"
+        ), "XTSpotExchange should be importable from tri_arb.exchanges"
 
 
 # ============================================================================
 # Feature 003: Batch Ticker Contract Tests
 # ============================================================================
+
 
 @pytest.fixture
 def btc_usdt_pair() -> "TradingPair":
@@ -444,12 +476,14 @@ async def xt_connected() -> "XTSpotExchange":
 
 # T004: Single Ticker Contract Tests (Backward Compatibility)
 
+
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_single_ticker_returns_price_object_feature_003(
-    xt_connected: "XTSpotExchange",
-    btc_usdt_pair: "TradingPair"
+    xt_connected: "XTSpotExchange", btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): get_ticker(trading_pair) MUST return single Price object."""
     from tri_arb.core.models import Price
@@ -460,14 +494,16 @@ async def test_single_ticker_returns_price_object_feature_003(
             200,
             json={
                 "rc": 0,
-                "result": [{
-                    "s": "btc_usdt",
-                    "bp": "49950.00",
-                    "ap": "50050.00",
-                    "bq": "10.5",
-                    "aq": "8.3"
-                }]
-            }
+                "result": [
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    }
+                ],
+            },
         )
     )
 
@@ -479,11 +515,12 @@ async def test_single_ticker_returns_price_object_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_single_ticker_price_data_valid_feature_003(
-    xt_connected: "XTSpotExchange",
-    btc_usdt_pair: "TradingPair"
+    xt_connected: "XTSpotExchange", btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): Returned Price object MUST satisfy data constraints."""
     from datetime import datetime, timedelta
@@ -494,14 +531,16 @@ async def test_single_ticker_price_data_valid_feature_003(
             200,
             json={
                 "rc": 0,
-                "result": [{
-                    "s": "btc_usdt",
-                    "bp": "49950.00",
-                    "ap": "50050.00",
-                    "bq": "10.5",
-                    "aq": "8.3"
-                }]
-            }
+                "result": [
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    }
+                ],
+            },
         )
     )
 
@@ -526,11 +565,12 @@ async def test_single_ticker_price_data_valid_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_single_ticker_performance_feature_003(
-    xt_connected: "XTSpotExchange",
-    btc_usdt_pair: "TradingPair"
+    xt_connected: "XTSpotExchange", btc_usdt_pair: "TradingPair"
 ) -> None:
     """CONTRACT (Feature 003): Single ticker query SHOULD complete quickly."""
     import time
@@ -541,14 +581,16 @@ async def test_single_ticker_performance_feature_003(
             200,
             json={
                 "rc": 0,
-                "result": [{
-                    "s": "btc_usdt",
-                    "bp": "49950.00",
-                    "ap": "50050.00",
-                    "bq": "10.5",
-                    "aq": "8.3"
-                }]
-            }
+                "result": [
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    }
+                ],
+            },
         )
     )
 
@@ -562,11 +604,14 @@ async def test_single_ticker_performance_feature_003(
 
 # T005: Batch Ticker Contract Tests (New Feature)
 
+
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_ticker_returns_list_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): get_ticker(None) MUST return List[Price]."""
     from tri_arb.core.models import Price
@@ -578,11 +623,29 @@ async def test_batch_ticker_returns_list_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
-                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
-                    {"s": "sol_usdt", "bp": "99.50", "ap": "100.50", "bq": "100.8", "aq": "95.3"},
-                ]
-            }
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    },
+                    {
+                        "s": "eth_usdt",
+                        "bp": "2990.00",
+                        "ap": "3010.00",
+                        "bq": "50.2",
+                        "aq": "45.1",
+                    },
+                    {
+                        "s": "sol_usdt",
+                        "bp": "99.50",
+                        "ap": "100.50",
+                        "bq": "100.8",
+                        "aq": "95.3",
+                    },
+                ],
+            },
         )
     )
 
@@ -594,10 +657,12 @@ async def test_batch_ticker_returns_list_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_ticker_no_duplicates_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): Batch ticker MUST not return duplicate trading pairs."""
     # Mock XT API batch response
@@ -607,11 +672,29 @@ async def test_batch_ticker_no_duplicates_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
-                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
-                    {"s": "btc_usdt", "bp": "49960.00", "ap": "50060.00", "bq": "10.6", "aq": "8.4"},  # Duplicate!
-                ]
-            }
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    },
+                    {
+                        "s": "eth_usdt",
+                        "bp": "2990.00",
+                        "ap": "3010.00",
+                        "bq": "50.2",
+                        "aq": "45.1",
+                    },
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49960.00",
+                        "ap": "50060.00",
+                        "bq": "10.6",
+                        "aq": "8.4",
+                    },  # Duplicate!
+                ],
+            },
         )
     )
 
@@ -629,10 +712,12 @@ async def test_batch_ticker_no_duplicates_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_ticker_each_price_valid_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): Each Price in batch result MUST satisfy data constraints."""
     from datetime import datetime, timedelta
@@ -644,10 +729,22 @@ async def test_batch_ticker_each_price_valid_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
-                    {"s": "eth_usdt", "bp": "2990.00", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
-                ]
-            }
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    },
+                    {
+                        "s": "eth_usdt",
+                        "bp": "2990.00",
+                        "ap": "3010.00",
+                        "bq": "50.2",
+                        "aq": "45.1",
+                    },
+                ],
+            },
         )
     )
 
@@ -664,29 +761,36 @@ async def test_batch_ticker_each_price_valid_feature_003(
 
         # Timestamp freshness
         age = datetime.now(price.timestamp.tzinfo) - price.timestamp
-        assert age < timedelta(seconds=10), f"Stale data for {price.trading_pair}: {age.total_seconds()}s"
+        assert age < timedelta(
+            seconds=10
+        ), f"Stale data for {price.trading_pair}: {age.total_seconds()}s"
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_ticker_performance_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): Batch ticker query SHOULD complete in <1000ms."""
     import time
 
     # Mock XT API batch response with 100 tickers
     tickers = [
-        {"s": f"ticker{i}_usdt", "bp": f"{1000 + i}.00", "ap": f"{1000 + i + 1}.00", "bq": "10.5", "aq": "8.3"}
+        {
+            "s": f"ticker{i}_usdt",
+            "bp": f"{1000 + i}.00",
+            "ap": f"{1000 + i + 1}.00",
+            "bq": "10.5",
+            "aq": "8.3",
+        }
         for i in range(100)
     ]
 
     respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
-        return_value=Response(
-            200,
-            json={"rc": 0, "result": tickers}
-        )
+        return_value=Response(200, json={"rc": 0, "result": tickers})
     )
 
     start = time.perf_counter()
@@ -698,23 +802,28 @@ async def test_batch_ticker_performance_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_ticker_scalability_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): Batch query MUST support ≥500 trading pairs."""
     # Mock XT API batch response with 500 tickers
     tickers = [
-        {"s": f"pair{i}_usdt", "bp": f"{1000 + i}.00", "ap": f"{1000 + i + 1}.00", "bq": "10.5", "aq": "8.3"}
+        {
+            "s": f"pair{i}_usdt",
+            "bp": f"{1000 + i}.00",
+            "ap": f"{1000 + i + 1}.00",
+            "bq": "10.5",
+            "aq": "8.3",
+        }
         for i in range(500)
     ]
 
     respx.get("https://sapi.xt.com/v4/public/ticker/book").mock(
-        return_value=Response(
-            200,
-            json={"rc": 0, "result": tickers}
-        )
+        return_value=Response(200, json={"rc": 0, "result": tickers})
     )
 
     prices = await xt_connected.get_ticker(None)  # type: ignore
@@ -726,12 +835,14 @@ async def test_batch_ticker_scalability_feature_003(
 
 # T006: Partial Failure Contract Tests
 
+
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_partial_failure_returns_success_subset_feature_003(
-    xt_connected: "XTSpotExchange",
-    monkeypatch
+    xt_connected: "XTSpotExchange", monkeypatch
 ) -> None:
     """CONTRACT (Feature 003): Batch query with partial failures MUST return successful subset."""
     # Mock XT API batch response with some invalid data
@@ -741,11 +852,29 @@ async def test_batch_partial_failure_returns_success_subset_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "bp": "49950.00", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
-                    {"s": "eth_usdt", "bp": "invalid_price", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},  # Will fail
-                    {"s": "sol_usdt", "bp": "99.50", "ap": "100.50", "bq": "100.8", "aq": "95.3"},
-                ]
-            }
+                    {
+                        "s": "btc_usdt",
+                        "bp": "49950.00",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    },
+                    {
+                        "s": "eth_usdt",
+                        "bp": "invalid_price",
+                        "ap": "3010.00",
+                        "bq": "50.2",
+                        "aq": "45.1",
+                    },  # Will fail
+                    {
+                        "s": "sol_usdt",
+                        "bp": "99.50",
+                        "ap": "100.50",
+                        "bq": "100.8",
+                        "aq": "95.3",
+                    },
+                ],
+            },
         )
     )
 
@@ -758,10 +887,12 @@ async def test_batch_partial_failure_returns_success_subset_feature_003(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented")
+@pytest.mark.skipif(
+    not XT_EXCHANGE_AVAILABLE, reason="XTSpotExchange not yet implemented"
+)
 @respx.mock
 async def test_batch_all_failures_returns_empty_list_feature_003(
-    xt_connected: "XTSpotExchange"
+    xt_connected: "XTSpotExchange",
 ) -> None:
     """CONTRACT (Feature 003): Batch query with all failures MUST return empty list."""
     # Mock XT API batch response with all invalid data
@@ -771,10 +902,22 @@ async def test_batch_all_failures_returns_empty_list_feature_003(
             json={
                 "rc": 0,
                 "result": [
-                    {"s": "btc_usdt", "bp": "invalid1", "ap": "50050.00", "bq": "10.5", "aq": "8.3"},
-                    {"s": "eth_usdt", "bp": "invalid2", "ap": "3010.00", "bq": "50.2", "aq": "45.1"},
-                ]
-            }
+                    {
+                        "s": "btc_usdt",
+                        "bp": "invalid1",
+                        "ap": "50050.00",
+                        "bq": "10.5",
+                        "aq": "8.3",
+                    },
+                    {
+                        "s": "eth_usdt",
+                        "bp": "invalid2",
+                        "ap": "3010.00",
+                        "bq": "50.2",
+                        "aq": "45.1",
+                    },
+                ],
+            },
         )
     )
 

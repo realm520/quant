@@ -11,7 +11,17 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    Index,
+)
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -19,16 +29,16 @@ Base = declarative_base()
 
 def _create_balance_model(exchange: str) -> type:
     """创建交易所特定的余额表模型.
-    
+
     Args:
         exchange: 交易所名称 (binance, xt, okx, gate)
-        
+
     Returns:
         SQLAlchemy 模型类
     """
     table_name = f"{exchange}_account_snapshot"
     class_name = f"{exchange.capitalize()}BalanceRest"
-    
+
     # 使用 type() 动态创建类，避免类名冲突警告
     attrs = {
         "__tablename__": table_name,
@@ -45,30 +55,32 @@ def _create_balance_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
-            Index(f'idx_{exchange}_balance_type_time', 'exchange_type', 'query_time'),
-            Index(f'idx_{exchange}_balance_asset_time', 'asset', 'query_time'),
-            Index(f'idx_{exchange}_balance_query_type_time', 'query_type', 'query_time'),
-            Index(f'idx_{exchange}_balance_account_time', 'account_id', 'query_time'),
+            Index(f"idx_{exchange}_balance_type_time", "exchange_type", "query_time"),
+            Index(f"idx_{exchange}_balance_asset_time", "asset", "query_time"),
+            Index(
+                f"idx_{exchange}_balance_query_type_time", "query_type", "query_time"
+            ),
+            Index(f"idx_{exchange}_balance_account_time", "account_id", "query_time"),
             {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
         ),
     }
-    
+
     model_class = type(class_name, (Base,), attrs)
     return model_class
 
 
 def _create_position_model(exchange: str) -> type:
     """创建交易所特定的持仓表模型.
-    
+
     Args:
         exchange: 交易所名称 (binance, xt, okx, gate)
-        
+
     Returns:
         SQLAlchemy 模型类
     """
     table_name = f"{exchange}_position_snapshot"
     class_name = f"{exchange.capitalize()}PositionRest"
-    
+
     attrs = {
         "__tablename__": table_name,
         "__doc__": f"REST API持仓查询记录 - {exchange}.",
@@ -90,30 +102,32 @@ def _create_position_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
-            Index(f'idx_{exchange}_position_symbol_time', 'symbol', 'query_time'),
-            Index(f'idx_{exchange}_position_side_time', 'position_side', 'query_time'),
-            Index(f'idx_{exchange}_position_query_type_time', 'query_type', 'query_time'),
-            Index(f'idx_{exchange}_position_account_time', 'account_id', 'query_time'),
+            Index(f"idx_{exchange}_position_symbol_time", "symbol", "query_time"),
+            Index(f"idx_{exchange}_position_side_time", "position_side", "query_time"),
+            Index(
+                f"idx_{exchange}_position_query_type_time", "query_type", "query_time"
+            ),
+            Index(f"idx_{exchange}_position_account_time", "account_id", "query_time"),
             {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
         ),
     }
-    
+
     model_class = type(class_name, (Base,), attrs)
     return model_class
 
 
 def _create_order_model(exchange: str) -> type:
     """创建交易所特定的订单表模型.
-    
+
     Args:
         exchange: 交易所名称 (binance, xt, okx, gate)
-        
+
     Returns:
         SQLAlchemy 模型类
     """
     table_name = f"{exchange}_order_snapshot"
     class_name = f"{exchange.capitalize()}OrderRest"
-    
+
     attrs = {
         "__tablename__": table_name,
         "__doc__": f"REST API订单查询记录 - {exchange}.",
@@ -141,14 +155,19 @@ def _create_order_model(exchange: str) -> type:
         "raw_data": Column(Text, nullable=True),
         "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         "__table_args__": (
-            Index(f'idx_{exchange}_order_id_time', 'order_id', 'query_time'),
-            Index(f'idx_{exchange}_order_symbol_status_time', 'symbol', 'order_status', 'query_time'),
-            Index(f'idx_{exchange}_order_query_type_time', 'query_type', 'query_time'),
-            Index(f'idx_{exchange}_order_account_time', 'account_id', 'query_time'),
+            Index(f"idx_{exchange}_order_id_time", "order_id", "query_time"),
+            Index(
+                f"idx_{exchange}_order_symbol_status_time",
+                "symbol",
+                "order_status",
+                "query_time",
+            ),
+            Index(f"idx_{exchange}_order_query_type_time", "query_type", "query_time"),
+            Index(f"idx_{exchange}_order_account_time", "account_id", "query_time"),
             {"extend_existing": True},  # 允许扩展已存在的表定义，避免重复定义错误
         ),
     }
-    
+
     model_class = type(class_name, (Base,), attrs)
     return model_class
 
@@ -196,54 +215,59 @@ EXCHANGE_ORDER_MODELS = {
 
 def get_balance_model(exchange: str):
     """获取交易所的余额表模型.
-    
+
     Args:
         exchange: 交易所名称
-        
+
     Returns:
         SQLAlchemy 模型类
-        
+
     Raises:
         ValueError: 如果交易所不支持
     """
     model = EXCHANGE_BALANCE_MODELS.get(exchange.lower())
     if not model:
-        raise ValueError(f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_BALANCE_MODELS.keys())}")
+        raise ValueError(
+            f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_BALANCE_MODELS.keys())}"
+        )
     return model
 
 
 def get_position_model(exchange: str):
     """获取交易所的持仓表模型.
-    
+
     Args:
         exchange: 交易所名称
-        
+
     Returns:
         SQLAlchemy 模型类
-        
+
     Raises:
         ValueError: 如果交易所不支持
     """
     model = EXCHANGE_POSITION_MODELS.get(exchange.lower())
     if not model:
-        raise ValueError(f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_POSITION_MODELS.keys())}")
+        raise ValueError(
+            f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_POSITION_MODELS.keys())}"
+        )
     return model
 
 
 def get_order_model(exchange: str):
     """获取交易所的订单表模型.
-    
+
     Args:
         exchange: 交易所名称
-        
+
     Returns:
         SQLAlchemy 模型类
-        
+
     Raises:
         ValueError: 如果交易所不支持
     """
     model = EXCHANGE_ORDER_MODELS.get(exchange.lower())
     if not model:
-        raise ValueError(f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_ORDER_MODELS.keys())}")
+        raise ValueError(
+            f"Unsupported exchange: {exchange}. Supported: {list(EXCHANGE_ORDER_MODELS.keys())}"
+        )
     return model
-

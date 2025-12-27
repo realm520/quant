@@ -11,5 +11,3 @@ __all__ = [
     "update_balance_metrics",
     "record_balance_query_status",
 ]
-
-

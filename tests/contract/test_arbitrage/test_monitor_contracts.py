@@ -43,21 +43,21 @@ class TestArbitrageMonitorContract:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1.0"),
-                ask_volume=Decimal("1.0")
+                ask_volume=Decimal("1.0"),
             ),
             Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2700"),
                 ask=Decimal("2701"),
                 bid_volume=Decimal("10.0"),
-                ask_volume=Decimal("10.0")
+                ask_volume=Decimal("10.0"),
             ),
             Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.051"),
                 ask=Decimal("0.052"),
                 bid_volume=Decimal("10.0"),
-                ask_volume=Decimal("10.0")
+                ask_volume=Decimal("10.0"),
             ),
         ]
 
@@ -69,7 +69,7 @@ class TestArbitrageMonitorContract:
             fee_rate_per_trade=0.1,
             base_currency_whitelist=["USDT"],
             refresh_interval_seconds=10,
-            run_mode="once"
+            run_mode="once",
         )
 
     @pytest.fixture
@@ -91,7 +91,10 @@ class TestArbitrageMonitorContract:
         opportunities = await monitor.scan_once()
         if len(opportunities) > 1:
             for i in range(len(opportunities) - 1):
-                assert opportunities[i].expected_profit_rate >= opportunities[i + 1].expected_profit_rate
+                assert (
+                    opportunities[i].expected_profit_rate
+                    >= opportunities[i + 1].expected_profit_rate
+                )
 
     @pytest.mark.asyncio
     async def test_scan_once_filters_by_threshold(self, monitor):
@@ -107,7 +110,7 @@ class TestArbitrageMonitorContract:
         config = MonitorConfig(
             min_profit_threshold=99.0,  # Impossibly high threshold
             fee_rate_per_trade=0.1,
-            run_mode="once"
+            run_mode="once",
         )
         monitor = ArbitrageMonitor(config=config, exchange_name="xt")
         monitor._exchange = MockExchange(test_tickers)
@@ -126,9 +129,7 @@ class TestArbitrageMonitorContract:
     async def test_scan_realtime_yields_lists(self, test_tickers):
         """Contract: scan_realtime() yields list[ArbitrageOpportunity]."""
         config = MonitorConfig(
-            min_profit_threshold=0.5,
-            refresh_interval_seconds=1,
-            run_mode="realtime"
+            min_profit_threshold=0.5, refresh_interval_seconds=1, run_mode="realtime"
         )
         monitor = ArbitrageMonitor(config=config, exchange_name="xt")
         monitor._exchange = MockExchange(test_tickers)
@@ -146,7 +147,7 @@ class TestArbitrageMonitorContract:
         """Contract: scan_realtime() requires config.run_mode == 'realtime'."""
         config = MonitorConfig(run_mode="once")
         monitor = ArbitrageMonitor(config=config, exchange_name="xt")
-        
+
         with pytest.raises(ValueError, match="realtime"):
             async for _ in monitor.scan_realtime():
                 pass
@@ -159,16 +160,15 @@ class TestArbitrageMonitorExceptions:
     async def test_network_error_raised_after_retries(self, mocker):
         """Contract: NetworkError raised after 3 failed retries."""
         from tri_arb.arbitrage.exceptions import NetworkError
-        
+
         config = MonitorConfig(run_mode="once")
         monitor = ArbitrageMonitor(config=config, exchange_name="xt")
-        
+
         # Mock network failure
         mocker.patch.object(
-            monitor, "_fetch_tickers", 
-            side_effect=NetworkError("Network timeout")
+            monitor, "_fetch_tickers", side_effect=NetworkError("Network timeout")
         )
-        
+
         with pytest.raises(NetworkError):
             await monitor.scan_once()
 
@@ -176,9 +176,6 @@ class TestArbitrageMonitorExceptions:
     async def test_validation_error_on_invalid_config(self):
         """Contract: ValidationError raised on invalid config."""
         from pydantic import ValidationError
-        
+
         with pytest.raises(ValidationError):
-            MonitorConfig(
-                min_profit_threshold=150.0,  # Invalid: > 100
-                run_mode="once"
-            )
+            MonitorConfig(min_profit_threshold=150.0, run_mode="once")  # Invalid: > 100

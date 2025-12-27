@@ -15,7 +15,11 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from tri_arb.config.logging import get_logger
 from tri_arb.exchanges.xt_perp import XTPerpExchange
-from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics, update_trade_metrics
+from tri_arb.metrics.prometheus import (
+    ensure_metrics_server,
+    update_order_metrics,
+    update_trade_metrics,
+)
 from tri_arb.storage.database import DatabaseManager
 from tri_arb.storage.xt_websocket_models import (
     XTAccountUpdate,
@@ -31,6 +35,7 @@ logger = get_logger(__name__)
 
 class DecimalEncoder(json.JSONEncoder):
     """JSON encoder for Decimal types."""
+
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
@@ -48,7 +53,7 @@ class XTUserStreamService:
     """
 
     WS_URL = "wss://fstream.xt.com/ws/user"
-
+    
     def __init__(
         self,
         api_key: str,
@@ -75,7 +80,9 @@ class XTUserStreamService:
 
         # Enabled channels
         default_channels = {"account", "position", "order", "trade"}
-        self.enabled_channels = enabled_channels if enabled_channels else default_channels
+        self.enabled_channels = (
+            enabled_channels if enabled_channels else default_channels
+        )
 
         # Connection state
         self.is_running = False
@@ -83,6 +90,7 @@ class XTUserStreamService:
         self.ws = None
         self.listen_key: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._listen_key_refresh_task: Optional[asyncio.Task] = None
         self._connection_id: Optional[str] = None
 
         # Disconnect tracking for data sync
@@ -101,15 +109,15 @@ class XTUserStreamService:
         # Async queues for batch processing
         self._trade_queue = AsyncBoundedQueue(
             maxsize=1000,
-            overflow_handler=lambda item: self._handle_queue_overflow(item, "trade")
+            overflow_handler=lambda item: self._handle_queue_overflow(item, "trade"),
         )
         self._order_queue = AsyncBoundedQueue(
             maxsize=1000,
-            overflow_handler=lambda item: self._handle_queue_overflow(item, "order")
+            overflow_handler=lambda item: self._handle_queue_overflow(item, "order"),
         )
         self._position_queue = AsyncBoundedQueue(
             maxsize=500,
-            overflow_handler=lambda item: self._handle_queue_overflow(item, "position")
+            overflow_handler=lambda item: self._handle_queue_overflow(item, "position"),
         )
 
         # Writer tasks
@@ -120,15 +128,15 @@ class XTUserStreamService:
         # Batch settings
         self._batch_size = 50
         self._batch_timeout = 0.5
-
+    
     def _get_model(self, model_name: str):
         """Get SQLAlchemy model by name."""
         models = {
-            'XTAccountUpdate': XTAccountUpdate,
-            'XTOrderUpdate': XTOrderUpdate,
-            'XTPositionUpdate': XTPositionUpdate,
-            'XTTradeUpdate': XTTradeUpdate,
-            'XTWebSocketConnection': XTWebSocketConnection,
+            "XTAccountUpdate": XTAccountUpdate,
+            "XTOrderUpdate": XTOrderUpdate,
+            "XTPositionUpdate": XTPositionUpdate,
+            "XTTradeUpdate": XTTradeUpdate,
+            "XTWebSocketConnection": XTWebSocketConnection,
         }
         return models.get(model_name)
 
@@ -141,27 +149,33 @@ class XTUserStreamService:
         if self.is_running:
             logger.warning("WS: Service already running")
             return
-
+        
         self.is_running = True
         logger.info(f"WS: Starting service account={self.account_id}")
 
         # Initialize REST client for data sync
         if self.enable_data_sync:
             self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
-            await self.rest_client.connect()
+        await self.rest_client.connect()
 
         # Start batch writer tasks
         if "trade" in self.enabled_channels:
             self._trade_writer_task = asyncio.create_task(
-                self._batch_writer_loop(self._trade_queue, self._save_trade_batch, "trade")
+                self._batch_writer_loop(
+                    self._trade_queue, self._save_trade_batch, "trade"
+                )
             )
         if "order" in self.enabled_channels:
             self._order_writer_task = asyncio.create_task(
-                self._batch_writer_loop(self._order_queue, self._save_order_batch, "order")
+                self._batch_writer_loop(
+                    self._order_queue, self._save_order_batch, "order"
+                )
             )
         if "position" in self.enabled_channels:
             self._position_writer_task = asyncio.create_task(
-                self._batch_writer_loop(self._position_queue, self._save_position_batch, "position")
+                self._batch_writer_loop(
+                    self._position_queue, self._save_position_batch, "position"
+                )
             )
 
         # Main WebSocket loop
@@ -170,22 +184,27 @@ class XTUserStreamService:
                 await self._connect_and_listen()
             except Exception as e:
                 logger.error(f"WS: Connection error: {e}")
-
-                if self.auto_reconnect and self.reconnect_attempts < self.max_reconnect_attempts:
+                
+                if (
+                    self.auto_reconnect
+                    and self.reconnect_attempts < self.max_reconnect_attempts
+                ):
                     self.reconnect_attempts += 1
-                    logger.info(f"WS: Reconnecting {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+                    logger.info(
+                        f"WS: Reconnecting {self.reconnect_attempts}/{self.max_reconnect_attempts}"
+                    )
                     await asyncio.sleep(self.reconnect_delay)
                 else:
                     logger.error("WS: Max reconnect attempts reached")
                     break
-
+        
         # Cleanup
         await self._record_connection_end()
         if self.rest_client:
             await self.rest_client.disconnect()
 
         logger.info("WS: Service stopped")
-
+    
     async def stop(self) -> None:
         """Stop service and flush remaining data."""
         if not self.is_running:
@@ -193,9 +212,10 @@ class XTUserStreamService:
 
         logger.info("WS: Stopping service...")
         self.is_running = False
-
-        # Stop heartbeat
+        
+        # Stop heartbeat and listen key refresh
         await self._stop_heartbeat()
+        await self._stop_listen_key_refresh()
 
         # Close WebSocket
         if self.ws:
@@ -207,20 +227,35 @@ class XTUserStreamService:
 
         # Cancel and flush writer tasks
         for task, queue, save_fn, name in [
-            (self._trade_writer_task, self._trade_queue, self._save_trade_batch, "trade"),
-            (self._order_writer_task, self._order_queue, self._save_order_batch, "order"),
-            (self._position_writer_task, self._position_queue, self._save_position_batch, "position"),
+            (
+                self._trade_writer_task,
+                self._trade_queue,
+                self._save_trade_batch,
+                "trade",
+            ),
+            (
+                self._order_writer_task,
+                self._order_queue,
+                self._save_order_batch,
+                "order",
+            ),
+            (
+                self._position_writer_task,
+                self._position_queue,
+                self._save_position_batch,
+                "position",
+            ),
         ]:
             if task:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
                 await self._flush_queue(queue, save_fn, name)
 
         logger.info("WS: Service stopped completely")
-
+    
     async def _connect_and_listen(self) -> None:
         """Establish WebSocket connection and message loop."""
         # Get listen key
@@ -229,13 +264,15 @@ class XTUserStreamService:
         ws_url = f"{self.WS_URL}?listenKey={self.listen_key}"
         logger.info(f"WS: Connecting to {self.WS_URL[:30]}...")
 
-        async with websockets.connect(ws_url, ping_interval=None, close_timeout=10) as ws:
+        async with websockets.connect(
+            ws_url, ping_interval=20, close_timeout=10
+        ) as ws:
             self.ws = ws
             self.reconnect_attempts = 0
 
             # Record connection and sync if reconnecting
             is_reconnect = self.disconnect_time is not None
-            self.reconnect_time = datetime.now(timezone.utc)
+            self.reconnect_time = datetime.utcnow()
             await self._record_connection_start()
 
             if is_reconnect and self.enable_data_sync:
@@ -248,6 +285,9 @@ class XTUserStreamService:
 
             # Start heartbeat
             await self._start_heartbeat()
+            
+            # Start listen key refresh task
+            await self._start_listen_key_refresh()
 
             # Message loop
             try:
@@ -256,13 +296,14 @@ class XTUserStreamService:
                         break
                     await self._handle_message(message)
             except ConnectionClosed as e:
-                self.disconnect_time = datetime.now(timezone.utc)
+                self.disconnect_time = datetime.utcnow()
                 logger.warning(f"WS: Disconnected code={e.code}")
             except WebSocketException as e:
-                self.disconnect_time = datetime.now(timezone.utc)
+                self.disconnect_time = datetime.utcnow()
                 logger.error(f"WS: WebSocket error: {e}")
             finally:
                 await self._stop_heartbeat()
+                await self._stop_listen_key_refresh()
                 self.ws = None
 
     # ========================================
@@ -286,7 +327,7 @@ class XTUserStreamService:
         sub_msg = {
             "method": "subscribe",
             "params": [f"user.{ch}" for ch in self.enabled_channels],
-            "id": 1
+            "id": 1,
         }
         await self.ws.send(json.dumps(sub_msg))
         logger.info(f"WS: Subscribed channels={list(self.enabled_channels)}")
@@ -299,7 +340,7 @@ class XTUserStreamService:
         async def heartbeat_loop():
             while self.is_running and self.ws:
                 try:
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(20)  # 缩短心跳间隔到20秒
                     if self.ws:
                         await self.ws.ping()
                 except Exception:
@@ -316,6 +357,46 @@ class XTUserStreamService:
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+    async def _start_listen_key_refresh(self) -> None:
+        """Start periodic listen key refresh task."""
+        if self._listen_key_refresh_task:
+            return
+
+        async def refresh_loop():
+            # 每50分钟刷新一次 listen key（XT listen key 通常60分钟过期）
+            while self.is_running and self.ws:
+                try:
+                    await asyncio.sleep(50 * 60)  # 50分钟
+                    if self.is_running and self.rest_client and self.listen_key:
+                        try:
+                            # 尝试刷新 listen key
+                            new_key = await self.rest_client.create_user_stream_listen_key()
+                            if new_key and new_key != self.listen_key:
+                                old_key = self.listen_key[:8]
+                                self.listen_key = new_key
+                                logger.info(
+                                    f"WS: Refreshed listen key {old_key}... -> {new_key[:8]}..."
+                                )
+                        except Exception as e:
+                            logger.warning(f"WS: Failed to refresh listen key: {e}")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"WS: Listen key refresh loop error: {e}")
+                    await asyncio.sleep(60)  # 出错后等待1分钟再继续
+
+        self._listen_key_refresh_task = asyncio.create_task(refresh_loop())
+
+    async def _stop_listen_key_refresh(self) -> None:
+        """Stop listen key refresh task."""
+        if self._listen_key_refresh_task:
+            self._listen_key_refresh_task.cancel()
+            try:
+                await self._listen_key_refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._listen_key_refresh_task = None
 
     async def _send_pong(self) -> None:
         """Respond to server ping."""
@@ -356,40 +437,46 @@ class XTUserStreamService:
             await self._handle_order_update(data)
         elif "trade" in topic:
             await self._handle_trade_update(data)
-
+    
     async def _handle_account_update(self, data: Dict[str, Any]) -> None:
         """Process account balance updates - save immediately."""
         if "account" not in self.enabled_channels:
             return
-
+        
         account_data = data.get("data", {})
         if not account_data:
             return
-
-        if not self._has_data_changed(account_data, self._last_account_data, self._json_key):
+        
+        if not self._has_data_changed(
+            account_data, self._last_account_data, self._json_key
+        ):
             return
-
+        
         # Log summary
         currency = account_data.get("coin", "")
-        available = account_data.get("availableBalance") or account_data.get("amount", "")
+        available = account_data.get("availableBalance") or account_data.get(
+            "amount", ""
+        )
         total = account_data.get("walletBalance") or account_data.get("totalAmount", "")
         logger.info(f"ACCT: {currency} avail={available} total={total}")
 
         # Save immediately (low volume)
         await self._save_account_update(account_data)
-
+    
     async def _handle_position_update(self, data: Dict[str, Any]) -> None:
         """Process position updates - queue for batch write."""
         if "position" not in self.enabled_channels:
             return
-
+        
         position_data = data.get("data", {})
         if not position_data:
             return
-
-        if not self._has_data_changed(position_data, self._last_position_data, self._json_key):
+        
+        if not self._has_data_changed(
+            position_data, self._last_position_data, self._json_key
+        ):
             return
-
+        
         # Log summary
         symbol = position_data.get("symbol", "")
         side = position_data.get("positionSide", "")
@@ -400,19 +487,21 @@ class XTUserStreamService:
 
         # Queue for batch write
         await self._position_queue.put(position_data, block=False)
-
+    
     async def _handle_order_update(self, data: Dict[str, Any]) -> None:
         """Process order updates - queue for batch write + metrics."""
         if "order" not in self.enabled_channels:
             return
-
+        
         order_data = data.get("data", {})
         if not order_data:
             return
-
-        if not self._has_data_changed(order_data, self._last_order_data, self._order_key):
+        
+        if not self._has_data_changed(
+            order_data, self._last_order_data, self._order_key
+        ):
             return
-
+        
         # Log summary
         order_id = order_data.get("orderId", "")
         symbol = order_data.get("symbol", "")
@@ -428,19 +517,21 @@ class XTUserStreamService:
 
         # Update Prometheus metrics in background
         asyncio.create_task(self._update_order_metrics_async(order_data))
-
+    
     async def _handle_trade_update(self, data: Dict[str, Any]) -> None:
         """Process trade updates - queue for batch write + metrics."""
         if "trade" not in self.enabled_channels:
             return
-
+        
         trade_data = data.get("data", {})
         if not trade_data:
             return
-
-        if not self._has_data_changed(trade_data, self._last_trade_data, self._trade_key):
+        
+        if not self._has_data_changed(
+            trade_data, self._last_trade_data, self._trade_key
+        ):
             return
-
+        
         # Log summary
         trade_id = trade_data.get("tradeId") or trade_data.get("execId", "")
         symbol = trade_data.get("symbol", "")
@@ -451,8 +542,8 @@ class XTUserStreamService:
 
         # Queue for batch write (non-blocking)
         if not await self._trade_queue.put(trade_data, block=False):
-            return
-
+                return
+            
         # Update Prometheus metrics in background
         asyncio.create_task(self._update_trade_metrics_async(trade_data))
 
@@ -469,24 +560,26 @@ class XTUserStreamService:
         """Generic batch writer loop."""
         batch = []
         logger.info(f"WS: {name} writer started")
-
+        
         while self.is_running:
             try:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=self._batch_timeout)
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=self._batch_timeout
+                    )
                     batch.append(item)
                 except asyncio.TimeoutError:
                     if batch:
                         await save_batch_fn(batch)
                         batch = []
                     continue
-
+                
                 if len(batch) >= self._batch_size:
                     await save_batch_fn(batch)
                     batch = []
-
+                
                 queue.task_done()
-
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -496,8 +589,8 @@ class XTUserStreamService:
                         await save_batch_fn(batch)
                     except Exception:
                         pass
-                    batch = []
-
+                        batch = []
+        
         # Flush remaining on exit
         if batch:
             await save_batch_fn(batch)
@@ -519,7 +612,7 @@ class XTUserStreamService:
                 queue.task_done()
             except asyncio.TimeoutError:
                 break
-
+        
         if remaining:
             logger.info(f"WS: Flushing {len(remaining)} {name}s")
             try:
@@ -539,13 +632,13 @@ class XTUserStreamService:
         """Save trades to database."""
         if not batch:
             return
-
-        start = datetime.now(timezone.utc)
+        
+        start = datetime.utcnow()
         count = 0
-
+        
         try:
             async with self.db_manager.session() as session:
-                TradeModel = self._get_model('XTTradeUpdate')
+                TradeModel = self._get_model("XTTradeUpdate")
 
                 for data in batch:
                     # Extract trade(s) from data
@@ -557,33 +650,40 @@ class XTUserStreamService:
                             order_id = trade.get("orderId", "")
                             ts = trade.get("timestamp", "")
                             trade_id = f"{order_id}_{ts}" if order_id else None
-
-                        if not trade_id:
-                            continue
-
+                    
+                    if not trade_id:
+                        continue
+                    
                         record = TradeModel(
                             update_time=self._parse_timestamp(trade.get("timestamp")),
-                            account_id=self.account_id,
+                        account_id=self.account_id,
                             symbol=trade.get("symbol", ""),
                             order_id=str(trade.get("orderId", "")),
-                            trade_id=str(trade_id),
+                        trade_id=str(trade_id),
                             side=trade.get("orderSide") or trade.get("side", ""),
                             price=self._safe_decimal(trade.get("price")),
                             quantity=self._safe_decimal(trade.get("quantity")),
-                            quote_quantity=self._safe_decimal(trade.get("quoteQuantity", 0)),
-                            commission=self._safe_decimal(trade.get("fee") or trade.get("commission", 0)),
-                            commission_asset=trade.get("feeCoin") or trade.get("feeCurrency", ""),
+                            quote_quantity=self._safe_decimal(
+                                trade.get("quoteQuantity", 0)
+                            ),
+                            commission=self._safe_decimal(
+                                trade.get("fee") or trade.get("commission", 0)
+                            ),
+                            commission_asset=trade.get("feeCoin")
+                            or trade.get("feeCurrency", ""),
                             is_maker=trade.get("takerMaker") == "MAKER",
                             position_side=trade.get("positionSide", ""),
-                            raw_data=json.dumps(trade, cls=DecimalEncoder),
-                        )
-                        session.add(record)
-                        count += 1
-
+                        raw_data=json.dumps(trade, cls=DecimalEncoder),
+                    )
+                    session.add(record)
+                    count += 1
+                
                 await session.commit()
-
-            duration = (datetime.now(timezone.utc) - start).total_seconds()
-            logger.info(f"BATCH: {count} trades in {duration:.2f}s q={self._trade_queue.qsize()}")
+                
+            duration = (datetime.utcnow() - start).total_seconds()
+            logger.info(
+                f"BATCH: {count} trades in {duration:.2f}s q={self._trade_queue.qsize()}"
+            )
 
         except Exception as e:
             logger.error(f"WS: Failed to save trade batch: {e}")
@@ -592,30 +692,34 @@ class XTUserStreamService:
         """Save orders to database with ON CONFLICT handling."""
         if not batch:
             return
-
-        start = datetime.now(timezone.utc)
+        
+        start = datetime.utcnow()
         count = 0
-
+        
         try:
-            from sqlalchemy.dialects.postgresql import insert
-
+            from sqlalchemy.dialects.postgresql import insert  # type: ignore[import-untyped]
+            
             async with self.db_manager.session() as session:
-                OrderModel = self._get_model('XTOrderUpdate')
+                OrderModel = self._get_model("XTOrderUpdate")
 
                 for data in batch:
                     order_id = data.get("orderId") or data.get("order_id")
                     if not order_id:
                         continue
-
+                    
                     values = {
-                        "update_time": self._parse_timestamp(data.get("updatedTime") or data.get("createdTime")),
+                        "update_time": self._parse_timestamp(
+                            data.get("updatedTime") or data.get("createdTime")
+                        ),
                         "account_id": self.account_id,
                         "symbol": data.get("symbol", ""),
                         "order_id": str(order_id),
                         "client_order_id": data.get("clientOrderId", ""),
                         "price": self._safe_decimal(data.get("price")),
                         "quantity": self._safe_decimal(data.get("origQty")),
-                        "filled_quantity": self._safe_decimal(data.get("executedQty", 0)),
+                        "filled_quantity": self._safe_decimal(
+                            data.get("executedQty", 0)
+                        ),
                         "status": data.get("state") or data.get("status", ""),
                         "order_type": data.get("orderType", ""),
                         "side": data.get("orderSide") or data.get("side", ""),
@@ -626,22 +730,24 @@ class XTUserStreamService:
 
                     stmt = insert(OrderModel).values(**values)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=['account_id', 'order_id'],
+                        index_elements=["account_id", "order_id"],
                         set_={
-                            'update_time': stmt.excluded.update_time,
-                            'filled_quantity': stmt.excluded.filled_quantity,
-                            'status': stmt.excluded.status,
-                            'raw_data': stmt.excluded.raw_data,
-                        }
+                            "update_time": stmt.excluded.update_time,
+                            "filled_quantity": stmt.excluded.filled_quantity,
+                            "status": stmt.excluded.status,
+                            "raw_data": stmt.excluded.raw_data,
+                        },
                     )
                     await session.execute(stmt)
                     count += 1
 
-                await session.commit()
+                    await session.commit()
 
-            duration = (datetime.now(timezone.utc) - start).total_seconds()
-            logger.info(f"BATCH: {count} orders in {duration:.2f}s q={self._order_queue.qsize()}")
-
+            duration = (datetime.utcnow() - start).total_seconds()
+            logger.info(
+                f"BATCH: {count} orders in {duration:.2f}s q={self._order_queue.qsize()}"
+                        )
+                
         except Exception as e:
             logger.error(f"WS: Failed to save order batch: {e}")
 
@@ -649,22 +755,22 @@ class XTUserStreamService:
         """Save positions to database."""
         if not batch:
             return
-
-        start = datetime.now(timezone.utc)
+        
+        start = datetime.utcnow()
         count = 0
-
+        
         try:
             async with self.db_manager.session() as session:
-                PositionModel = self._get_model('XTPositionUpdate')
+                PositionModel = self._get_model("XTPositionUpdate")
 
                 for data in batch:
                     symbol = data.get("symbol", "")
                     side = data.get("positionSide", "")
                     if not symbol:
                         continue
-
+                    
                     record = PositionModel(
-                        update_time=datetime.now(timezone.utc),
+                        update_time=datetime.utcnow(),
                         account_id=self.account_id,
                         symbol=symbol,
                         side=side,
@@ -680,10 +786,12 @@ class XTUserStreamService:
                     session.add(record)
                     count += 1
 
-                await session.commit()
+                    await session.commit()
 
-            duration = (datetime.now(timezone.utc) - start).total_seconds()
-            logger.info(f"BATCH: {count} positions in {duration:.2f}s q={self._position_queue.qsize()}")
+            duration = (datetime.utcnow() - start).total_seconds()
+            logger.info(
+                f"BATCH: {count} positions in {duration:.2f}s q={self._position_queue.qsize()}"
+            )
 
         except Exception as e:
             logger.error(f"WS: Failed to save position batch: {e}")
@@ -692,15 +800,19 @@ class XTUserStreamService:
         """Save account update immediately (low volume)."""
         try:
             async with self.db_manager.session() as session:
-                AccountModel = self._get_model('XTAccountUpdate')
+                AccountModel = self._get_model("XTAccountUpdate")
 
-                wallet_balance = self._safe_decimal(data.get("walletBalance") or data.get("totalAmount"))
-                available = self._safe_decimal(data.get("availableBalance") or data.get("amount"))
+                wallet_balance = self._safe_decimal(
+                    data.get("walletBalance") or data.get("totalAmount")
+                )
+                available = self._safe_decimal(
+                    data.get("availableBalance") or data.get("amount")
+                )
                 frozen = wallet_balance - available
 
                 record = AccountModel(
-                    update_time=datetime.now(timezone.utc),
-                    account_id=self.account_id,
+                    update_time=datetime.utcnow(),
+                        account_id=self.account_id,
                     currency=data.get("coin", ""),
                     available=available,
                     frozen=frozen,
@@ -709,7 +821,7 @@ class XTUserStreamService:
                 )
                 session.add(record)
                 await session.commit()
-
+                
         except Exception as e:
             logger.error(f"WS: Failed to save account update: {e}")
 
@@ -736,7 +848,7 @@ class XTUserStreamService:
             start_time = self.disconnect_time - timedelta(minutes=1)  # Buffer
             end_time = self.reconnect_time + timedelta(minutes=1)
         else:
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.utcnow()
             start_time = end_time - timedelta(hours=1)
 
         logger.info(f"WS: Sync range {start_time} to {end_time}")
@@ -767,7 +879,7 @@ class XTUserStreamService:
         balances = await self.rest_client.get_balance()
 
         async with self.db_manager.session() as session:
-            AccountModel = self._get_model('XTAccountUpdate')
+            AccountModel = self._get_model("XTAccountUpdate")
 
             for currency, balance_info in balances.items():
                 total = balance_info.get("total", Decimal("0"))
@@ -775,8 +887,8 @@ class XTUserStreamService:
                 frozen = total - available
 
                 record = AccountModel(
-                    update_time=datetime.now(timezone.utc),
-                    account_id=self.account_id,
+                    update_time=datetime.utcnow(),
+                            account_id=self.account_id,
                     currency=currency,
                     available=available,
                     frozen=frozen,
@@ -784,8 +896,7 @@ class XTUserStreamService:
                     raw_data=json.dumps(balance_info, cls=DecimalEncoder),
                 )
                 session.add(record)
-
-            await session.commit()
+                await session.commit()
 
         logger.info(f"WS: Synced {len(balances)} account balances")
 
@@ -794,30 +905,51 @@ class XTUserStreamService:
         positions = await self.rest_client.get_positions()
 
         async with self.db_manager.session() as session:
-            PositionModel = self._get_model('XTPositionUpdate')
+            PositionModel = self._get_model("XTPositionUpdate")
 
             for pos in positions:
+                # pos is a Position object, not a dict
                 record = PositionModel(
-                    update_time=datetime.now(timezone.utc),
-                    account_id=self.account_id,
-                    symbol=pos.symbol,
-                    side=pos.side,
-                    quantity=pos.quantity,
-                    entry_price=pos.entry_price,
-                    mark_price=pos.mark_price,
-                    unrealized_pnl=pos.unrealized_pnl,
-                    leverage=pos.leverage,
-                    liquidation_price=pos.liquidation_price,
-                    margin=pos.margin,
-                    raw_data="{}",
+                    update_time=datetime.utcnow(),
+                            account_id=self.account_id,
+                    symbol=pos.symbol if hasattr(pos, "symbol") else "",
+                    side=pos.side if hasattr(pos, "side") else "",
+                    quantity=self._safe_decimal(
+                        pos.quantity if hasattr(pos, "quantity") else 0
+                    ),
+                    entry_price=self._safe_decimal(
+                        pos.entry_price if hasattr(pos, "entry_price") else 0
+                    ),
+                    mark_price=self._safe_decimal(
+                        pos.mark_price if hasattr(pos, "mark_price") else 0
+                    ),
+                    unrealized_pnl=self._safe_decimal(
+                        pos.unrealized_pnl if hasattr(pos, "unrealized_pnl") else 0
+                    ),
+                    leverage=self._safe_int(pos.leverage if hasattr(pos, "leverage") else 1),
+                    liquidation_price=self._safe_decimal(
+                        pos.liquidation_price if hasattr(pos, "liquidation_price") else 0
+                    ),
+                    margin=self._safe_decimal(
+                        pos.margin if hasattr(pos, "margin") else 0
+                    ),
+                    raw_data=json.dumps(
+                        {
+                            "symbol": pos.symbol if hasattr(pos, "symbol") else "",
+                            "side": pos.side if hasattr(pos, "side") else "",
+                            "quantity": str(pos.quantity) if hasattr(pos, "quantity") else "0",
+                        },
+                        cls=DecimalEncoder,
+                    ),
                 )
                 session.add(record)
-
-            await session.commit()
+                await session.commit()
 
         logger.info(f"WS: Synced {len(positions)} positions")
 
-    async def _sync_order_data_fixed_lookback(self, start_time: datetime, end_time: datetime) -> None:
+    async def _sync_order_data_fixed_lookback(
+        self, start_time: datetime, end_time: datetime
+    ) -> None:
         """Sync orders via paginated REST API."""
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
@@ -846,25 +978,29 @@ class XTUserStreamService:
         saved = 0
 
         try:
-            from sqlalchemy.dialects.postgresql import insert
+            from sqlalchemy.dialects.postgresql import insert  # type: ignore[import-untyped]
 
             async with self.db_manager.session() as session:
-                OrderModel = self._get_model('XTOrderUpdate')
+                OrderModel = self._get_model("XTOrderUpdate")
 
                 for data in orders:
                     order_id = data.get("orderId")
                     if not order_id:
                         continue
-
+                
                     values = {
-                        "update_time": self._parse_timestamp(data.get("updatedTime") or data.get("createdTime")),
+                        "update_time": self._parse_timestamp(
+                            data.get("updatedTime") or data.get("createdTime")
+                        ),
                         "account_id": self.account_id,
                         "symbol": data.get("symbol", ""),
                         "order_id": str(order_id),
                         "client_order_id": data.get("clientOrderId", ""),
                         "price": self._safe_decimal(data.get("price")),
                         "quantity": self._safe_decimal(data.get("origQty")),
-                        "filled_quantity": self._safe_decimal(data.get("executedQty", 0)),
+                        "filled_quantity": self._safe_decimal(
+                            data.get("executedQty", 0)
+                        ),
                         "status": data.get("state", ""),
                         "order_type": data.get("orderType", ""),
                         "side": data.get("orderSide", ""),
@@ -874,12 +1010,13 @@ class XTUserStreamService:
                     }
 
                     stmt = insert(OrderModel).values(**values)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['account_id', 'order_id'])
+                    stmt = stmt.on_conflict_do_nothing(
+                        constraint="uq_xt_order_id_time_account"
+                    )
                     await session.execute(stmt)
                     saved += 1
 
                 await session.commit()
-
         except Exception as e:
             logger.error(f"WS: Failed to save REST orders: {e}")
 
@@ -935,7 +1072,7 @@ class XTUserStreamService:
     # ========================================
     # UTILITIES
     # ========================================
-
+    
     def _safe_decimal(self, value: Any) -> Decimal:
         """Safe Decimal conversion."""
         if value is None:
@@ -944,7 +1081,7 @@ class XTUserStreamService:
             return Decimal(str(value))
         except Exception:
             return Decimal("0")
-
+    
     def _safe_int(self, value: Any) -> int:
         """Safe int conversion."""
         if value is None:
@@ -953,16 +1090,16 @@ class XTUserStreamService:
             return int(value)
         except Exception:
             return 0
-
+    
     def _parse_timestamp(self, timestamp: Any) -> Optional[datetime]:
         """Parse millisecond timestamp to datetime."""
         if not timestamp:
-            return datetime.now(timezone.utc)
+            return datetime.utcnow()
         try:
             ts = int(timestamp)
-            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+            return datetime.fromtimestamp(ts / 1000)
         except Exception:
-            return datetime.now(timezone.utc)
+            return datetime.utcnow()
 
     def _extract_trades(self, data: Dict[str, Any]) -> list:
         """Extract trade records from message data."""
@@ -984,44 +1121,45 @@ class XTUserStreamService:
         """Record connection start in database."""
         try:
             from uuid import uuid4
+
             self._connection_id = str(uuid4())
 
             async with self.db_manager.session() as session:
-                ConnectionModel = self._get_model('XTWebSocketConnection')
+                ConnectionModel = self._get_model("XTWebSocketConnection")
 
+                # XTWebSocketConnection 模型字段检查
+                # 使用不带时区的 datetime（数据库字段是 TIMESTAMP WITHOUT TIME ZONE）
                 record = ConnectionModel(
                     connection_id=self._connection_id,
-                    account_id=self.account_id,
-                    connected_at=datetime.now(timezone.utc),
+                    start_time=datetime.utcnow(),
                     is_active=True,
-                    channels=list(self.enabled_channels),
                 )
                 session.add(record)
                 await session.commit()
-
         except Exception as e:
             logger.error(f"WS: Failed to record connection start: {e}")
 
     async def _record_connection_end(self) -> None:
         """Record connection end in database."""
         if not self._connection_id:
-            return
-
+                return
+            
         try:
             from sqlalchemy import update
-
+            
             async with self.db_manager.session() as session:
-                ConnectionModel = self._get_model('XTWebSocketConnection')
+                ConnectionModel = self._get_model("XTWebSocketConnection")
 
-                stmt = update(ConnectionModel).where(
-                    ConnectionModel.connection_id == self._connection_id
-                ).values(
-                    disconnected_at=datetime.now(timezone.utc),
-                    is_active=False,
+                stmt = (
+                    update(ConnectionModel)
+                    .where(ConnectionModel.connection_id == self._connection_id)
+                    .values(
+                        end_time=datetime.utcnow(),
+                        is_active=False,
+                    )
                 )
                 await session.execute(stmt)
                 await session.commit()
-
         except Exception as e:
             logger.error(f"WS: Failed to record connection end: {e}")
 

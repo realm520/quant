@@ -17,17 +17,17 @@ def decimal_default(obj: Any) -> str:
 
 def format_json(data: Any) -> str:
     """Format data as JSON string.
-    
+
     Args:
         data: Data to format (list, dict, or object)
-    
+
     Returns:
         JSON formatted string
     """
     # Convert objects to dicts if needed
-    if hasattr(data, '__dict__'):
+    if hasattr(data, "__dict__"):
         data = data.__dict__
-    elif isinstance(data, list) and data and hasattr(data[0], '__dict__'):
+    elif isinstance(data, list) and data and hasattr(data[0], "__dict__"):
         data = [item.__dict__ for item in data]
 
     return json.dumps(data, indent=2, default=decimal_default, ensure_ascii=False)
@@ -35,7 +35,7 @@ def format_json(data: Any) -> str:
 
 def print_json(data: Any) -> None:
     """Print data as formatted JSON.
-    
+
     Args:
         data: Data to print
     """

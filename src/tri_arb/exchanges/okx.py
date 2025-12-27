@@ -10,7 +10,15 @@ from decimal import Decimal
 from uuid import uuid4
 
 from tri_arb.config.logging import get_logger
-from tri_arb.core.models import Order, OrderBook, OrderSide, OrderStatus, Price, Trade, TradingPair
+from tri_arb.core.models import (
+    Order,
+    OrderBook,
+    OrderSide,
+    OrderStatus,
+    Price,
+    Trade,
+    TradingPair,
+)
 from tri_arb.exchanges.base import BaseExchange
 
 
@@ -259,9 +267,7 @@ class OKXExchange(BaseExchange):
         logger.debug("Returning empty trade history (placeholder)")
         return []
 
-    async def subscribe_ticker(
-        self, trading_pair: TradingPair
-    ) -> AsyncIterator[Price]:
+    async def subscribe_ticker(self, trading_pair: TradingPair) -> AsyncIterator[Price]:
         """Subscribe to ticker updates (placeholder).
 
         Args:

@@ -61,7 +61,9 @@ class TradingPair(BaseModel):
     Includes trading rules, precision, and fee structure from exchange API.
     """
 
-    base_currency: str = Field(..., min_length=1, max_length=32, description="Base currency symbol")
+    base_currency: str = Field(
+        ..., min_length=1, max_length=32, description="Base currency symbol"
+    )
     quote_currency: str = Field(
         ..., min_length=1, max_length=32, description="Quote currency symbol"
     )
@@ -70,7 +72,9 @@ class TradingPair(BaseModel):
     # Basic trading constraints
     min_order_size: Decimal = Field(..., gt=0, description="Minimum order size")
     max_order_size: Decimal = Field(..., gt=0, description="Maximum order size")
-    price_precision: int = Field(..., ge=0, description="Number of decimal places for price")
+    price_precision: int = Field(
+        ..., ge=0, description="Number of decimal places for price"
+    )
     quantity_precision: int = Field(
         ..., ge=0, description="Number of decimal places for quantity"
     )
@@ -110,13 +114,15 @@ class TradingPair(BaseModel):
         default=None, gt=0, description="Maximum allowed quantity"
     )
     quantity_step: Decimal | None = Field(
-        default=None, gt=0, description="Quantity step size (minimum quantity increment)"
+        default=None,
+        gt=0,
+        description="Quantity step size (minimum quantity increment)",
     )
 
     # Perpetual futures specific (optional, for perpetual contracts)
     leverage_brackets: list[dict[str, Any]] | None = Field(
         default=None,
-        description="Leverage brackets defining max leverage based on notional value"
+        description="Leverage brackets defining max leverage based on notional value",
     )
     contract_size: Decimal | None = Field(
         default=None, gt=0, description="Contract face value (e.g., 1 BTC = 1 contract)"
@@ -229,7 +235,9 @@ class Order(BaseModel):
     trading_pair: TradingPair = Field(..., description="Trading pair for order")
     side: OrderSide = Field(..., description="Buy or sell")
     order_type: OrderType = Field(..., description="Market, limit, etc.")
-    price: Decimal | None = Field(None, gt=0, description="Limit price (None for market orders)")
+    price: Decimal | None = Field(
+        None, gt=0, description="Limit price (None for market orders)"
+    )
     quantity: Decimal = Field(..., gt=0, description="Order quantity")
     status: OrderStatus = Field(default=OrderStatus.PENDING, description="Order status")
     created_at: datetime = Field(..., description="When order was created")
@@ -238,11 +246,12 @@ class Order(BaseModel):
 
     # Perpetual futures specific (optional, for perpetual contracts)
     position_side: str | None = Field(
-        default=None, description="Position direction (LONG or SHORT) for perpetual futures"
+        default=None,
+        description="Position direction (LONG or SHORT) for perpetual futures",
     )
     time_in_force: str | None = Field(
         default="GTC",
-        description="Time in force (GTC, IOC, FOK, POST_ONLY) - defaults to GTC"
+        description="Time in force (GTC, IOC, FOK, POST_ONLY) - defaults to GTC",
     )
 
     @computed_field  # type: ignore[prop-decorator]
@@ -277,7 +286,11 @@ class Order(BaseModel):
     @classmethod
     def limit_requires_price(cls, v: Decimal | None, info: Any) -> Decimal | None:
         """Validate limit orders must have a price."""
-        if "order_type" in info.data and info.data["order_type"] == OrderType.LIMIT and v is None:
+        if (
+            "order_type" in info.data
+            and info.data["order_type"] == OrderType.LIMIT
+            and v is None
+        ):
             raise ValueError("Limit orders must have a price")
         return v
 
@@ -302,7 +315,7 @@ class Trade(BaseModel):
 
 class Balance(BaseModel):
     """账户余额数据结构"""
-    
+
     accountAlias: str = Field(..., description="账户唯一识别码")
     asset: str = Field(..., description="资产（如 USDT, BTC）")
     balance: Decimal = Field(..., description="总余额")
@@ -312,21 +325,21 @@ class Balance(BaseModel):
     maxWithdrawAmount: Decimal = Field(..., description="最大可转出余额")
     marginAvailable: bool = Field(..., description="是否可用作联合保证金")
     updateTime: int = Field(..., description="更新时间（时间戳）")
-    
+
     class Config:
         # 将字符串转为 Decimal 类型，并保证小数精度
         str_strip_whitespace = True
-    
+
     def to_dict(self):
         """将余额数据转换为字典形式"""
         return {
             "currency": self.asset,
             "available": str(self.availableBalance),
             "frozen": str(self.balance - self.availableBalance),
-            "total": str(self.balance)
+            "total": str(self.balance),
         }
-        
-        
+
+
 class ArbitrageOpportunity(BaseModel):
     """Triangular arbitrage opportunity.
 
@@ -335,21 +348,32 @@ class ArbitrageOpportunity(BaseModel):
 
     opportunity_id: str = Field(..., min_length=1, description="Unique identifier")
     path: list[TradingPair] = Field(
-        ..., min_length=3, max_length=3, description="Three trading pairs forming the triangle"
+        ...,
+        min_length=3,
+        max_length=3,
+        description="Three trading pairs forming the triangle",
     )
     prices: list[Price] = Field(
         ..., min_length=3, max_length=3, description="Current prices for each pair"
     )
-    estimated_profit: Decimal = Field(..., ge=0, description="Expected profit (percentage)")
-    estimated_profit_amount: Decimal = Field(..., ge=0, description="Absolute profit amount")
+    estimated_profit: Decimal = Field(
+        ..., ge=0, description="Expected profit (percentage)"
+    )
+    estimated_profit_amount: Decimal = Field(
+        ..., ge=0, description="Absolute profit amount"
+    )
     required_capital: Decimal = Field(..., gt=0, description="Initial capital needed")
     slippage_tolerance: Decimal = Field(
         ..., ge=0, le=1, description="Maximum acceptable slippage"
     )
     detected_at: datetime = Field(..., description="When opportunity was detected")
     expires_at: datetime = Field(..., description="When opportunity likely expires")
-    exchange: str = Field(..., min_length=1, description="Exchange where opportunity exists")
-    is_viable: bool = Field(default=False, description="Whether opportunity meets minimum criteria")
+    exchange: str = Field(
+        ..., min_length=1, description="Exchange where opportunity exists"
+    )
+    is_viable: bool = Field(
+        default=False, description="Whether opportunity meets minimum criteria"
+    )
 
     @field_validator("path")
     @classmethod

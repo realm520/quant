@@ -26,26 +26,17 @@ class ExecutionConfig(BaseModel):
     min_initial_amount: Decimal = Field(
         default=Decimal("10"),
         gt=0,
-        description="Minimum initial investment amount (USDT)"
+        description="Minimum initial investment amount (USDT)",
     )
 
     order_timeout_seconds: int = Field(
-        default=30,
-        gt=0,
-        le=300,
-        description="Order timeout in seconds (max 5 minutes)"
+        default=30, gt=0, le=300, description="Order timeout in seconds (max 5 minutes)"
     )
 
     poll_interval_seconds: float = Field(
-        default=0.5,
-        gt=0,
-        le=5,
-        description="Order status polling interval in seconds"
+        default=0.5, gt=0, le=5, description="Order status polling interval in seconds"
     )
 
     max_retries: int = Field(
-        default=3,
-        ge=0,
-        le=10,
-        description="Maximum retries for network errors"
+        default=3, ge=0, le=10, description="Maximum retries for network errors"
     )

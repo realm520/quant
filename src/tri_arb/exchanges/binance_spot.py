@@ -15,7 +15,15 @@ from uuid import uuid4
 import httpx
 
 from tri_arb.config.logging import get_logger
-from tri_arb.core.models import Order, OrderBook, OrderSide, OrderStatus, Price, Trade, TradingPair
+from tri_arb.core.models import (
+    Order,
+    OrderBook,
+    OrderSide,
+    OrderStatus,
+    Price,
+    Trade,
+    TradingPair,
+)
 from tri_arb.exchanges.base import BaseExchange
 
 
@@ -52,7 +60,7 @@ class BinanceSpotExchange(BaseExchange):
         self.api_key = api_key
         self.api_secret = api_secret
         self._client: httpx.AsyncClient | None = None
-        
+
         logger.info(
             "BinanceSpotExchange initialized",
             has_api_key=bool(api_key),
@@ -66,7 +74,7 @@ class BinanceSpotExchange(BaseExchange):
                 timeout=httpx.Timeout(30.0),
                 limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
             )
-        
+
         self.is_connected = True
         logger.info("Connected to Binance Spot exchange", exchange=self.name)
 
@@ -75,13 +83,13 @@ class BinanceSpotExchange(BaseExchange):
         if self._client:
             await self._client.aclose()
             self._client = None
-        
+
         self.is_connected = False
         logger.info("Disconnected from Binance Spot exchange", exchange=self.name)
 
     def _require_credentials(self) -> None:
         """Check if API credentials are available.
-        
+
         Raises:
             ValueError: If API key or secret is missing
         """
@@ -101,9 +109,9 @@ class BinanceSpotExchange(BaseExchange):
             Hex signature string
         """
         return hmac.new(
-            self.api_secret.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
+            self.api_secret.encode("utf-8"),
+            query_string.encode("utf-8"),
+            hashlib.sha256,
         ).hexdigest()
 
     async def _request(
@@ -133,16 +141,16 @@ class BinanceSpotExchange(BaseExchange):
 
         url = f"{self.BASE_URL}{path}"
         headers = {}
-        
+
         if authenticated:
             self._require_credentials()
             headers["X-MBX-APIKEY"] = self.api_key
-            
+
             # Add timestamp
             if params is None:
                 params = {}
             params["timestamp"] = int(time.time() * 1000)
-            
+
             # Generate signature
             query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
             signature = self._generate_signature(query_string)
@@ -161,7 +169,7 @@ class BinanceSpotExchange(BaseExchange):
             params=params,
             headers=headers,
         )
-        
+
         response.raise_for_status()
         return response
 
@@ -179,7 +187,9 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Trading pair info query not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Trading pair info query not yet implemented for Binance Spot"
+        )
 
     async def get_balance(self) -> dict[str, dict[str, Any]]:
         """Get account balances for all assets.
@@ -208,44 +218,52 @@ class BinanceSpotExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         logger.debug(
             "Raw Binance balance response",
-            response_keys=list(data.keys()) if isinstance(data, dict) else "not_dict"
+            response_keys=list(data.keys()) if isinstance(data, dict) else "not_dict",
         )
 
         balances: dict[str, dict[str, Any]] = {}
-        
+
         # Binance response format: {balances: [{asset: "BTC", free: "1.0", locked: "0.5"}, ...]}
         if "balances" in data:
             for balance_item in data["balances"]:
                 asset = balance_item.get("asset", "")
                 if not asset:
                     continue
-                    
+
                 free = Decimal(balance_item.get("free", "0"))
                 locked = Decimal(balance_item.get("locked", "0"))
-                
+
                 # Only include assets with non-zero balances
                 if free > 0 or locked > 0:
                     balances[asset] = {
                         "available": free,
                         "frozen": locked,
-                        "total": free + locked
+                        "total": free + locked,
                     }
         else:
             # Handle unexpected response format
             logger.error(
                 "Unexpected Binance Spot balance response format",
-                response_keys=list(data.keys()) if isinstance(data, dict) else "not_dict",
-                data=str(data)[:500]
+                response_keys=(
+                    list(data.keys()) if isinstance(data, dict) else "not_dict"
+                ),
+                data=str(data)[:500],
             )
-            raise ValueError(f"Unexpected response format from Binance Spot API: missing 'balances' key")
-        
+            raise ValueError(
+                f"Unexpected response format from Binance Spot API: missing 'balances' key"
+            )
+
         logger.info(
             "Binance spot balances retrieved",
             currencies_count=len(balances),
-            currencies=list(balances.keys())[:10] if balances else ["No balances with non-zero amounts"]
+            currencies=(
+                list(balances.keys())[:10]
+                if balances
+                else ["No balances with non-zero amounts"]
+            ),
         )
 
         return balances
@@ -264,7 +282,7 @@ class BinanceSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         symbol = f"{trading_pair.base_currency}{trading_pair.quote_currency}"
-        
+
         response = await self._request(
             method="GET",
             path="/api/v3/ticker/bookTicker",
@@ -273,7 +291,7 @@ class BinanceSpotExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         price = Price(
             trading_pair=trading_pair,
             bid_price=Decimal(data["bidPrice"]),
@@ -310,10 +328,10 @@ class BinanceSpotExchange(BaseExchange):
             httpx.HTTPStatusError: If API request fails
         """
         symbol = f"{trading_pair.base_currency}{trading_pair.quote_currency}"
-        
+
         # Binance supports depth levels: 5, 10, 20, 50, 100, 500, 1000, 5000
         limit = min(depth, 5000)
-        
+
         response = await self._request(
             method="GET",
             path="/api/v3/depth",
@@ -322,7 +340,7 @@ class BinanceSpotExchange(BaseExchange):
         )
 
         data = response.json()
-        
+
         bids = [(Decimal(price), Decimal(qty)) for price, qty in data["bids"][:depth]]
         asks = [(Decimal(price), Decimal(qty)) for price, qty in data["asks"][:depth]]
 
@@ -355,7 +373,9 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order placement not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Order placement not yet implemented for Binance Spot"
+        )
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel order (not implemented yet).
@@ -369,7 +389,9 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order cancellation not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Order cancellation not yet implemented for Binance Spot"
+        )
 
     async def get_order_status(self, order_id: str) -> Order:
         """Get order status (not implemented yet).
@@ -383,7 +405,9 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order status query not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Order status query not yet implemented for Binance Spot"
+        )
 
     async def get_trade_history(
         self, trading_pair: TradingPair, limit: int = 100
@@ -402,9 +426,7 @@ class BinanceSpotExchange(BaseExchange):
         """
         raise NotImplementedError("Trade history not yet implemented for Binance Spot")
 
-    async def subscribe_ticker(
-        self, trading_pair: TradingPair
-    ) -> AsyncIterator[Price]:
+    async def subscribe_ticker(self, trading_pair: TradingPair) -> AsyncIterator[Price]:
         """Subscribe to ticker updates (not implemented yet).
 
         Args:
@@ -416,7 +438,9 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Ticker subscription not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Ticker subscription not yet implemented for Binance Spot"
+        )
         yield  # Make this a generator
 
     async def subscribe_orderbook(
@@ -434,5 +458,7 @@ class BinanceSpotExchange(BaseExchange):
         Raises:
             NotImplementedError: This method is not yet implemented
         """
-        raise NotImplementedError("Order book subscription not yet implemented for Binance Spot")
+        raise NotImplementedError(
+            "Order book subscription not yet implemented for Binance Spot"
+        )
         yield  # Make this a generator

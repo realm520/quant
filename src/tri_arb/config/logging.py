@@ -1,4 +1,5 @@
 """Logging configuration with structlog."""
+
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -42,7 +43,7 @@ def setup_file_handlers() -> None:
     # Create JSON formatter for file logs
     json_formatter = logging.Formatter(
         '{"timestamp": "%(asctime)s", "level": "%(levelname)s", "name": "%(name)s", "message": "%(message)s"}',
-        datefmt="%Y-%m-%dT%H:%M:%S"
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
     # Setup main log file (INFO and above)
@@ -51,7 +52,7 @@ def setup_file_handlers() -> None:
         main_log_file,
         maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=5,
-        encoding="utf-8"
+        encoding="utf-8",
     )
     main_handler.setLevel(logging.INFO)
     main_handler.setFormatter(json_formatter)
@@ -63,7 +64,7 @@ def setup_file_handlers() -> None:
         error_log_file,
         maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=5,
-        encoding="utf-8"
+        encoding="utf-8",
     )
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(json_formatter)

@@ -22,16 +22,16 @@ logger = get_logger(__name__)
 
 class XTAccountScheduler:
     """XT交易所账户定时任务服务.
-    
+
     每10分钟获取一次账户余额和仓位数据，并存储到数据库。
-    
+
     Attributes:
         api_key: XT API密钥（现货和合约共用）
         api_secret: XT API密钥（现货和合约共用）
         interval_minutes: 查询间隔（分钟），默认10分钟
         db_manager: 数据库管理器
     """
-    
+
     def __init__(
         self,
         api_key: str,
@@ -40,7 +40,7 @@ class XTAccountScheduler:
         interval_minutes: int = 10,
     ):
         """初始化XT账户定时任务服务.
-        
+
         Args:
             api_key: XT API密钥（现货和合约共用）
             api_secret: XT API密钥（现货和合约共用）
@@ -52,36 +52,36 @@ class XTAccountScheduler:
         self.db_manager = db_manager
         self.interval_minutes = interval_minutes
         self.interval_seconds = interval_minutes * 60
-        
+
         # 交易所实例
         self.spot_exchange: Optional[XTSpotExchange] = None
         self.perp_exchange: Optional[XTPerpExchange] = None
-        
+
         # REST数据服务
         self.rest_service = RestDataService(db_manager)
-        
+
         # 定时查询记录ID
         self.spot_balance_query_id: Optional[int] = None
         self.perp_balance_query_id: Optional[int] = None
         self.perp_position_query_id: Optional[int] = None
-        
+
         # 运行状态
         self._running = False
         self._task: Optional[asyncio.Task] = None
-        
+
         logger.info(
             "XT账户定时任务服务初始化",
             interval_minutes=interval_minutes,
         )
-    
+
     async def start(self):
         """启动定时任务服务."""
         if self._running:
             logger.warning("定时任务服务已在运行")
             return
-        
+
         self._running = True
-        
+
         # 初始化交易所连接
         try:
             # 初始化现货交易所（使用同一套API密钥）
@@ -92,7 +92,7 @@ class XTAccountScheduler:
             )
             await self.spot_exchange.connect()
             logger.info("XT现货交易所连接成功")
-            
+
             # 初始化合约交易所（使用同一套API密钥）
             self.perp_exchange = XTPerpExchange(
                 api_key=self.api_key,
@@ -100,12 +100,12 @@ class XTAccountScheduler:
             )
             await self.perp_exchange.connect()
             logger.info("XT合约交易所连接成功")
-            
+
         except Exception as e:
             logger.error("初始化交易所连接失败", error=str(e), exc_info=True)
             self._running = False
             raise
-        
+
         # 创建定时查询记录
         try:
             self.spot_balance_query_id = await self.rest_service.start_scheduled_query(
@@ -114,21 +114,21 @@ class XTAccountScheduler:
                 exchange_type="spot",
                 interval_minutes=self.interval_minutes,
             )
-            
+
             self.perp_balance_query_id = await self.rest_service.start_scheduled_query(
                 exchange="xt",
                 query_type="balance",
                 exchange_type="perp",
                 interval_minutes=self.interval_minutes,
             )
-            
+
             self.perp_position_query_id = await self.rest_service.start_scheduled_query(
                 exchange="xt",
                 query_type="position",
                 exchange_type="perp",
                 interval_minutes=self.interval_minutes,
             )
-            
+
             logger.info(
                 "定时查询记录已创建",
                 spot_balance_id=self.spot_balance_query_id,
@@ -138,19 +138,19 @@ class XTAccountScheduler:
         except Exception as e:
             logger.error("创建定时查询记录失败", error=str(e), exc_info=True)
             # 继续执行，不影响定时任务启动
-        
+
         # 启动定时任务循环
         self._task = asyncio.create_task(self._scheduler_loop())
         logger.info("XT账户定时任务服务已启动")
-    
+
     async def stop(self):
         """停止定时任务服务."""
         if not self._running:
             logger.warning("定时任务服务未运行")
             return
-        
+
         self._running = False
-        
+
         # 取消任务
         if self._task:
             self._task.cancel()
@@ -158,7 +158,7 @@ class XTAccountScheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        
+
         # 结束定时查询记录
         try:
             if self.spot_balance_query_id:
@@ -169,7 +169,7 @@ class XTAccountScheduler:
                 await self.rest_service.end_scheduled_query(self.perp_position_query_id)
         except Exception as e:
             logger.error("结束定时查询记录失败", error=str(e))
-        
+
         # 断开交易所连接
         try:
             if self.spot_exchange:
@@ -178,18 +178,18 @@ class XTAccountScheduler:
                 await self.perp_exchange.disconnect()
         except Exception as e:
             logger.error("断开交易所连接失败", error=str(e))
-        
+
         logger.info("XT账户定时任务服务已停止")
-    
+
     async def _scheduler_loop(self):
         """定时任务循环."""
         logger.info("定时任务循环开始", interval_seconds=self.interval_seconds)
-        
+
         while self._running:
             try:
                 # 执行一次查询
                 await self._fetch_all_accounts()
-                
+
                 # 等待下次执行
                 if self._running:
                     logger.info(
@@ -197,7 +197,7 @@ class XTAccountScheduler:
                         interval_seconds=self.interval_seconds,
                     )
                     await asyncio.sleep(self.interval_seconds)
-                    
+
             except asyncio.CancelledError:
                 logger.info("定时任务循环被取消")
                 break
@@ -210,13 +210,13 @@ class XTAccountScheduler:
                 # 出错后等待一段时间再重试
                 if self._running:
                     await asyncio.sleep(self.interval_seconds)
-        
+
         logger.info("定时任务循环结束")
-    
+
     async def _fetch_all_accounts(self):
         """获取所有账户数据."""
         logger.info("开始获取XT账户数据")
-        
+
         # 1. 获取现货账户余额
         try:
             await self._fetch_spot_balance()
@@ -228,7 +228,7 @@ class XTAccountScheduler:
                     success=False,
                     error_message=str(e),
                 )
-        
+
         # 2. 获取合约账户余额
         try:
             await self._fetch_perp_balance()
@@ -240,7 +240,7 @@ class XTAccountScheduler:
                     success=False,
                     error_message=str(e),
                 )
-        
+
         # 3. 获取合约账户仓位
         try:
             await self._fetch_perp_positions()
@@ -252,19 +252,19 @@ class XTAccountScheduler:
                     success=False,
                     error_message=str(e),
                 )
-        
+
         logger.info("完成获取XT账户数据")
-    
+
     async def _fetch_spot_balance(self):
         """获取现货账户余额."""
         if not self.spot_exchange:
             raise RuntimeError("现货交易所未初始化")
-        
+
         logger.info("获取XT现货账户余额")
-        
+
         # 调用API获取余额
         balances = await self.spot_exchange.get_balance()
-        
+
         # 保存到数据库
         await self.rest_service.save_balance_query(
             exchange="xt",
@@ -272,29 +272,29 @@ class XTAccountScheduler:
             balances_data=balances,
             query_type="scheduled",
         )
-        
+
         # 更新统计信息
         if self.spot_balance_query_id:
             await self.rest_service.update_scheduled_query_stats(
                 self.spot_balance_query_id,
                 success=True,
             )
-        
+
         logger.info(
             "XT现货账户余额已保存",
             currency_count=len(balances),
         )
-    
+
     async def _fetch_perp_balance(self):
         """获取合约账户余额."""
         if not self.perp_exchange:
             raise RuntimeError("合约交易所未初始化")
-        
+
         logger.info("获取XT合约账户余额")
-        
+
         # 调用API获取余额
         balances = await self.perp_exchange.get_balance()
-        
+
         # 转换为标准格式
         balances_data: dict[str, dict[str, Any]] = {}
         for currency, balance_info in balances.items():
@@ -303,7 +303,7 @@ class XTAccountScheduler:
                 "frozen": str(balance_info.get("frozen", 0)),
                 "total": str(balance_info.get("total", 0)),
             }
-        
+
         # 保存到数据库
         await self.rest_service.save_balance_query(
             exchange="xt",
@@ -311,29 +311,29 @@ class XTAccountScheduler:
             balances_data=balances_data,
             query_type="scheduled",
         )
-        
+
         # 更新统计信息
         if self.perp_balance_query_id:
             await self.rest_service.update_scheduled_query_stats(
                 self.perp_balance_query_id,
                 success=True,
             )
-        
+
         logger.info(
             "XT合约账户余额已保存",
             currency_count=len(balances_data),
         )
-    
+
     async def _fetch_perp_positions(self):
         """获取合约账户仓位."""
         if not self.perp_exchange:
             raise RuntimeError("合约交易所未初始化")
-        
+
         logger.info("获取XT合约账户仓位")
-        
+
         # 调用API获取仓位
         positions = await self.perp_exchange.get_positions(symbol=None)
-        
+
         # 转换为字典格式
         positions_data: list[dict[str, Any]] = []
         for pos in positions:
@@ -355,7 +355,7 @@ class XTAccountScheduler:
             else:
                 # 如果已经是字典格式，直接使用
                 positions_data.append(pos)
-        
+
         # 保存到数据库
         await self.rest_service.save_positions_query(
             exchange="xt",
@@ -363,16 +363,15 @@ class XTAccountScheduler:
             positions_data=positions_data,
             query_type="scheduled",
         )
-        
+
         # 更新统计信息
         if self.perp_position_query_id:
             await self.rest_service.update_scheduled_query_stats(
                 self.perp_position_query_id,
                 success=True,
             )
-        
+
         logger.info(
             "XT合约账户仓位已保存",
             position_count=len(positions_data),
         )
-

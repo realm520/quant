@@ -44,11 +44,11 @@ class ContractMultiplierService:
 
     def get_multiplier_sync(self, exchange: str, symbol: str) -> Decimal:
         """同步获取指定交易所、交易对的合约乘数（用于同步上下文）.
-        
+
         Args:
             exchange: 交易所标识，例如 "binance", "xt"
             symbol: 交易对，例如 "BTCUSDT" / "BTC/USDT" / "btc_usdt"
-        
+
         Returns:
             合约乘数（Decimal）
         """
@@ -63,7 +63,11 @@ class ContractMultiplierService:
         elif ex == "xt":
             multiplier = self._get_xt_multiplier_sync(symbol)
         else:
-            logger.warning("Unsupported exchange for contract multiplier, using 1", exchange=exchange, symbol=symbol)
+            logger.warning(
+                "Unsupported exchange for contract multiplier, using 1",
+                exchange=exchange,
+                symbol=symbol,
+            )
             multiplier = Decimal("1")
 
         self._cache[cache_key] = multiplier
@@ -87,7 +91,11 @@ class ContractMultiplierService:
         elif ex == "xt":
             multiplier = await self._get_xt_multiplier(symbol)
         else:
-            logger.warning("Unsupported exchange for contract multiplier, using 1", exchange=exchange, symbol=symbol)
+            logger.warning(
+                "Unsupported exchange for contract multiplier, using 1",
+                exchange=exchange,
+                symbol=symbol,
+            )
             multiplier = Decimal("1")
 
         self._cache[cache_key] = multiplier
@@ -95,13 +103,13 @@ class ContractMultiplierService:
 
     def _load_xt_symbol_configs(self) -> None:
         """批量加载所有 XT 交易对的配置信息（包括合约乘数）.
-        
+
         使用公开 API: https://fapi.xt.com/future/market/v3/public/symbol/list
         不需要 API key，一次性获取所有交易对的配置。
         """
         if self._xt_configs_loaded:
             return
-        
+
         try:
             # 初始化同步 HTTP 客户端（如果还没有）
             if self._sync_client is None:
@@ -109,14 +117,14 @@ class ContractMultiplierService:
                     base_url="https://fapi.xt.com",
                     timeout=httpx.Timeout(10.0, connect=5.0),
                 )
-            
+
             # 调用批量获取 API
             response = self._sync_client.get(
                 "/future/market/v3/public/symbol/list",
             )
             response.raise_for_status()
             data = response.json()
-            
+
             # 检查返回码
             if data.get("returnCode") != 0:
                 error_msg = data.get("msgInfo", "Unknown error")
@@ -126,13 +134,13 @@ class ContractMultiplierService:
                 )
                 self._xt_configs_loaded = True  # 标记为已尝试加载，避免重复请求
                 return
-            
+
             # 解析所有交易对的配置
             # XT API 返回格式可能是：
             # 1. 旧格式：{"result": [...]} - result 直接是列表
             # 2. 新格式：{"result": {"symbols": [...]}} - result 是包含 symbols 的字典
             result = data.get("result", [])
-            
+
             # 处理新格式：如果 result 是字典且包含 symbols 字段
             if isinstance(result, dict) and "symbols" in result:
                 symbols = result.get("symbols", [])
@@ -143,21 +151,25 @@ class ContractMultiplierService:
                 logger.warning(
                     f"XT API 返回的 result 格式无法识别，无法加载交易对配置",
                     result_type=type(result).__name__,
-                    result_value=str(result)[:100] if isinstance(result, str) else result,
+                    result_value=(
+                        str(result)[:100] if isinstance(result, str) else result
+                    ),
                 )
                 self._xt_configs_loaded = True
                 return
-            
+
             # 类型检查：确保 symbols 是列表
             if not isinstance(symbols, list):
                 logger.warning(
                     f"XT API 返回的 symbols 不是列表类型，无法加载交易对配置",
                     symbols_type=type(symbols).__name__,
-                    symbols_value=str(symbols)[:100] if isinstance(symbols, str) else symbols,
+                    symbols_value=(
+                        str(symbols)[:100] if isinstance(symbols, str) else symbols
+                    ),
                 )
                 self._xt_configs_loaded = True
                 return
-            
+
             loaded_count = 0
             for symbol_config in symbols:
                 # 类型检查：确保每个元素是字典
@@ -167,12 +179,12 @@ class ContractMultiplierService:
                         item_type=type(symbol_config).__name__,
                     )
                     continue
-                
+
                 # 存储时也使用与查找时相同的归一化逻辑，确保一致性
                 original_symbol = symbol_config.get("symbol", "")
                 symbol = original_symbol.lower().replace("/", "_").replace("-", "_")
                 contract_size = symbol_config.get("contractSize")
-                
+
                 if symbol and contract_size is not None:
                     try:
                         multiplier = Decimal(str(contract_size))
@@ -181,13 +193,13 @@ class ContractMultiplierService:
                             loaded_count += 1
                     except (ValueError, TypeError):
                         pass
-            
+
             self._xt_configs_loaded = True
             logger.info(
                 f"成功加载 {loaded_count} 个 XT 交易对的合约乘数配置",
                 loaded_count=loaded_count,
             )
-            
+
         except httpx.HTTPError as e:
             logger.warning(
                 f"批量获取 XT 交易对配置失败（HTTP 错误）",
@@ -203,20 +215,20 @@ class ContractMultiplierService:
 
     def _get_xt_multiplier_sync(self, symbol: str) -> Decimal:
         """同步从缓存或批量配置中获取 XT 合约乘数 (contractSize).
-        
+
         首次调用时会批量加载所有交易对的配置，后续直接从缓存读取。
         """
         # 确保已加载配置
         if not self._xt_configs_loaded:
             self._load_xt_symbol_configs()
-        
+
         # 归一化 symbol 格式（XT API 使用小写下划线格式，如 iota_usdt）
         normalized_symbol = symbol.lower().replace("/", "_").replace("-", "_")
-        
+
         # 从缓存中查找
         if normalized_symbol in self._xt_symbol_configs:
             return self._xt_symbol_configs[normalized_symbol]
-        
+
         # 如果缓存中没有，记录警告并使用默认值
         logger.debug(
             f"XT 交易对 {symbol} 的合约乘数未找到，使用默认值 1",
@@ -228,14 +240,20 @@ class ContractMultiplierService:
     async def _get_xt_multiplier(self, symbol: str) -> Decimal:
         """从 XT 永续合约配置中获取合约乘数 (contractSize)."""
         if not self.xt_exchange:
-            logger.warning("XTPerpExchange not provided, using multiplier 1 for xt", symbol=symbol)
+            logger.warning(
+                "XTPerpExchange not provided, using multiplier 1 for xt", symbol=symbol
+            )
             return Decimal("1")
 
         # 归一化 symbol 到 BASE/QUOTE
         try:
             base, quote = self._normalize_symbol_to_base_quote(symbol)
         except ValueError as e:
-            logger.warning("Failed to normalize XT symbol, using multiplier 1", symbol=symbol, error=str(e))
+            logger.warning(
+                "Failed to normalize XT symbol, using multiplier 1",
+                symbol=symbol,
+                error=str(e),
+            )
             return Decimal("1")
 
         try:
@@ -265,7 +283,11 @@ class ContractMultiplierService:
             )
             return Decimal("1")
         except Exception as e:
-            logger.warning("Failed to fetch XT contract multiplier, using 1", symbol=symbol, error=str(e))
+            logger.warning(
+                "Failed to fetch XT contract multiplier, using 1",
+                symbol=symbol,
+                error=str(e),
+            )
             return Decimal("1")
 
     @staticmethod
@@ -283,5 +305,3 @@ class ContractMultiplierService:
             return s[:-4], "USDT"
 
         raise ValueError(f"Unsupported XT symbol format: {symbol}")
-
-

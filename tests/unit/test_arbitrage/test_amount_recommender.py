@@ -23,8 +23,7 @@ class TestCalculateRecommendedAmount:
         """Test basic calculation with good liquidity."""
         # Setup: Path with decent liquidity
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -33,22 +32,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("10"),  # 500k USDT liquidity
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("100"),
-                ask_volume=Decimal("100")
+                ask_volume=Decimal("100"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("50"),  # 125k USDT liquidity
-                ask_volume=Decimal("50")
-            )
+                ask_volume=Decimal("50"),
+            ),
         }
 
         # Execute: 2% profit rate
@@ -58,7 +57,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.02"),  # 2%
             max_amount=Decimal("10000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Verify:
@@ -74,7 +73,7 @@ class TestCalculateRecommendedAmount:
         """Test that low liquidity properly limits recommended amount."""
         path = TradingPath(
             start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")  # Must have 3 pairs
+            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT"),  # Must have 3 pairs
         )
 
         tickers = {
@@ -83,22 +82,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("0.01"),  # Only 500 USDT liquidity
-                ask_volume=Decimal("0.01")
+                ask_volume=Decimal("0.01"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("0.01"),
-                ask_volume=Decimal("0.01")
+                ask_volume=Decimal("0.01"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("0.01"),
-                ask_volume=Decimal("0.01")
-            )
+                ask_volume=Decimal("0.01"),
+            ),
         }
 
         result = calculate_recommended_amount(
@@ -107,7 +106,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.01"),
             max_amount=Decimal("10000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # With only 500 USDT liquidity, 30% = 150
@@ -117,8 +116,7 @@ class TestCalculateRecommendedAmount:
     def test_high_profit_increases_amount(self):
         """Test that higher profit rates lead to larger recommended amounts."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -127,22 +125,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("100"),  # 5M USDT liquidity
-                ask_volume=Decimal("100")
+                ask_volume=Decimal("100"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("100"),
-                ask_volume=Decimal("100")
+                ask_volume=Decimal("100"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("100"),
-                ask_volume=Decimal("100")
-            )
+                ask_volume=Decimal("100"),
+            ),
         }
 
         # Calculate with low profit
@@ -152,7 +150,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.005"),  # 0.5%
             max_amount=Decimal("10000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Calculate with high profit
@@ -162,7 +160,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.05"),  # 5%
             max_amount=Decimal("10000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # High profit should recommend larger amount
@@ -171,8 +169,7 @@ class TestCalculateRecommendedAmount:
     def test_respects_max_amount_limit(self):
         """Test that max_amount is never exceeded."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -181,22 +178,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("1000"),  # 50M USDT liquidity (huge)
-                ask_volume=Decimal("1000")
+                ask_volume=Decimal("1000"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("1000"),
-                ask_volume=Decimal("1000")
+                ask_volume=Decimal("1000"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("1000"),
-                ask_volume=Decimal("1000")
-            )
+                ask_volume=Decimal("1000"),
+            ),
         }
 
         result = calculate_recommended_amount(
@@ -205,7 +202,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.1"),  # 10% (huge profit)
             max_amount=Decimal("5000"),  # Strict limit
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Should be capped at max_amount
@@ -214,8 +211,7 @@ class TestCalculateRecommendedAmount:
     def test_respects_min_amount_limit(self):
         """Test that min_amount is enforced."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -224,22 +220,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("0.0001"),  # Tiny liquidity
-                ask_volume=Decimal("0.0001")
+                ask_volume=Decimal("0.0001"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("0.0001"),
-                ask_volume=Decimal("0.0001")
+                ask_volume=Decimal("0.0001"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("0.0001"),
-                ask_volume=Decimal("0.0001")
-            )
+                ask_volume=Decimal("0.0001"),
+            ),
         }
 
         result = calculate_recommended_amount(
@@ -248,7 +244,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.001"),
             max_amount=Decimal("10000"),
             min_amount=Decimal("500"),  # High minimum
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Should return min_amount
@@ -256,10 +252,7 @@ class TestCalculateRecommendedAmount:
 
     def test_missing_ticker_returns_min_amount(self):
         """Test graceful handling when ticker is missing."""
-        path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC")
-        )
+        path = TradingPath(start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC"))
 
         tickers = {
             "BTC/USDT": Ticker(
@@ -267,7 +260,7 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             )
             # Missing ETH/BTC ticker
         }
@@ -278,7 +271,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.02"),
             max_amount=Decimal("10000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Should return min_amount when data is incomplete
@@ -287,8 +280,7 @@ class TestCalculateRecommendedAmount:
     def test_multi_hop_path_uses_minimum_liquidity(self):
         """Test that multi-hop paths use the bottleneck liquidity."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -297,22 +289,22 @@ class TestCalculateRecommendedAmount:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("100"),  # Large: 5M USDT
-                ask_volume=Decimal("100")
+                ask_volume=Decimal("100"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("10"),  # Bottleneck: ~25k USDT
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("100"),  # Large: 250k USDT
-                ask_volume=Decimal("100")
-            )
+                ask_volume=Decimal("100"),
+            ),
         }
 
         result = calculate_recommended_amount(
@@ -321,7 +313,7 @@ class TestCalculateRecommendedAmount:
             profit_rate=Decimal("0.01"),
             max_amount=Decimal("50000"),
             min_amount=Decimal("100"),
-            liquidity_usage_rate=Decimal("0.3")
+            liquidity_usage_rate=Decimal("0.3"),
         )
 
         # Should be limited by ETH/BTC bottleneck (~25k * 0.3 = ~7.5k)
@@ -336,7 +328,7 @@ class TestCalculateMinLiquidityInBase:
         """Test liquidity calculation for buying base with quote."""
         path = TradingPath(
             start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")  # Buy BTC with USDT
+            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT"),  # Buy BTC with USDT
         )
 
         tickers = {
@@ -345,22 +337,22 @@ class TestCalculateMinLiquidityInBase:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("5")  # We're buying, so use ask_volume
+                ask_volume=Decimal("5"),  # We're buying, so use ask_volume
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
-            )
+                ask_volume=Decimal("10"),
+            ),
         }
 
         result = _calculate_min_liquidity_in_base(path=path, tickers=tickers)
@@ -372,7 +364,7 @@ class TestCalculateMinLiquidityInBase:
         """Test liquidity calculation for selling base for quote."""
         path = TradingPath(
             start_currency="BTC",
-            trading_pairs=("BTC/USDT", "BTC/ETH", "ETH/USDT")  # Must have 3 pairs
+            trading_pairs=("BTC/USDT", "BTC/ETH", "ETH/USDT"),  # Must have 3 pairs
         )
 
         tickers = {
@@ -381,22 +373,22 @@ class TestCalculateMinLiquidityInBase:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("10"),  # We're selling, so use bid_volume
-                ask_volume=Decimal("5")
+                ask_volume=Decimal("5"),
             ),
             "BTC/ETH": Ticker(
                 symbol="BTC/ETH",
                 bid=Decimal("20"),
                 ask=Decimal("20.1"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
-            )
+                ask_volume=Decimal("10"),
+            ),
         }
 
         result = _calculate_min_liquidity_in_base(path=path, tickers=tickers)
@@ -407,8 +399,7 @@ class TestCalculateMinLiquidityInBase:
     def test_missing_ticker_returns_zero(self):
         """Test that missing ticker returns zero liquidity."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -417,7 +408,7 @@ class TestCalculateMinLiquidityInBase:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("10"),
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             )
             # Missing ETH/BTC and ETH/USDT
         }
@@ -429,8 +420,7 @@ class TestCalculateMinLiquidityInBase:
     def test_multi_pair_returns_minimum(self):
         """Test that multi-pair path returns minimum liquidity."""
         path = TradingPath(
-            start_currency="USDT",
-            trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
+            start_currency="USDT", trading_pairs=("BTC/USDT", "ETH/BTC", "ETH/USDT")
         )
 
         tickers = {
@@ -439,22 +429,22 @@ class TestCalculateMinLiquidityInBase:
                 bid=Decimal("50000"),
                 ask=Decimal("50001"),
                 bid_volume=Decimal("100"),
-                ask_volume=Decimal("100")
+                ask_volume=Decimal("100"),
             ),
             "ETH/BTC": Ticker(
                 symbol="ETH/BTC",
                 bid=Decimal("0.05"),
                 ask=Decimal("0.051"),
                 bid_volume=Decimal("10"),  # Bottleneck
-                ask_volume=Decimal("10")
+                ask_volume=Decimal("10"),
             ),
             "ETH/USDT": Ticker(
                 symbol="ETH/USDT",
                 bid=Decimal("2500"),
                 ask=Decimal("2501"),
                 bid_volume=Decimal("100"),
-                ask_volume=Decimal("100")
-            )
+                ask_volume=Decimal("100"),
+            ),
         }
 
         result = _calculate_min_liquidity_in_base(path=path, tickers=tickers)

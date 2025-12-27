@@ -108,19 +108,13 @@ def format_table(
     separator = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
 
     # Format header
-    header = (
-        "|"
-        + "|".join(f" {h:<{w}} " for h, w in zip(headers, col_widths))
-        + "|"
-    )
+    header = "|" + "|".join(f" {h:<{w}} " for h, w in zip(headers, col_widths)) + "|"
 
     # Format rows
     formatted_rows = []
     for row in rows:
         formatted_row = (
-            "|"
-            + "|".join(f" {str(c):<{w}} " for c, w in zip(row, col_widths))
-            + "|"
+            "|" + "|".join(f" {str(c):<{w}} " for c, w in zip(row, col_widths)) + "|"
         )
         formatted_rows.append(formatted_row)
 

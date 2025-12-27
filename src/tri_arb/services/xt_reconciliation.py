@@ -44,13 +44,18 @@ class XTReconciliationService(BaseReconciliationService):
         """
         super().__init__(exchange, db_manager, poll_interval, lookback_window)
         self.account_id = account_id
-        logger.info("XT reconciliation service initialized (auto-discover symbols)", account_id=account_id)
+        logger.info(
+            "XT reconciliation service initialized (auto-discover symbols)",
+            account_id=account_id,
+        )
 
     @property
     def exchange_name(self) -> str:
         return "xt_perp"
 
-    async def reconcile_orders(self, session: AsyncSession, start_time: datetime, end_time: datetime) -> Dict[str, int]:
+    async def reconcile_orders(
+        self, session: AsyncSession, start_time: datetime, end_time: datetime
+    ) -> Dict[str, int]:
         """对账 XT 订单数据.
 
         Args:
@@ -61,7 +66,7 @@ class XTReconciliationService(BaseReconciliationService):
         Returns:
             统计信息: {'fetched': N, 'inserted': M, 'updated': K}
         """
-        stats = {'fetched': 0, 'inserted': 0, 'updated': 0}
+        stats = {"fetched": 0, "inserted": 0, "updated": 0}
 
         # 转换为毫秒时间戳
         start_ms = int(start_time.timestamp() * 1000)
@@ -75,7 +80,9 @@ class XTReconciliationService(BaseReconciliationService):
                 logger.debug("No active symbols found, skipping reconciliation")
                 return stats
 
-            logger.debug(f"Reconciling orders for {len(symbols)} symbols: {symbols[:5]}...")
+            logger.debug(
+                f"Reconciling orders for {len(symbols)} symbols: {symbols[:5]}..."
+            )
 
             for symbol in symbols:
                 # 使用 savepoint 隔离每个 symbol 的失败
@@ -88,7 +95,7 @@ class XTReconciliationService(BaseReconciliationService):
                             end_time=end_ms,
                             limit=500,
                         )
-                        stats['fetched'] += len(orders)
+                        stats["fetched"] += len(orders)
 
                         for order in orders:
                             # 转换为数据库模型
@@ -97,17 +104,17 @@ class XTReconciliationService(BaseReconciliationService):
                             # 使用 PostgreSQL INSERT ... ON CONFLICT DO UPDATE
                             stmt = insert(XTOrderUpdate).values(**order_record)
                             stmt = stmt.on_conflict_do_update(
-                                constraint='uq_xt_order_id_time_account',
+                                constraint="uq_xt_order_id_time_account",
                                 set_={
-                                    'status': stmt.excluded.status,
-                                    'filled_quantity': stmt.excluded.filled_quantity,
-                                    'raw_data': stmt.excluded.raw_data,
-                                }
+                                    "status": stmt.excluded.status,
+                                    "filled_quantity": stmt.excluded.filled_quantity,
+                                    "raw_data": stmt.excluded.raw_data,
+                                },
                             )
                             result = await session.execute(stmt)
 
                             if result.rowcount > 0:
-                                stats['inserted'] += 1
+                                stats["inserted"] += 1
 
                     except Exception as e:
                         logger.error(
@@ -128,7 +135,9 @@ class XTReconciliationService(BaseReconciliationService):
 
         return stats
 
-    async def reconcile_trades(self, session: AsyncSession, start_time: datetime, end_time: datetime) -> Dict[str, int]:
+    async def reconcile_trades(
+        self, session: AsyncSession, start_time: datetime, end_time: datetime
+    ) -> Dict[str, int]:
         """对账 XT 成交数据.
 
         Args:
@@ -139,7 +148,7 @@ class XTReconciliationService(BaseReconciliationService):
         Returns:
             统计信息: {'fetched': N, 'inserted': M, 'skipped': K}
         """
-        stats = {'fetched': 0, 'inserted': 0, 'skipped': 0}
+        stats = {"fetched": 0, "inserted": 0, "skipped": 0}
 
         # 转换为毫秒时间戳
         start_ms = int(start_time.timestamp() * 1000)
@@ -164,7 +173,7 @@ class XTReconciliationService(BaseReconciliationService):
                             end_time=end_ms,
                             limit=500,
                         )
-                        stats['fetched'] += len(trades)
+                        stats["fetched"] += len(trades)
 
                         for trade in trades:
                             # 转换为数据库模型
@@ -174,13 +183,15 @@ class XTReconciliationService(BaseReconciliationService):
                             # 成交记录不可变，只需插入
                             stmt = insert(XTTradeUpdate).values(**trade_record)
                             # XT 的成交表使用 (trade_id, account_id) 唯一约束
-                            stmt = stmt.on_conflict_do_nothing(constraint='uq_xt_trade_id_account')
+                            stmt = stmt.on_conflict_do_nothing(
+                                constraint="uq_xt_trade_id_account"
+                            )
                             result = await session.execute(stmt)
 
                             if result.rowcount > 0:
-                                stats['inserted'] += 1
+                                stats["inserted"] += 1
                             else:
-                                stats['skipped'] += 1
+                                stats["skipped"] += 1
 
                     except Exception as e:
                         logger.error(
@@ -214,31 +225,33 @@ class XTReconciliationService(BaseReconciliationService):
         symbol = f"{order.trading_pair.base_currency}_{order.trading_pair.quote_currency}".upper()
 
         return {
-            'update_time': order.timestamp or datetime.utcnow(),
-            'account_id': self.account_id,  # 添加 account_id 字段
-            'symbol': symbol,
-            'order_id': order.exchange_order_id,
-            'client_order_id': None,  # Order 对象没有 client_order_id
-            'side': order.side.value,
-            'order_type': order.order_type.value,
-            'position_side': order.position_side,
-            'quantity': order.quantity,
-            'price': order.price,
-            'filled_quantity': order.filled_quantity or Decimal('0'),
-            'status': order.status.value,
-            'time_in_force': None,  # Order 对象没有 time_in_force
-            'create_time': order.timestamp,
-            'update_time_order': order.timestamp,
-            'raw_data': json.dumps({
-                'order_id': order.exchange_order_id,
-                'symbol': symbol,
-                'side': order.side.value,
-                'order_type': order.order_type.value,
-                'quantity': str(order.quantity),
-                'price': str(order.price) if order.price else None,
-                'status': order.status.value,
-                'position_side': order.position_side,
-            }),
+            "update_time": order.timestamp or datetime.utcnow(),
+            "account_id": self.account_id,  # 添加 account_id 字段
+            "symbol": symbol,
+            "order_id": order.exchange_order_id,
+            "client_order_id": None,  # Order 对象没有 client_order_id
+            "side": order.side.value,
+            "order_type": order.order_type.value,
+            "position_side": order.position_side,
+            "quantity": order.quantity,
+            "price": order.price,
+            "filled_quantity": order.filled_quantity or Decimal("0"),
+            "status": order.status.value,
+            "time_in_force": None,  # Order 对象没有 time_in_force
+            "create_time": order.timestamp,
+            "update_time_order": order.timestamp,
+            "raw_data": json.dumps(
+                {
+                    "order_id": order.exchange_order_id,
+                    "symbol": symbol,
+                    "side": order.side.value,
+                    "order_type": order.order_type.value,
+                    "quantity": str(order.quantity),
+                    "price": str(order.price) if order.price else None,
+                    "status": order.status.value,
+                    "position_side": order.position_side,
+                }
+            ),
         }
 
     def _convert_trade_to_db_model(self, trade: dict) -> dict:
@@ -253,12 +266,12 @@ class XTReconciliationService(BaseReconciliationService):
         # XT REST API 成交字段参考：trade-list 端点
 
         def safe_decimal(value):
-            if value is None or value == '':
-                return Decimal('0')
+            if value is None or value == "":
+                return Decimal("0")
             return Decimal(str(value))
 
         def safe_datetime(value):
-            if value is None or value == '':
+            if value is None or value == "":
                 return datetime.utcnow()
             try:
                 return datetime.fromtimestamp(int(value) / 1000)
@@ -266,23 +279,25 @@ class XTReconciliationService(BaseReconciliationService):
                 return datetime.utcnow()
 
         return {
-            'update_time': safe_datetime(trade.get('time')),
-            'account_id': self.account_id,  # 添加 account_id 字段
-            'symbol': trade.get('symbol', '').upper(),
-            'order_id': str(trade.get('orderId', '')),
-            'trade_id': str(trade.get('id', '')),
-            'side': trade.get('side', 'BUY').upper(),
-            'price': safe_decimal(trade.get('price')),
-            'quantity': safe_decimal(trade.get('qty')),
-            'quote_quantity': safe_decimal(trade.get('amount')),
-            'commission': safe_decimal(trade.get('fee')),
-            'commission_asset': trade.get('feeCurrency'),
-            'is_maker': trade.get('isMaker', False),
-            'position_side': trade.get('positionSide'),
-            'raw_data': dumps_with_decimal(trade),
+            "update_time": safe_datetime(trade.get("time")),
+            "account_id": self.account_id,  # 添加 account_id 字段
+            "symbol": trade.get("symbol", "").upper(),
+            "order_id": str(trade.get("orderId", "")),
+            "trade_id": str(trade.get("id", "")),
+            "side": trade.get("side", "BUY").upper(),
+            "price": safe_decimal(trade.get("price")),
+            "quantity": safe_decimal(trade.get("qty")),
+            "quote_quantity": safe_decimal(trade.get("amount")),
+            "commission": safe_decimal(trade.get("fee")),
+            "commission_asset": trade.get("feeCurrency"),
+            "is_maker": trade.get("isMaker", False),
+            "position_side": trade.get("positionSide"),
+            "raw_data": dumps_with_decimal(trade),
         }
 
-    async def _get_active_symbols(self, session: AsyncSession, since: datetime) -> List[str]:
+    async def _get_active_symbols(
+        self, session: AsyncSession, since: datetime
+    ) -> List[str]:
         """从数据库获取最近活跃的交易对.
 
         Args:
@@ -293,9 +308,7 @@ class XTReconciliationService(BaseReconciliationService):
             交易对列表
         """
         # 查询最近有订单活动的交易对
-        stmt = select(XTOrderUpdate.symbol).where(
-            XTOrderUpdate.update_time >= since
-        )
+        stmt = select(XTOrderUpdate.symbol).where(XTOrderUpdate.update_time >= since)
         # 如果指定了 account_id，添加过滤条件
         if self.account_id:
             stmt = stmt.where(XTOrderUpdate.account_id == self.account_id)

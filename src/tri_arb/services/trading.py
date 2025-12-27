@@ -25,9 +25,7 @@ class TradingService:
         exchanges: Dictionary mapping exchange names to adapters
     """
 
-    def __init__(
-        self, exchanges: Optional[dict[str, BaseExchange]] = None
-    ) -> None:
+    def __init__(self, exchanges: Optional[dict[str, BaseExchange]] = None) -> None:
         """Initialize trading service.
 
         Args:
@@ -119,9 +117,7 @@ class TradingService:
         logger.debug("Returning None (placeholder)", operation="get_order_status")
         return None
 
-    async def execute_arbitrage(
-        self, opportunity: ArbitrageOpportunity
-    ) -> List[Trade]:
+    async def execute_arbitrage(self, opportunity: ArbitrageOpportunity) -> List[Trade]:
         """Execute triangle arbitrage opportunity.
 
         Args:
@@ -197,9 +193,7 @@ class TradingService:
         logger.debug("Returning trades from repository", count=len(trades))
         return trades
 
-    async def calculate_position(
-        self, base_currency: str, quote_currency: str
-    ) -> dict:
+    async def calculate_position(self, base_currency: str, quote_currency: str) -> dict:
         """Calculate current position for a trading pair.
 
         Args:

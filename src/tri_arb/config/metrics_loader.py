@@ -185,4 +185,3 @@ def _parse_metrics_config(data: Dict[str, Any]) -> MetricsConfig:
         )
 
     return MetricsConfig(exchanges=exchanges)
-

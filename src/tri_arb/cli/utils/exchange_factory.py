@@ -18,6 +18,7 @@ from tri_arb.exchanges.gate_perp import GatePerpExchange
 
 class ExchangeName(str, Enum):
     """交易所名称枚举"""
+
     XT = "xt"
     BINANCE = "binance"
     OKX = "okx"
@@ -26,6 +27,7 @@ class ExchangeName(str, Enum):
 
 class ExchangeType(str, Enum):
     """交易类型枚举"""
+
     SPOT = "spot"
     PERP = "perp"
 
@@ -53,10 +55,10 @@ def create_exchange(
     """
     # 根据交易所和交易类型获取环境变量前缀
     env_prefix = _get_env_prefix(exchange_name, exchange_type)
-    
+
     # 从环境变量或参数获取 API 凭证
-    key = api_key or os.getenv(f'{env_prefix}_API_KEY', '')
-    secret = api_secret or os.getenv(f'{env_prefix}_API_SECRET', '')
+    key = api_key or os.getenv(f"{env_prefix}_API_KEY", "")
+    secret = api_secret or os.getenv(f"{env_prefix}_API_SECRET", "")
 
     # XT 交易所
     if exchange_name == ExchangeName.XT:
@@ -67,7 +69,7 @@ def create_exchange(
                     "或使用 --api-key 和 --api-secret 参数"
                 )
             return XTSpotExchange(api_key=key, api_secret=secret)
-        
+
         elif exchange_type == ExchangeType.PERP:
             if not key or not secret:
                 raise ValueError(
@@ -81,7 +83,7 @@ def create_exchange(
         if exchange_type == ExchangeType.SPOT:
             # Binance 现货不强制要求 API 凭证（公开 API 可用，占位符模式）
             return BinanceSpotExchange(api_key=key, api_secret=secret)
-        
+
         elif exchange_type == ExchangeType.PERP:
             # Binance 永续合约（占位符实现）
             return BinancePerpExchange(api_key=key, api_secret=secret)
@@ -89,17 +91,18 @@ def create_exchange(
     # OKX 交易所
     elif exchange_name == ExchangeName.OKX:
         # OKX 需要额外的 passphrase（优先使用参数，其次环境变量）
-        okx_passphrase = passphrase or os.getenv(f'{env_prefix}_PASSPHRASE', '')
-        
+        okx_passphrase = passphrase or os.getenv(f"{env_prefix}_PASSPHRASE", "")
+
         if exchange_type == ExchangeType.PERP:
             # OKX 永续合约
-            return OKXPerpExchange(api_key=key, api_secret=secret, passphrase=okx_passphrase)
+            return OKXPerpExchange(
+                api_key=key, api_secret=secret, passphrase=okx_passphrase
+            )
         elif exchange_type == ExchangeType.SPOT:
             raise ValueError(
-                "OKX 现货交易暂未实现\n"
-                "请使用永续合约: --exchange-type perp"
+                "OKX 现货交易暂未实现\n" "请使用永续合约: --exchange-type perp"
             )
-    
+
     # Gate.io 交易所
     elif exchange_name == ExchangeName.GATE:
         if exchange_type == ExchangeType.PERP:
@@ -107,23 +110,24 @@ def create_exchange(
             return GatePerpExchange(api_key=key, api_secret=secret)
         elif exchange_type == ExchangeType.SPOT:
             raise ValueError(
-                "Gate.io 现货交易暂未实现\n"
-                "请使用永续合约: --exchange-type perp"
+                "Gate.io 现货交易暂未实现\n" "请使用永续合约: --exchange-type perp"
             )
 
-    raise ValueError(f"不支持的交易所或交易类型: {exchange_name.value}/{exchange_type.value}")
+    raise ValueError(
+        f"不支持的交易所或交易类型: {exchange_name.value}/{exchange_type.value}"
+    )
 
 
 def _get_env_prefix(exchange_name: ExchangeName, exchange_type: ExchangeType) -> str:
     """获取环境变量前缀.
-    
+
     Args:
         exchange_name: 交易所名称
         exchange_type: 交易类型
-        
+
     Returns:
         环境变量前缀字符串
-        
+
     Note:
         XT交易所的现货和永续合约使用相同的API密钥，只需要根据交易所名称区分环境变量。
         其他交易所也遵循相同规则。

@@ -53,46 +53,31 @@ class ExecutionStep(BaseModel):
     order: Order = Field(..., description="Associated order")
 
     exchange_order_id: str | None = Field(
-        None,
-        description="Exchange order ID from API response"
+        None, description="Exchange order ID from API response"
     )
 
     status: str = Field(
-        default="pending",
-        description="Step status: pending/submitted/filled/failed"
+        default="pending", description="Step status: pending/submitted/filled/failed"
     )
 
     submitted_at: datetime | None = Field(
-        None,
-        description="Order submission timestamp"
+        None, description="Order submission timestamp"
     )
 
-    filled_at: datetime | None = Field(
-        None,
-        description="Order fill timestamp"
-    )
+    filled_at: datetime | None = Field(None, description="Order fill timestamp")
 
     filled_quantity: Decimal | None = Field(
-        None,
-        gt=0,
-        description="Actual filled quantity"
+        None, gt=0, description="Actual filled quantity"
     )
 
     filled_price: Decimal | None = Field(
-        None,
-        gt=0,
-        description="Actual execution price"
+        None, gt=0, description="Actual execution price"
     )
 
-    fee: Decimal | None = Field(
-        None,
-        ge=0,
-        description="Trading fee amount"
-    )
+    fee: Decimal | None = Field(None, ge=0, description="Trading fee amount")
 
     fee_currency: str | None = Field(
-        None,
-        description="Fee currency symbol (e.g., BTC, ETH, USDT)"
+        None, description="Fee currency symbol (e.g., BTC, ETH, USDT)"
     )
 
 
@@ -118,62 +103,46 @@ class ArbitrageExecution(BaseModel):
 
     session_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
-        description="Unique session ID (UUID v4)"
+        description="Unique session ID (UUID v4)",
     )
 
     opportunity: ArbitrageOpportunity = Field(
-        ...,
-        description="Associated arbitrage opportunity"
+        ..., description="Associated arbitrage opportunity"
     )
 
     status: ExecutionStatus = Field(
-        default=ExecutionStatus.PENDING,
-        description="Execution status"
+        default=ExecutionStatus.PENDING, description="Execution status"
     )
 
     steps: list[ExecutionStep] = Field(
-        default_factory=list,
-        description="Three execution steps"
+        default_factory=list, description="Three execution steps"
     )
 
     # Profit/loss tracking
     initial_amount: Decimal = Field(
-        ...,
-        gt=0,
-        description="Initial investment amount (USDT)"
+        ..., gt=0, description="Initial investment amount (USDT)"
     )
 
     final_amount: Decimal | None = Field(
-        None,
-        ge=0,
-        description="Final amount received (USDT)"
+        None, ge=0, description="Final amount received (USDT)"
     )
 
-    net_profit: Decimal | None = Field(
-        None,
-        description="Net profit (final - initial)"
-    )
+    net_profit: Decimal | None = Field(None, description="Net profit (final - initial)")
 
     actual_profit_rate: Decimal | None = Field(
-        None,
-        description="Actual profit rate percentage"
+        None, description="Actual profit rate percentage"
     )
 
     # Timestamps
     started_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        description="Execution start time"
+        default_factory=datetime.utcnow, description="Execution start time"
     )
 
-    completed_at: datetime | None = Field(
-        None,
-        description="Execution completion time"
-    )
+    completed_at: datetime | None = Field(None, description="Execution completion time")
 
     # Error tracking
     error_message: str | None = Field(
-        None,
-        description="Error message if execution failed"
+        None, description="Error message if execution failed"
     )
 
     def calculate_profit(self) -> None:
@@ -189,6 +158,6 @@ class ArbitrageExecution(BaseModel):
             raise ValueError("Cannot calculate profit: final_amount is None")
 
         self.net_profit = self.final_amount - self.initial_amount
-        self.actual_profit_rate = (
-            (self.net_profit / self.initial_amount) * Decimal("100")
+        self.actual_profit_rate = (self.net_profit / self.initial_amount) * Decimal(
+            "100"
         )

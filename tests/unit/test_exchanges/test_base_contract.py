@@ -21,6 +21,7 @@ async def test_batch_query_unsupported_raises_not_implemented() -> None:
     This test verifies that the base implementation correctly rejects batch
     queries when an exchange adapter doesn't support them.
     """
+
     # Create a concrete BaseExchange implementation for testing
     class TestExchange(BaseExchange):
         async def connect(self) -> None:
@@ -63,10 +64,12 @@ async def test_batch_query_unsupported_raises_not_implemented() -> None:
 
     # Verify error message contains exchange name and guidance
     error_msg = str(exc_info.value).lower()
-    assert "test" in error_msg or "batch" in error_msg, \
-        "Error message should mention exchange name or batch queries"
-    assert "does not support" in error_msg or "not implement" in error_msg, \
-        "Error message should indicate lack of support"
+    assert (
+        "test" in error_msg or "batch" in error_msg
+    ), "Error message should mention exchange name or batch queries"
+    assert (
+        "does not support" in error_msg or "not implement" in error_msg
+    ), "Error message should indicate lack of support"
 
 
 # Test 2: Return type annotation verification
@@ -93,8 +96,9 @@ def test_return_type_annotation() -> None:
     # Verify it's a Union type containing both Price and List[Price]
     # The exact format depends on Python version, so we check for key elements
     assert "Price" in return_type_str, "Return type must include Price"
-    assert "list" in return_type_str.lower() or "List" in return_type_str, \
-        "Return type must include List[Price]"
+    assert (
+        "list" in return_type_str.lower() or "List" in return_type_str
+    ), "Return type must include List[Price]"
 
     # Note: Full Union[Price, List[Price]] validation would require more
     # complex type inspection, but these checks are sufficient for contract

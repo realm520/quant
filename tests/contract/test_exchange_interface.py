@@ -93,9 +93,7 @@ class TestBaseExchangeContract:
 
                 # Get method parameters
                 sig = inspect.signature(method)
-                params = [
-                    p.name for p in sig.parameters.values() if p.name != "self"
-                ]
+                params = [p.name for p in sig.parameters.values() if p.name != "self"]
 
                 # Verify parameters match (at least the required ones)
                 for expected_param in expected_params:

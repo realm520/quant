@@ -18,9 +18,22 @@ from typing import Any
 
 import httpx
 import structlog
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from tri_arb.core.models import Order, OrderBook, OrderSide, OrderStatus, OrderType, Price, TradingPair
+from tri_arb.core.models import (
+    Order,
+    OrderBook,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Price,
+    TradingPair,
+)
 from tri_arb.exchanges.base import BaseExchange
 from tri_arb.models.perpetual import FundingRate, Position
 
@@ -64,10 +77,11 @@ class XTPerpExchange(BaseExchange):
         self._client: httpx.AsyncClient | None = None
         self._trading_pairs: dict[str, TradingPair] = {}
         self.perp = Perp("https://fapi.xt.com", api_key, api_secret)
+
     def get_name(self) -> str:
         """Get the name of the exchange."""
         return "xt_perp"
-    
+
     async def connect(self) -> None:
         """Establish connection to XT perpetual futures exchange.
 
@@ -91,12 +105,15 @@ class XTPerpExchange(BaseExchange):
         # Load trading pairs (cache for performance)
         try:
             await self._load_trading_pairs()
-            logger.info("Connected to XT perpetual futures exchange", pairs_loaded=len(self._trading_pairs))
+            logger.info(
+                "Connected to XT perpetual futures exchange",
+                pairs_loaded=len(self._trading_pairs),
+            )
         except Exception as e:
             logger.warning(
                 "Failed to load trading pairs, but connection is still usable",
                 error=str(e),
-                error_type=type(e).__name__
+                error_type=type(e).__name__,
             )
 
     async def disconnect(self) -> None:
@@ -182,6 +199,7 @@ class XTPerpExchange(BaseExchange):
         if body is not None:
             # JSON body
             import json
+
             message = json.dumps(body)
             signkey = f"xt-validate-appkey={self._api_key}&xt-validate-timestamp={timestamp}#{path}#{message}"
         elif params is not None:
@@ -197,7 +215,7 @@ class XTPerpExchange(BaseExchange):
         sign = hmac.new(
             self._api_secret.encode("utf-8"),
             signkey.encode("utf-8"),
-            digestmod=hashlib.sha256
+            digestmod=hashlib.sha256,
         ).hexdigest()
 
         # Return headers with signature
@@ -208,7 +226,11 @@ class XTPerpExchange(BaseExchange):
             "xt-validate-signature": sign,
             "xt-validate-algorithms": "HmacSHA256",
             "xt-validate-recvwindow": str(self._recv_window_ms),
-            "Content-Type": "application/json" if body is not None else "application/x-www-form-urlencoded",
+            "Content-Type": (
+                "application/json"
+                if body is not None
+                else "application/x-www-form-urlencoded"
+            ),
         }
 
     @retry(
@@ -258,7 +280,9 @@ class XTPerpExchange(BaseExchange):
             if method == "GET":
                 response = await self._client.get(path, params=params, headers=headers)
             elif method == "POST":
-                response = await self._client.post(path, params=params, json=body, headers=headers)
+                response = await self._client.post(
+                    path, params=params, json=body, headers=headers
+                )
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -286,7 +310,7 @@ class XTPerpExchange(BaseExchange):
                     has_rc=("rc" in data),
                     has_result=("result" in data),
                     has_data=("data" in data),
-                    full_response=data
+                    full_response=data,
                 )
 
             # Check XT API response code
@@ -294,7 +318,11 @@ class XTPerpExchange(BaseExchange):
             # Only treat as error if rc is explicitly non-zero (not null/None)
             rc = data.get("rc")
             if rc is not None and rc != 0:
-                error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else data.get("msg", "Unknown error")
+                error_msg = (
+                    data.get("ma", ["Unknown error"])[0]
+                    if data.get("ma")
+                    else data.get("msg", "Unknown error")
+                )
                 logger.error(
                     "XT API returned error code",
                     method=method,
@@ -315,7 +343,7 @@ class XTPerpExchange(BaseExchange):
                     "Extracted result from response",
                     result_type=type(result).__name__,
                     result_is_none=(result is None),
-                    result_sample=str(result)[:300] if result else "None"
+                    result_sample=str(result)[:300] if result else "None",
                 )
 
             return result
@@ -331,41 +359,46 @@ class XTPerpExchange(BaseExchange):
 
     async def _load_trading_pairs(self) -> None:
         """Load and cache all trading pair information from XT API.
-        
+
         Fetches list of all available perpetual contract symbols and populates
         the internal trading pairs cache for efficient lookups.
-        
+
         Raises:
             RuntimeError: If exchange client is not initialized
             httpx.HTTPError: If API request fails
         """
         if self._client is None:
             raise RuntimeError("Exchange client not initialized")
-        
+
         logger.debug("Loading trading pairs from XT API")
-        
+
         # Fetch all trading pair symbols
         path = "/future/market/v1/public/symbol/list"
-        data = await self._request("GET", path, params=None, body=None, require_auth=False)
-        
+        data = await self._request(
+            "GET", path, params=None, body=None, require_auth=False
+        )
+
         # Parse response and populate cache
         if not isinstance(data, list):
-            logger.warning("Unexpected response format from symbol/list endpoint", data_type=type(data).__name__)
+            logger.warning(
+                "Unexpected response format from symbol/list endpoint",
+                data_type=type(data).__name__,
+            )
             return
-        
+
         pairs_loaded = 0
         for item in data:
             symbol = item.get("symbol", "")
             if not symbol:
                 continue
-            
+
             # Parse symbol format: "btc_usdt" -> BTC/USDT
             parts = symbol.lower().split("_")
             if len(parts) != 2:
                 continue
-            
+
             base, quote = parts[0].upper(), parts[1].upper()
-            
+
             # Parse trading pair details
             min_order_size = Decimal(str(item.get("minOrderQuantity", "0")))
             max_order_size = Decimal(str(item.get("maxOrderQuantity", "0")))
@@ -382,20 +415,21 @@ class XTPerpExchange(BaseExchange):
             price_precision = int(item.get("pricePrecision", 8))
             quantity_precision = int(item.get("quantityPrecision", 8))
             contract_size = Decimal(str(item.get("contractSize", "1")))
-            
+
             # Parse leverage brackets if available
             leverage_brackets_data = item.get("leverageBrackets", [])
             leverage_brackets_list = []
             if leverage_brackets_data:
                 for bracket in leverage_brackets_data:
                     from tri_arb.models.perpetual import LeverageBracket
+
                     bracket_obj = LeverageBracket(
                         min_notional=Decimal(str(bracket.get("minNotional", "0"))),
                         max_notional=Decimal(str(bracket.get("maxNotional", "0"))),
                         max_leverage=int(bracket.get("maxLeverage", 1)),
                     )
                     leverage_brackets_list.append(bracket_obj)
-            
+
             # Create TradingPair object
             pair = TradingPair(
                 base_currency=base,
@@ -409,72 +443,78 @@ class XTPerpExchange(BaseExchange):
                 contract_size=contract_size,
                 contract_type="PERPETUAL",
             )
-            
+
             # Add to cache
             pair_key = f"{base}/{quote}"
             self._trading_pairs[pair_key] = pair
             pairs_loaded += 1
-        
+
         logger.info("Trading pairs loaded successfully", pairs_count=pairs_loaded)
 
     # ============================================================================
     # BaseExchange Abstract Methods - Market Data
     # ============================================================================
 
-    async def get_ticker(self, trading_pair: TradingPair | None = None) -> Price | list[Price]:
+    async def get_ticker(
+        self, trading_pair: TradingPair | None = None
+    ) -> Price | list[Price]:
         """Get current ticker price for a trading pair or all markets.
-        
+
         Fetches best bid/ask prices from XT Perp book ticker API.
-        
+
         Args:
             trading_pair: Trading pair to get ticker for. If None, returns all
                          active markets (batch query). Default is None.
-        
+
         Returns:
             - If trading_pair is provided: Single Price object
             - If trading_pair is None: List of Price objects for all active markets
-        
+
         Raises:
             ExchangeConnectionError: If exchange is not connected
             InvalidTradingPairError: If trading pair is not supported
-            
+
         Example:
             >>> # Single pair query
             >>> price = await exchange.get_ticker(trading_pair)
             >>> print(f"Bid: {price.bid_price}, Ask: {price.ask_price}")
-            >>> 
+            >>>
             >>> # Batch query (all pairs)
             >>> prices = await exchange.get_ticker(None)
             >>> print(f"Total markets: {len(prices)}")
         """
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
-        
+
         if trading_pair is None:
             # Batch query: Get all market book tickers
             path = "/future/market/v1/public/q/ticker/books"
-            data = await self._request("GET", path, params=None, body=None, require_auth=False)
-            
+            data = await self._request(
+                "GET", path, params=None, body=None, require_auth=False
+            )
+
             # Parse response
             # Note: _request() already extracts the "result" field, so data IS the result
             result = data
             if not isinstance(result, list):
-                raise ValueError(f"Expected list result for batch query, got {type(result)}")
-            
+                raise ValueError(
+                    f"Expected list result for batch query, got {type(result)}"
+                )
+
             # Parse each ticker to Price object
             prices: list[Price] = []
             for item in result:
                 symbol_str = item.get("s", "")
                 if not symbol_str:
                     continue
-                
+
                 # Convert XT symbol format to TradingPair
                 parts = symbol_str.lower().split("_")
                 if len(parts) != 2:
                     continue
-                
+
                 base, quote = parts[0].upper(), parts[1].upper()
-                
+
                 # Find or create TradingPair
                 pair_key = f"{base}/{quote}"
                 if pair_key in self._trading_pairs:
@@ -490,7 +530,7 @@ class XTPerpExchange(BaseExchange):
                         price_precision=8,
                         quantity_precision=8,
                     )
-                
+
                 # Parse book ticker data
                 # API fields: ap (ask price), aq (ask quantity), bp (bid price), bq (bid quantity)
                 try:
@@ -498,17 +538,23 @@ class XTPerpExchange(BaseExchange):
                     ap_str = item.get("ap", "")
                     bq_str = item.get("bq", "")
                     aq_str = item.get("aq", "")
-                    
+
                     # Skip if any field is empty or invalid
                     if not bp_str or not ap_str or not bq_str or not aq_str:
-                        logger.debug("Skipping ticker with missing fields", symbol=symbol_str)
+                        logger.debug(
+                            "Skipping ticker with missing fields", symbol=symbol_str
+                        )
                         continue
-                    
+
                     bid_price = Decimal(str(bp_str))
                     ask_price = Decimal(str(ap_str))
                     bid_volume = Decimal(str(bq_str))
                     ask_volume = Decimal(str(aq_str))
-                except (ValueError, decimal.InvalidOperation, decimal.ConversionSyntax) as e:
+                except (
+                    ValueError,
+                    decimal.InvalidOperation,
+                    decimal.ConversionSyntax,
+                ) as e:
                     logger.debug(
                         "Skipping ticker with invalid number format",
                         symbol=symbol_str,
@@ -517,17 +563,17 @@ class XTPerpExchange(BaseExchange):
                         ap=item.get("ap"),
                     )
                     continue
-                
+
                 # Skip invalid tickers (price must be > 0)
                 if bid_price <= 0 or ask_price <= 0:
                     logger.debug(
                         "Skipping invalid ticker",
                         symbol=symbol_str,
                         bid=str(bid_price),
-                        ask=str(ask_price)
+                        ask=str(ask_price),
                     )
                     continue
-                
+
                 price = Price(
                     trading_pair=pair,
                     bid_price=bid_price,
@@ -538,45 +584,51 @@ class XTPerpExchange(BaseExchange):
                     exchange="xt_perp",
                 )
                 prices.append(price)
-            
+
             return prices
         else:
             # Single pair query: Get specific book ticker
-            symbol = f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
-            
+            symbol = (
+                f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            )
+
             path = "/future/market/v1/public/q/ticker/book"
             params = {"symbol": symbol}
-            data = await self._request("GET", path, params=params, body=None, require_auth=False)
-            
+            data = await self._request(
+                "GET", path, params=params, body=None, require_auth=False
+            )
+
             # Debug: Log what _request() returns
             logger.info(
                 "Ticker book API response",
                 symbol=symbol,
                 data_type=type(data).__name__,
                 data_keys=list(data.keys()) if isinstance(data, dict) else "not a dict",
-                data_sample=str(data)[:300] if data else "None"
+                data_sample=str(data)[:300] if data else "None",
             )
-            
+
             # Parse single book ticker response
             # Note: _request() already extracts the "result" field, so data IS the result
             # Expected format after _request(): {s, t, ap, aq, bp, bq}
             result = data
             if not isinstance(result, dict):
-                raise ValueError(f"Expected dict result for single query, got {type(result)}")
-            
+                raise ValueError(
+                    f"Expected dict result for single query, got {type(result)}"
+                )
+
             # Parse book ticker data
             bid_price = Decimal(str(result.get("bp", "0")))
             ask_price = Decimal(str(result.get("ap", "0")))
             bid_volume = Decimal(str(result.get("bq", "0")))
             ask_volume = Decimal(str(result.get("aq", "0")))
-            
+
             # Validate prices (must be > 0)
             if bid_price <= 0 or ask_price <= 0:
                 raise ValueError(
                     f"Invalid ticker data for {trading_pair.base_currency}/"
                     f"{trading_pair.quote_currency}: bid={bid_price}, ask={ask_price}"
                 )
-            
+
             price = Price(
                 trading_pair=trading_pair,
                 bid_price=bid_price,
@@ -586,10 +638,12 @@ class XTPerpExchange(BaseExchange):
                 timestamp=datetime.utcnow(),
                 exchange="xt_perp",
             )
-            
+
             return price
 
-    async def get_orderbook(self, trading_pair: TradingPair, depth: int = 20) -> OrderBook:
+    async def get_orderbook(
+        self, trading_pair: TradingPair, depth: int = 20
+    ) -> OrderBook:
         """Get order book for a trading pair.
 
         Args:
@@ -608,30 +662,34 @@ class XTPerpExchange(BaseExchange):
 
         # Convert trading pair to XT format: "BTC/USDT" -> "btc_usdt"
         symbol = f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
-        
+
         path = "/future/market/v1/public/q/depth"
         params = {"symbol": symbol, "level": depth}
-        data = await self._request("GET", path, params=params, body=None, require_auth=False)
-        
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=False
+        )
+
         # Parse orderbook response
         # Expected format: {"b": [["49990", "1.5"], ["49980", "2.0"]], "a": [["50010", "1.2"], ["50020", "1.8"]]}
         bids_data = data.get("b", [])
         asks_data = data.get("a", [])
-        
+
         # Convert to PriceLevel format: (price, quantity)
         bids = [(Decimal(str(price)), Decimal(str(qty))) for price, qty in bids_data]
         asks = [(Decimal(str(price)), Decimal(str(qty))) for price, qty in asks_data]
-        
+
         orderbook = OrderBook(
             trading_pair=trading_pair,
             bids=bids,
             asks=asks,
             timestamp=datetime.utcnow(),
         )
-        
+
         return orderbook
 
-    async def get_trade_history(self, trading_pair: TradingPair, limit: int = 100) -> list[Any]:
+    async def get_trade_history(
+        self, trading_pair: TradingPair, limit: int = 100
+    ) -> list[Any]:
         """Get recent trade history.
 
         Args:
@@ -670,7 +728,7 @@ class XTPerpExchange(BaseExchange):
 
         # Convert trading pair to XT format
         symbol = f"{order.trading_pair.base_currency}_{order.trading_pair.quote_currency}".lower()
-        
+
         # Build request body
         body = {
             "symbol": symbol,
@@ -679,27 +737,29 @@ class XTPerpExchange(BaseExchange):
             "positionSide": order.position_side,
             "origQty": str(order.quantity),
         }
-        
+
         # Add price for LIMIT orders
         if order.order_type == OrderType.LIMIT and order.price:
             body["price"] = str(order.price)
-        
+
         # Add time in force if specified
         if order.time_in_force:
             body["timeInForce"] = order.time_in_force
-        
+
         # Add client order ID if specified
         if order.order_id:
             body["clientOrderId"] = order.order_id
-        
+
         path = "/future/trade/v1/order/create"
-        data = await self._request("POST", path, params=None, body=body, require_auth=True)
-        
+        data = await self._request(
+            "POST", path, params=None, body=body, require_auth=True
+        )
+
         # Parse response and update order
         order.exchange_order_id = str(data.get("orderId", ""))
         order.status = OrderStatus.PENDING  # Will be updated by order status query
         order.updated_at = datetime.utcnow()
-        
+
         logger.info(
             "Order placed successfully",
             symbol=symbol,
@@ -708,7 +768,7 @@ class XTPerpExchange(BaseExchange):
             position_side=order.position_side,
             quantity=str(order.quantity),
         )
-        
+
         return order
 
     async def cancel_order(self, order_id: str) -> bool:
@@ -730,7 +790,7 @@ class XTPerpExchange(BaseExchange):
         path = "/future/trade/v1/order/cancel"
         body = {"orderId": order_id}
         await self._request("POST", path, params=None, body=body, require_auth=True)
-        
+
         logger.info("Order cancelled successfully", order_id=order_id)
         return True
 
@@ -755,17 +815,19 @@ class XTPerpExchange(BaseExchange):
             path = "/future/trade/v1/order/cancel-all"
             body = {}
             await self._request("POST", path, params=None, body=body, require_auth=True)
-            
+
             logger.info("All orders cancelled successfully")
             # API doesn't return count, so we return 0 to indicate unknown count
             return 0
         else:
             # Cancel all orders for specific trading pair
-            symbol = f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            symbol = (
+                f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            )
             path = "/future/trade/v1/order/cancel-all"
             body = {"symbol": symbol}
             await self._request("POST", path, params=None, body=body, require_auth=True)
-            
+
             logger.info("All orders cancelled for trading pair", symbol=symbol)
             # API doesn't return count, so we return 0 to indicate unknown count
             return 0
@@ -788,14 +850,16 @@ class XTPerpExchange(BaseExchange):
 
         path = "/future/trade/v1/order/detail"
         params = {"orderId": order_id}
-        data = await self._request("GET", path, params=params, body=None, require_auth=True)
-        
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=True
+        )
+
         # Parse order detail response
         symbol = data.get("symbol", "")
         parts = symbol.split("_")
         base = parts[0].upper() if len(parts) > 0 else "BTC"
         quote = parts[1].upper() if len(parts) > 1 else "USDT"
-        
+
         # Create TradingPair
         trading_pair = TradingPair(
             base_currency=base,
@@ -806,7 +870,7 @@ class XTPerpExchange(BaseExchange):
             price_precision=8,
             quantity_precision=8,
         )
-        
+
         # Map XT order status to OrderStatus enum
         xt_status = data.get("state", "NEW")
         status_map = {
@@ -818,14 +882,14 @@ class XTPerpExchange(BaseExchange):
             "EXPIRED": OrderStatus.CANCELED,
         }
         status = status_map.get(xt_status, OrderStatus.PENDING)
-        
+
         # Parse order side and type
         order_side_str = data.get("orderSide", "BUY")
         order_side = OrderSide.BUY if order_side_str == "BUY" else OrderSide.SELL
-        
+
         order_type_str = data.get("orderType", "LIMIT")
         order_type = OrderType.LIMIT if order_type_str == "LIMIT" else OrderType.MARKET
-        
+
         # Create Order object
         order = Order(
             order_id=data.get("clientOrderId", order_id),
@@ -843,7 +907,7 @@ class XTPerpExchange(BaseExchange):
             position_side=data.get("positionSide"),
             time_in_force=data.get("timeInForce", "GTC"),
         )
-        
+
         return order
 
     # ============================================================================
@@ -862,7 +926,9 @@ class XTPerpExchange(BaseExchange):
         raise NotImplementedError("WebSocket streaming not yet implemented")
         yield  # Make this a generator
 
-    async def subscribe_orderbook(self, trading_pair: TradingPair, depth: int = 20) -> AsyncIterator[OrderBook]:
+    async def subscribe_orderbook(
+        self, trading_pair: TradingPair, depth: int = 20
+    ) -> AsyncIterator[OrderBook]:
         """Subscribe to orderbook updates.
 
         Args:
@@ -905,40 +971,45 @@ class XTPerpExchange(BaseExchange):
         else:
             # Single pair query
             pair_key = f"{trading_pair.base_currency}/{trading_pair.quote_currency}"
-            
+
             # Check cache first
             if pair_key in self._trading_pairs:
                 return self._trading_pairs[pair_key]
-            
+
             # If not in cache, fetch from API
-            symbol = f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            symbol = (
+                f"{trading_pair.base_currency}_{trading_pair.quote_currency}".lower()
+            )
             path = "/future/market/v1/public/symbol/detail"
             params = {"symbol": symbol}
-            data = await self._request("GET", path, params=params, body=None, require_auth=False)
-            
+            data = await self._request(
+                "GET", path, params=params, body=None, require_auth=False
+            )
+
             # Parse trading pair detail
             # Expected format: {"symbol": "btc_usdt", "pricePrecision": 2, "quantityPrecision": 3, ...}
             base = trading_pair.base_currency
             quote = trading_pair.quote_currency
-            
+
             price_precision = int(data.get("pricePrecision", 8))
             quantity_precision = int(data.get("quantityPrecision", 8))
             min_order_size = Decimal(str(data.get("minQty", "0.001")))
             max_order_size = Decimal(str(data.get("maxQty", "1000000")))
-            
+
             # Parse leverage brackets if available
             leverage_brackets_data = data.get("leverageBrackets", [])
             leverage_brackets_list = []
             if leverage_brackets_data:
                 for bracket in leverage_brackets_data:
                     from tri_arb.models.perpetual import LeverageBracket
+
                     bracket_obj = LeverageBracket(
                         min_notional=Decimal(str(bracket.get("minNotional", "0"))),
                         max_notional=Decimal(str(bracket.get("maxNotional", "0"))),
                         max_leverage=int(bracket.get("maxLeverage", 1)),
                     )
                     leverage_brackets_list.append(bracket_obj)
-            
+
             # Create TradingPair with full info
             pair = TradingPair(
                 base_currency=base,
@@ -952,10 +1023,10 @@ class XTPerpExchange(BaseExchange):
                 contract_size=Decimal(str(data.get("contractSize", "1"))),
                 contract_type="PERPETUAL",
             )
-            
+
             # Update cache
             self._trading_pairs[pair_key] = pair
-            
+
             return pair
 
     # ============================================================================
@@ -968,10 +1039,10 @@ class XTPerpExchange(BaseExchange):
             status_code, response, headers = self.perp.get_listen_key()
 
             # 如果返回状态码不是 200 或者没有 'result' 字段，则抛出异常
-            if status_code != 200 or 'result' not in response:
+            if status_code != 200 or "result" not in response:
                 raise RuntimeError(f"获取 listen key 失败，意外的响应: {response}")
 
-            listen_key = response['result']
+            listen_key = response["result"]
             logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
 
             return listen_key
@@ -979,6 +1050,7 @@ class XTPerpExchange(BaseExchange):
         except Exception as exc:
             logger.error(f"创建 XT 用户流 listen key 失败: {str(exc)}")
             raise RuntimeError(f"创建 XT 用户流 listen key 失败: {str(exc)}") from exc
+
     # async def create_user_stream_listen_key(self) -> str:
     #     """创建用户数据 WebSocket 流的 listen key"""
     #     try:
@@ -997,11 +1069,11 @@ class XTPerpExchange(BaseExchange):
     #                     raise RuntimeError(f"获取 listen key 失败，HTTP 状态码: {response.status}")
 
     #                 result = await response.json()
-                    
+
     #                 # 检查响应是否包含 "result"
     #                 if 'result' not in result:
     #                     raise RuntimeError(f"获取 listen key 失败，响应内容: {result}")
-                    
+
     #                 listen_key = result['result']
     #                 logger.info(f"成功获取 XT listen key: {listen_key[:8]}...")
 
@@ -1061,14 +1133,16 @@ class XTPerpExchange(BaseExchange):
 
         # Use compat endpoint based on xt_perp_api.py implementation
         path = "/future/user/v1/compat/balance/list"
-        data = await self._request("GET", path, params=None, body=None, require_auth=True)
+        data = await self._request(
+            "GET", path, params=None, body=None, require_auth=True
+        )
 
         # Debug: Log raw API response
         logger.debug(
             "Raw balance API response (perp)",
             response_type=type(data).__name__,
             is_list=isinstance(data, list),
-            sample_data=str(data)[:500] if data else "empty"
+            sample_data=str(data)[:500] if data else "empty",
         )
 
         # Parse balance response
@@ -1084,7 +1158,10 @@ class XTPerpExchange(BaseExchange):
             items = data.get("data", [])
             logger.info("Extracting from dict format (perp)", item_count=len(items))
         else:
-            logger.error("Unexpected perp balance response type", response_type=type(data).__name__)
+            logger.error(
+                "Unexpected perp balance response type",
+                response_type=type(data).__name__,
+            )
             return balances
 
         # Parse each balance item
@@ -1115,8 +1192,10 @@ class XTPerpExchange(BaseExchange):
                 total=str(total),
                 not_profit=str(not_profit) if not_profit is not None else "None",
                 profit=str(profit) if profit is not None else "None",
-                margin_balance=str(margin_balance) if margin_balance is not None else "None",
-                will_include=total > 0
+                margin_balance=(
+                    str(margin_balance) if margin_balance is not None else "None"
+                ),
+                will_include=total > 0,
             )
 
             # Extract additional fields from API response
@@ -1126,18 +1205,46 @@ class XTPerpExchange(BaseExchange):
             # - marginBalance: 保证金余额（总权益）
             # - crossedMargin: 全仓保证金
             # - isolatedMargin: 逐仓保证金
-            unrealized_pnl = Decimal(str(item.get("notProfit", item.get("unrealizedPnl", item.get("unrealizedProfit", "0")))))
-            realized_pnl = Decimal(str(item.get("profit", item.get("realizedPnl", item.get("realizedProfit", "0")))))
+            unrealized_pnl = Decimal(
+                str(
+                    item.get(
+                        "notProfit",
+                        item.get("unrealizedPnl", item.get("unrealizedProfit", "0")),
+                    )
+                )
+            )
+            realized_pnl = Decimal(
+                str(
+                    item.get(
+                        "profit",
+                        item.get("realizedPnl", item.get("realizedProfit", "0")),
+                    )
+                )
+            )
             # marginBalance is the total equity (wallet balance + unrealized PnL)
-            equity = Decimal(str(item.get("marginBalance", item.get("equity", item.get("totalEquity", str(total + unrealized_pnl))))))
+            equity = Decimal(
+                str(
+                    item.get(
+                        "marginBalance",
+                        item.get(
+                            "equity",
+                            item.get("totalEquity", str(total + unrealized_pnl)),
+                        ),
+                    )
+                )
+            )
             # Use crossedMargin + isolatedMargin as total margin
             crossed_margin = Decimal(str(item.get("crossedMargin", "0")))
             isolated_margin = Decimal(str(item.get("isolatedMargin", "0")))
             margin = crossed_margin + isolated_margin
             # Calculate margin ratio if we have marginBalance and margin
             margin_balance = Decimal(str(item.get("marginBalance", "0")))
-            margin_ratio = (margin / margin_balance * Decimal("100")) if margin_balance > 0 else Decimal("0")
-            
+            margin_ratio = (
+                (margin / margin_balance * Decimal("100"))
+                if margin_balance > 0
+                else Decimal("0")
+            )
+
             # Only include non-zero balances
             if total > 0:
                 # totalAmount 用于计算保证金占用率，优先使用 API 返回的 totalAmount 字段
@@ -1156,7 +1263,7 @@ class XTPerpExchange(BaseExchange):
                     # 使用 walletBalance（钱包余额）作为备选
                     wallet_balance = Decimal(str(item.get("walletBalance", "0")))
                     total_amount = wallet_balance if wallet_balance > 0 else total
-                
+
                 # 确保 totalAmount 是正数
                 if total_amount <= 0:
                     logger.warning(
@@ -1166,7 +1273,7 @@ class XTPerpExchange(BaseExchange):
                         total=str(total),
                     )
                     total_amount = total
-                
+
                 balances[currency] = {
                     "available": available,
                     "frozen": frozen,
@@ -1182,7 +1289,9 @@ class XTPerpExchange(BaseExchange):
                     "crossedMargin": crossed_margin,  # 全仓保证金
                     "totalAmount": total_amount,  # 总权益（用于计算保证金占用率，优先使用 API 返回的 totalAmount）
                     "marginBalance": margin_balance,  # 保证金余额
-                    "walletBalance": Decimal(str(item.get("walletBalance", "0"))),  # 钱包余额（用于调试）
+                    "walletBalance": Decimal(
+                        str(item.get("walletBalance", "0"))
+                    ),  # 钱包余额（用于调试）
                 }
 
         return balances
@@ -1206,8 +1315,10 @@ class XTPerpExchange(BaseExchange):
         # Use /future/user/v1/position endpoint (not /position/list)
         path = "/future/user/v1/position"
         params = {"symbol": symbol} if symbol else None
-        data = await self._request("GET", path, params=params, body=None, require_auth=True)
-        
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=True
+        )
+
         # XT API returns {result: [...]} format, extract result array
         if isinstance(data, dict) and "result" in data:
             data = data["result"]
@@ -1227,8 +1338,12 @@ class XTPerpExchange(BaseExchange):
                 side = item.get("positionSide", "LONG")
                 # XT API uses positionSize (in contracts/张)
                 position_size_raw = item.get("positionSize")
-                quantity = Decimal(str(position_size_raw)) if position_size_raw is not None else Decimal("0")
-                
+                quantity = (
+                    Decimal(str(position_size_raw))
+                    if position_size_raw is not None
+                    else Decimal("0")
+                )
+
                 # Extract all other fields
                 entry_price_raw = item.get("entryPrice")
                 cal_mark_price_raw = item.get("calMarkPrice")
@@ -1246,42 +1361,55 @@ class XTPerpExchange(BaseExchange):
                 # Skip closed positions (quantity = 0)
                 # API may return historical positions with zero quantity
                 if quantity <= 0:
-                    logger.debug("Skipping closed position", symbol=symbol_str, quantity=str(quantity))
+                    logger.debug(
+                        "Skipping closed position",
+                        symbol=symbol_str,
+                        quantity=str(quantity),
+                    )
                     continue
 
                 # Convert all fields to Decimal with proper handling
-                entry_price = Decimal(str(entry_price_raw)) if entry_price_raw is not None else Decimal("0")
+                entry_price = (
+                    Decimal(str(entry_price_raw))
+                    if entry_price_raw is not None
+                    else Decimal("0")
+                )
                 # XT API uses calMarkPrice for mark price (计算标记价格)
-                mark_price = Decimal(str(cal_mark_price_raw)) if cal_mark_price_raw is not None else Decimal("0")
+                mark_price = (
+                    Decimal(str(cal_mark_price_raw))
+                    if cal_mark_price_raw is not None
+                    else Decimal("0")
+                )
                 # XT API uses breakPrice for liquidation price (强平价格)
-                liquidation_price = Decimal(str(break_price_raw)) if break_price_raw is not None else Decimal("0")
-                
+                liquidation_price = (
+                    Decimal(str(break_price_raw))
+                    if break_price_raw is not None
+                    else Decimal("0")
+                )
+
                 # XT API uses floatingPL for unrealized PnL (未实现盈亏)
                 if floating_pl_raw is not None:
                     unrealized_pnl = Decimal(str(floating_pl_raw))
                 else:
-                    logger.warning(
-                        "floatingPL field not found",
-                        symbol=symbol_str
-                    )
+                    logger.warning("floatingPL field not found", symbol=symbol_str)
                     unrealized_pnl = Decimal("0")
-                
+
                 # XT API uses realizedProfit for realized PnL (已实现盈亏)
                 if realized_profit_raw is not None:
                     realized_pnl = Decimal(str(realized_profit_raw))
                 else:
                     realized_pnl = Decimal("0")
-                
+
                 # XT API uses leverage (杠杆倍数)
                 leverage_val = int(leverage_raw) if leverage_raw is not None else 1
-                
+
                 # XT API uses isolatedMargin for margin (仓位保证金)
                 # For CROSSED position type, margin might be 0, use crossedMargin from balance instead
                 if isolated_margin_raw is not None:
                     margin = Decimal(str(isolated_margin_raw))
                 else:
                     margin = Decimal("0")
-                
+
                 # Log position summary (only key fields)
                 logger.debug(
                     "Position parsed",
@@ -1292,7 +1420,11 @@ class XTPerpExchange(BaseExchange):
                 )
 
                 # Calculate ROE (Return on Equity)
-                roe = (unrealized_pnl / margin * Decimal("100")) if margin > 0 else Decimal("0")
+                roe = (
+                    (unrealized_pnl / margin * Decimal("100"))
+                    if margin > 0
+                    else Decimal("0")
+                )
 
                 # Create position with all fields including realized_pnl
                 # Note: Position model may not have realized_pnl, so we'll store it separately
@@ -1322,14 +1454,14 @@ class XTPerpExchange(BaseExchange):
             logger.warning(
                 "Unexpected positions response format",
                 response_type=type(data).__name__,
-                data=data
+                data=data,
             )
 
         logger.info(
             "Positions query completed",
             total_api_items=len(data) if isinstance(data, list) else 0,
             valid_positions=len(positions),
-            position_symbols=[p.symbol for p in positions]
+            position_symbols=[p.symbol for p in positions],
         )
 
         return positions
@@ -1352,22 +1484,26 @@ class XTPerpExchange(BaseExchange):
 
         path = "/future/market/v1/public/q/funding-rate"
         params = {"symbol": symbol}
-        data = await self._request("GET", path, params=params, body=None, require_auth=False)
-        
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=False
+        )
+
         # Parse funding rate response
         # Expected format: {"symbol": "btc_usdt", "rate": "0.0001", "nextFundingTime": 1234567890000}
         rate = Decimal(str(data.get("rate", "0")))
         next_funding_time_ms = data.get("nextFundingTime", 0)
-        
+
         # Convert milliseconds to datetime
-        next_funding_time = datetime.fromtimestamp(next_funding_time_ms / 1000, tz=timezone.utc)
-        
+        next_funding_time = datetime.fromtimestamp(
+            next_funding_time_ms / 1000, tz=timezone.utc
+        )
+
         funding_rate = FundingRate(
             symbol=symbol,
             rate=rate,
             next_funding_time=next_funding_time,
         )
-        
+
         return funding_rate
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
@@ -1381,7 +1517,9 @@ class XTPerpExchange(BaseExchange):
             ValueError: If leverage is out of range
         """
         if leverage < 1 or leverage > 125:
-            raise ValueError(f"Invalid leverage: {leverage}. Must be between 1 and 125.")
+            raise ValueError(
+                f"Invalid leverage: {leverage}. Must be between 1 and 125."
+            )
 
         if not self.is_connected or self._client is None:
             raise RuntimeError("Exchange is not connected. Call connect() first.")
@@ -1426,7 +1564,9 @@ class XTPerpExchange(BaseExchange):
         if end_time:
             params["endTime"] = end_time
 
-        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=True
+        )
 
         orders = []
         # _request 方法已经提取了 result 字段，所以 data 已经是 result 的内容
@@ -1458,17 +1598,23 @@ class XTPerpExchange(BaseExchange):
                 # Parse order data
                 # Note: XT API uses "createdTime" (with 'd') according to official docs
                 # https://doc.xt.com/zh-Hans/docs/futures/Order/see-order-history
-                created_time = order_data.get("createdTime") or order_data.get("createTime")
+                created_time = order_data.get("createdTime") or order_data.get(
+                    "createTime"
+                )
                 updated_time = order_data.get("updatedTime") or created_time
-                
+
                 # Parse order side (XT API returns "BUY" or "SELL" as strings)
                 order_side_str = order_data.get("orderSide", "BUY")
-                order_side = OrderSide.BUY if order_side_str == "BUY" else OrderSide.SELL
-                
+                order_side = (
+                    OrderSide.BUY if order_side_str == "BUY" else OrderSide.SELL
+                )
+
                 # Parse order type (XT API returns "LIMIT", "MARKET", etc. as strings)
                 order_type_str = order_data.get("orderType", "LIMIT")
-                order_type = OrderType.LIMIT if order_type_str == "LIMIT" else OrderType.MARKET
-                
+                order_type = (
+                    OrderType.LIMIT if order_type_str == "LIMIT" else OrderType.MARKET
+                )
+
                 # Parse order status (XT API uses "state" field)
                 xt_status = order_data.get("state", "")
                 if xt_status == "NEW":
@@ -1481,7 +1627,7 @@ class XTPerpExchange(BaseExchange):
                     order_status = OrderStatus.CANCELLED
                 else:
                     order_status = OrderStatus.PENDING
-                
+
                 created_at = (
                     datetime.fromtimestamp(created_time / 1000, tz=timezone.utc)
                     if created_time
@@ -1494,9 +1640,11 @@ class XTPerpExchange(BaseExchange):
                 )
                 exchange_order_id = str(order_data.get("orderId", ""))
                 internal_order_id = str(
-                    order_data.get("clientOrderId") or order_data.get("orderId") or exchange_order_id
+                    order_data.get("clientOrderId")
+                    or order_data.get("orderId")
+                    or exchange_order_id
                 )
-                
+
                 order = Order(
                     order_id=internal_order_id,
                     exchange_order_id=exchange_order_id,
@@ -1504,7 +1652,11 @@ class XTPerpExchange(BaseExchange):
                     side=order_side,
                     order_type=order_type,
                     quantity=Decimal(str(order_data.get("origQty", "0"))),
-                    price=Decimal(str(order_data.get("price", "0"))) if order_data.get("price") else None,
+                    price=(
+                        Decimal(str(order_data.get("price", "0")))
+                        if order_data.get("price")
+                        else None
+                    ),
                     status=order_status,
                     created_at=created_at,
                     updated_at=updated_at,
@@ -1515,7 +1667,9 @@ class XTPerpExchange(BaseExchange):
                 orders.append(order)
 
             except (ValueError, KeyError, decimal.InvalidOperation) as e:
-                logger.warning("Failed to parse order data", error=str(e), order_data=order_data)
+                logger.warning(
+                    "Failed to parse order data", error=str(e), order_data=order_data
+                )
                 continue
 
         logger.info("Retrieved order list", count=len(orders), symbol=symbol)
@@ -1565,7 +1719,9 @@ class XTPerpExchange(BaseExchange):
                 }
 
                 # 调用 API
-                data = await self._request("GET", path, params=params, body=None, require_auth=True)
+                data = await self._request(
+                    "GET", path, params=params, body=None, require_auth=True
+                )
 
                 # 解析响应
                 order_list = data.get("items", []) if isinstance(data, dict) else []
@@ -1592,16 +1748,22 @@ class XTPerpExchange(BaseExchange):
                             oldest_time_ms = created_time
 
                 if not unique_orders:
-                    logger.debug(f"Page {page}: All orders are duplicates, stopping pagination")
+                    logger.debug(
+                        f"Page {page}: All orders are duplicates, stopping pagination"
+                    )
                     break
 
-                logger.debug(f"Page {page}: Retrieved {len(order_list)} orders, {len(unique_orders)} unique")
+                logger.debug(
+                    f"Page {page}: Retrieved {len(order_list)} orders, {len(unique_orders)} unique"
+                )
                 yield unique_orders
 
                 # 判断是否继续分页
                 # 如果返回的订单数小于限制，说明没有更多订单了
                 if len(order_list) < actual_limit:
-                    logger.debug(f"Page {page}: No more pages (count={len(order_list)} < limit={actual_limit})")
+                    logger.debug(
+                        f"Page {page}: No more pages (count={len(order_list)} < limit={actual_limit})"
+                    )
                     break
 
                 # 使用最旧订单的时间 - 1ms 作为下一页的 endTime
@@ -1627,7 +1789,7 @@ class XTPerpExchange(BaseExchange):
         Reference: https://doc.xt.com/zh-Hans/docs/futures/Order/ListOpenOrder
 
         Args:
-            symbol: Optional trading pair symbol (e.g., "BTC_USDT"). 
+            symbol: Optional trading pair symbol (e.g., "BTC_USDT").
                    If None, returns all open orders.
                    If provided, returns orders for specific symbol.
 
@@ -1663,7 +1825,7 @@ class XTPerpExchange(BaseExchange):
             raise ValueError("API credentials are required for this operation")
 
         path = "/future/trade/v1/order/list-open-order"
-        
+
         # XT API requires form data for this endpoint
         form_data: dict[str, Any] = {}
         if symbol:
@@ -1671,7 +1833,9 @@ class XTPerpExchange(BaseExchange):
 
         # Generate signature headers
         timestamp = await self._get_server_timestamp()
-        headers = self._generate_signature("POST", path, None, None, timestamp=timestamp)
+        headers = self._generate_signature(
+            "POST", path, None, None, timestamp=timestamp
+        )
 
         # Make POST request with form data
         try:
@@ -1697,7 +1861,11 @@ class XTPerpExchange(BaseExchange):
         # Check XT API response code
         rc = data.get("rc")
         if rc is not None and rc != 0:
-            error_msg = data.get("ma", ["Unknown error"])[0] if data.get("ma") else data.get("msg", "Unknown error")
+            error_msg = (
+                data.get("ma", ["Unknown error"])[0]
+                if data.get("ma")
+                else data.get("msg", "Unknown error")
+            )
             logger.error(
                 "XT API returned error code",
                 rc=rc,
@@ -1747,7 +1915,7 @@ class XTPerpExchange(BaseExchange):
         limit: int | None = None,
     ) -> dict[str, Any]:
         """Query user trade history using XT API /future/trade/v1/order/trade-list endpoint.
-        
+
         根据 XT API 文档: https://doc.xt.com/zh-Hans/docs/futures/Order/see-transaction-details
 
         Args:
@@ -1765,7 +1933,7 @@ class XTPerpExchange(BaseExchange):
             - page: Current page number
             - ps: Page size
             - total: Total number of trades
-            
+
             Trade record format:
             {
                 "fee": float,              # 手续费
@@ -1793,14 +1961,14 @@ class XTPerpExchange(BaseExchange):
             raise ValueError("size maximum value is 100")
         if size < 1:
             raise ValueError("size must be a positive integer")
-        
+
         # 向后兼容：如果提供了 limit，转换为 size
         if limit is not None:
             size = min(limit, 100)
             logger.warning(
                 "limit parameter is deprecated, use size instead",
                 limit=limit,
-                converted_size=size
+                converted_size=size,
             )
 
         path = "/future/trade/v1/order/trade-list"
@@ -1818,7 +1986,9 @@ class XTPerpExchange(BaseExchange):
         if end_time is not None:
             params["endTime"] = end_time
 
-        data = await self._request("GET", path, params=params, body=None, require_auth=True)
+        data = await self._request(
+            "GET", path, params=params, body=None, require_auth=True
+        )
 
         # XT API 返回格式: {result: {items: [...], page: 1, ps: 10, total: 100}, returnCode: 0}
         result = data.get("result", {})
@@ -1834,9 +2004,9 @@ class XTPerpExchange(BaseExchange):
             order_id=order_id,
             page=page_num,
             size=page_size,
-            total=total
+            total=total,
         )
-        
+
         return {
             "items": trades,
             "page": page_num,

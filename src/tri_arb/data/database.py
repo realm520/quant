@@ -92,7 +92,9 @@ class DatabaseManager:
 
         # Acquire semaphore to limit concurrent connections
         async with self._semaphore:
-            conn = await aiosqlite.connect(str(self.db_path), timeout=settings.db_timeout)
+            conn = await aiosqlite.connect(
+                str(self.db_path), timeout=settings.db_timeout
+            )
             try:
                 # Enable foreign keys
                 await conn.execute("PRAGMA foreign_keys=ON")

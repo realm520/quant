@@ -66,16 +66,13 @@ def calculate_recommended_amount(
         Decimal('3000.00')  # Min liquidity: 10 BTC * 50000 * 0.3 = 150000, but high profit boosts it
     """
     # Step 1: Calculate minimum liquidity in base currency
-    min_liquidity = _calculate_min_liquidity_in_base(
-        path=path,
-        tickers=tickers
-    )
+    min_liquidity = _calculate_min_liquidity_in_base(path=path, tickers=tickers)
 
     if min_liquidity <= 0:
         logger.warning(
             "zero_or_negative_liquidity",
             path=path.trading_pairs,
-            min_liquidity=str(min_liquidity)
+            min_liquidity=str(min_liquidity),
         )
         return min_amount
 
@@ -86,7 +83,9 @@ def calculate_recommended_amount(
     # Higher profit → willing to use more capital
     # Formula: base_amount * (1 + profit_rate_boost)
     profit_boost = min(profit_rate / Decimal("0.01"), Decimal("2.0"))  # Cap at 2x boost
-    risk_adjusted_amount = usable_liquidity * (Decimal("1.0") + profit_boost * Decimal("0.5"))
+    risk_adjusted_amount = usable_liquidity * (
+        Decimal("1.0") + profit_boost * Decimal("0.5")
+    )
 
     # Step 4: Clamp to limits
     recommended = max(min_amount, min(risk_adjusted_amount, max_amount))
@@ -101,15 +100,14 @@ def calculate_recommended_amount(
         usable_liquidity=str(usable_liquidity),
         profit_rate=str(profit_rate),
         risk_adjusted=str(risk_adjusted_amount),
-        final_recommended=str(recommended)
+        final_recommended=str(recommended),
     )
 
     return recommended
 
 
 def _calculate_min_liquidity_in_base(
-    path: TradingPath,
-    tickers: dict[str, Ticker]
+    path: TradingPath, tickers: dict[str, Ticker]
 ) -> Decimal:
     """
     Calculate minimum liquidity across path in base currency.
@@ -133,7 +131,7 @@ def _calculate_min_liquidity_in_base(
             logger.warning(
                 "ticker_not_found",
                 symbol=pair_symbol,
-                available_symbols=list(tickers.keys())
+                available_symbols=list(tickers.keys()),
             )
             return Decimal("0")
 
@@ -178,7 +176,7 @@ def _calculate_min_liquidity_in_base(
                 pair=pair_symbol,
                 current=current_currency,
                 base=base,
-                quote=quote
+                quote=quote,
             )
             return Decimal("0")
 
@@ -194,7 +192,7 @@ def _calculate_min_liquidity_in_base(
         "liquidity_calculated",
         path=path.trading_pairs,
         liquidity_values=[str(v) for v in liquidity_values],
-        min_liquidity=str(min_liquidity)
+        min_liquidity=str(min_liquidity),
     )
 
     return min_liquidity

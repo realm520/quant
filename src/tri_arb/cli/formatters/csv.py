@@ -7,10 +7,10 @@ from typing import Any, List, Dict
 
 def format_csv(data: List[Dict[str, Any]]) -> str:
     """Format data as CSV string.
-    
+
     Args:
         data: List of dictionaries to format
-    
+
     Returns:
         CSV formatted string
     """
@@ -31,7 +31,7 @@ def format_csv(data: List[Dict[str, Any]]) -> str:
 
 def print_csv(data: List[Dict[str, Any]]) -> None:
     """Print data as formatted CSV.
-    
+
     Args:
         data: List of dictionaries to print
     """

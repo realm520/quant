@@ -245,5 +245,3 @@ def create_account_table_models(account_id: str):
 
     _account_models_cache[account_id] = models
     return models
-
-

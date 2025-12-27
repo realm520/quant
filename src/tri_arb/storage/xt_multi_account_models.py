@@ -7,7 +7,18 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Numeric, String, Text, Index, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -37,22 +48,24 @@ def _create_model_class(
 
 def create_account_table_models(account_id: str):
     """为指定账号创建表模型类.
-    
+
     Args:
         account_id: 账号ID（例如 "account_001"）
-    
+
     Returns:
         dict: 包含所有表模型类的字典
     """
     # 检查缓存
     if account_id in _account_models_cache:
         return _account_models_cache[account_id]
-    
+
     # 表名后缀（清理特殊字符，确保表名合法）
     table_suffix = account_id.replace("-", "_").replace(".", "_").lower()
     # 类名后缀（用于确保类名唯一）
-    class_suffix = account_id.replace("-", "_").replace(".", "_").title().replace("_", "")
-    
+    class_suffix = (
+        account_id.replace("-", "_").replace(".", "_").title().replace("_", "")
+    )
+
     XTAccountUpdate = _create_model_class(
         "XTAccountUpdate",
         class_suffix,
@@ -68,7 +81,11 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_account_{table_suffix}_currency_time", "currency", "update_time"),
+            Index(
+                f"idx_xt_account_{table_suffix}_currency_time",
+                "currency",
+                "update_time",
+            ),
             Index(f"idx_xt_account_{table_suffix}_time", "update_time"),
             {"extend_existing": True},
         ),
@@ -90,7 +107,9 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_spot_{table_suffix}_currency_time", "currency", "update_time"),
+            Index(
+                f"idx_xt_spot_{table_suffix}_currency_time", "currency", "update_time"
+            ),
             Index(f"idx_xt_spot_{table_suffix}_time", "update_time"),
             {"extend_existing": True},
         ),
@@ -118,7 +137,9 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_position_{table_suffix}_symbol_time", "symbol", "update_time"),
+            Index(
+                f"idx_xt_position_{table_suffix}_symbol_time", "symbol", "update_time"
+            ),
             Index(f"idx_xt_position_{table_suffix}_side_time", "side", "update_time"),
             Index(f"idx_xt_position_{table_suffix}_time", "update_time"),
             {"extend_existing": True},
@@ -151,9 +172,16 @@ def create_account_table_models(account_id: str):
         },
         (
             Index(f"idx_xt_order_{table_suffix}_id_time", "order_id", "update_time"),
-            Index(f"idx_xt_order_{table_suffix}_symbol_status_time", "symbol", "status", "update_time"),
+            Index(
+                f"idx_xt_order_{table_suffix}_symbol_status_time",
+                "symbol",
+                "status",
+                "update_time",
+            ),
             Index(f"idx_xt_order_{table_suffix}_time", "update_time"),
-            UniqueConstraint("order_id", "update_time", name=f"uq_xt_order_{table_suffix}_id_time"),
+            UniqueConstraint(
+                "order_id", "update_time", name=f"uq_xt_order_{table_suffix}_id_time"
+            ),
             {"extend_existing": True},
         ),
         "XT WebSocket订单更新记录（账号特定表）。",
@@ -208,7 +236,11 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_transfer_{table_suffix}_currency_time", "currency", "transfer_time"),
+            Index(
+                f"idx_xt_transfer_{table_suffix}_currency_time",
+                "currency",
+                "transfer_time",
+            ),
             Index(f"idx_xt_transfer_{table_suffix}_time", "transfer_time"),
             Index(f"idx_xt_transfer_{table_suffix}_type", "transfer_type"),
             {"extend_existing": True},
@@ -232,8 +264,14 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_spot_balance_{table_suffix}_asset_time", "asset", "query_time"),
-            Index(f"idx_xt_spot_balance_{table_suffix}_query_type_time", "query_type", "query_time"),
+            Index(
+                f"idx_xt_spot_balance_{table_suffix}_asset_time", "asset", "query_time"
+            ),
+            Index(
+                f"idx_xt_spot_balance_{table_suffix}_query_type_time",
+                "query_type",
+                "query_time",
+            ),
             {"extend_existing": True},
         ),
         "XT现货账户余额记录（账号特定表）。",
@@ -260,8 +298,14 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_perp_balance_{table_suffix}_asset_time", "asset", "query_time"),
-            Index(f"idx_xt_perp_balance_{table_suffix}_query_type_time", "query_type", "query_time"),
+            Index(
+                f"idx_xt_perp_balance_{table_suffix}_asset_time", "asset", "query_time"
+            ),
+            Index(
+                f"idx_xt_perp_balance_{table_suffix}_query_type_time",
+                "query_type",
+                "query_time",
+            ),
             {"extend_existing": True},
         ),
         "XT合约账户余额记录（账号特定表）。",
@@ -294,9 +338,21 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_perp_position_{table_suffix}_symbol_time", "symbol", "query_time"),
-            Index(f"idx_xt_perp_position_{table_suffix}_side_time", "position_side", "query_time"),
-            Index(f"idx_xt_perp_position_{table_suffix}_query_type_time", "query_type", "query_time"),
+            Index(
+                f"idx_xt_perp_position_{table_suffix}_symbol_time",
+                "symbol",
+                "query_time",
+            ),
+            Index(
+                f"idx_xt_perp_position_{table_suffix}_side_time",
+                "position_side",
+                "query_time",
+            ),
+            Index(
+                f"idx_xt_perp_position_{table_suffix}_query_type_time",
+                "query_type",
+                "query_time",
+            ),
             {"extend_existing": True},
         ),
         "XT合约账户仓位记录（账号特定表）。",
@@ -326,29 +382,40 @@ def create_account_table_models(account_id: str):
             "created_at": Column(DateTime, default=datetime.utcnow, nullable=False),
         },
         (
-            Index(f"idx_xt_rest_position_{table_suffix}_symbol_time", "symbol", "query_time"),
-            Index(f"idx_xt_rest_position_{table_suffix}_side_time", "position_side", "query_time"),
-            Index(f"idx_xt_rest_position_{table_suffix}_query_type_time", "query_type", "query_time"),
+            Index(
+                f"idx_xt_rest_position_{table_suffix}_symbol_time",
+                "symbol",
+                "query_time",
+            ),
+            Index(
+                f"idx_xt_rest_position_{table_suffix}_side_time",
+                "position_side",
+                "query_time",
+            ),
+            Index(
+                f"idx_xt_rest_position_{table_suffix}_query_type_time",
+                "query_type",
+                "query_time",
+            ),
             {"extend_existing": True},
         ),
         "XT永续仓位定时更新记录（账号特定表）。",
     )
-    
+
     models = {
-        'XTAccountUpdate': XTAccountUpdate,
-        'XTSpotUpdate': XTSpotUpdate,
-        'XTPositionUpdate': XTPositionUpdate,
-        'XTOrderUpdate': XTOrderUpdate,
-        'XTTradeUpdate': XTTradeUpdate,
-        'XTTransfer': XTTransfer,
-        'XTSpotBalance': XTSpotBalance,
-        'XTPerpBalance': XTPerpBalance,
-        'XTPerpPosition': XTPerpPosition,
-        'XTRestPositionUpdate': XTRestPositionUpdate,
+        "XTAccountUpdate": XTAccountUpdate,
+        "XTSpotUpdate": XTSpotUpdate,
+        "XTPositionUpdate": XTPositionUpdate,
+        "XTOrderUpdate": XTOrderUpdate,
+        "XTTradeUpdate": XTTradeUpdate,
+        "XTTransfer": XTTransfer,
+        "XTSpotBalance": XTSpotBalance,
+        "XTPerpBalance": XTPerpBalance,
+        "XTPerpPosition": XTPerpPosition,
+        "XTRestPositionUpdate": XTRestPositionUpdate,
     }
-    
+
     # 缓存模型
     _account_models_cache[account_id] = models
-    
-    return models
 
+    return models

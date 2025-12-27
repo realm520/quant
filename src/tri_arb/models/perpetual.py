@@ -44,7 +44,9 @@ class Position:
     def __post_init__(self) -> None:
         """Validate position data after initialization."""
         if self.leverage < 1 or self.leverage > 125:
-            raise ValueError(f"Invalid leverage: {self.leverage}. Must be between 1 and 125.")
+            raise ValueError(
+                f"Invalid leverage: {self.leverage}. Must be between 1 and 125."
+            )
         if self.quantity <= 0:
             raise ValueError(f"Invalid quantity: {self.quantity}. Must be positive.")
 

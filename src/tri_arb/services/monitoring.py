@@ -180,9 +180,7 @@ class MonitoringService:
         )
 
         # Placeholder: Log metric only
-        logger.debug(
-            "Metric recorded (placeholder)", metric=metric_name, value=value
-        )
+        logger.debug("Metric recorded (placeholder)", metric=metric_name, value=value)
 
     async def create_alert(
         self, severity: str, message: str, details: Dict[str, any]

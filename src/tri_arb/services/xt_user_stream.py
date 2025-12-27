@@ -376,27 +376,23 @@ class XTUserStreamService:
             return
 
         async def refresh_loop():
-            # 每50分钟刷新一次 listen key（XT listen key 通常60分钟过期）
+            # XT 交易所特殊说明：
+            # - XT 不支持 PUT 续期 listen key（与 Binance 不同）
+            # - 每次调用 GET 会返回新 key，旧 key 可能立即失效
+            # - 因此：必须先关闭旧连接，再获取新 key，避免数据丢失
+            #
+            # 策略：每 50 分钟主动重连（listen key 约 60 分钟过期）
             while self.is_running and self.ws:
                 try:
                     await asyncio.sleep(50 * 60)  # 50分钟
-                    if self.is_running and self.rest_client and self.listen_key:
-                        try:
-                            # 尝试刷新 listen key
-                            new_key = await self.rest_client.create_user_stream_listen_key()
-                            if new_key and new_key != self.listen_key:
-                                old_key = self.listen_key[:8]
-                                self.listen_key = new_key
-                                logger.info(
-                                    f"WS: Refreshed listen key {old_key}... -> {new_key[:8]}..."
-                                )
-                                # 刷新 listen key 后需要重新连接 WebSocket
-                                # 因为 listen key 是通过 URL 参数传递的
-                                if self.ws:
-                                    logger.info("WS: Closing connection to reconnect with new listen key")
-                                    await self.ws.close()
-                        except Exception as e:
-                            logger.warning(f"WS: Failed to refresh listen key: {e}")
+                    if self.is_running and self.ws:
+                        logger.info("WS: Listen key refresh - closing connection for renewal")
+                        # ⚠️ 关键修复：先关闭旧连接，避免旧 key 失效期间数据丢失
+                        old_key = self.listen_key[:8] if self.listen_key else "unknown"
+                        if self.ws:
+                            await self.ws.close()
+                        # WebSocket 关闭后会自动重连，并获取新 listen key
+                        logger.info(f"WS: Connection closed for listen key renewal (old: {old_key}...)")
                 except asyncio.CancelledError:
                     break
                 except Exception as e:

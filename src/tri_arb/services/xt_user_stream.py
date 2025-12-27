@@ -156,7 +156,7 @@ class XTUserStreamService:
         # Initialize REST client for data sync
         if self.enable_data_sync:
             self.rest_client = XTPerpExchange(self.api_key, self.api_secret)
-        await self.rest_client.connect()
+            await self.rest_client.connect()
 
         # Start batch writer tasks
         if "trade" in self.enabled_channels:
@@ -248,11 +248,11 @@ class XTUserStreamService:
         ]:
             if task:
                 task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-                await self._flush_queue(queue, save_fn, name)
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            await self._flush_queue(queue, save_fn, name)
 
         logger.info("WS: Service stopped completely")
     
@@ -265,7 +265,7 @@ class XTUserStreamService:
         logger.info(f"WS: Connecting to {self.WS_URL[:30]}...")
 
         async with websockets.connect(
-            ws_url, ping_interval=20, close_timeout=10
+            ws_url, ping_interval=None, close_timeout=10
         ) as ws:
             self.ws = ws
             self.reconnect_attempts = 0
@@ -333,17 +333,29 @@ class XTUserStreamService:
         logger.info(f"WS: Subscribed channels={list(self.enabled_channels)}")
 
     async def _start_heartbeat(self) -> None:
-        """Start periodic ping task."""
+        """Start periodic ping task.
+        
+        According to XT documentation:
+        - Client must send text "ping" message periodically
+        - Server will reply with text "pong" message
+        - If server doesn't receive ping within 30 seconds, it will disconnect
+        """
         if self._heartbeat_task:
             return
 
         async def heartbeat_loop():
+            # XT 文档要求：客户端必须定期发送文本 "ping" 消息
+            # 服务器会在 30 秒内未收到 ping 时断开连接
             while self.is_running and self.ws:
                 try:
-                    await asyncio.sleep(20)  # 缩短心跳间隔到20秒
+                    await asyncio.sleep(20)  # 每20秒发送一次 ping（小于30秒限制）
                     if self.ws:
-                        await self.ws.ping()
-                except Exception:
+                        # XT WebSocket 需要发送纯文本 "ping"，不是 JSON
+                        # 根据文档：https://doc.xt.com/zh-CN/docs/futures/UserWebsocket/General_WSS_information
+                        await self.ws.send("ping")
+                        logger.debug("WS: Sent text ping message")
+                except Exception as e:
+                    logger.debug(f"WS: Failed to send ping: {e}")
                     break
 
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
@@ -378,6 +390,11 @@ class XTUserStreamService:
                                 logger.info(
                                     f"WS: Refreshed listen key {old_key}... -> {new_key[:8]}..."
                                 )
+                                # 刷新 listen key 后需要重新连接 WebSocket
+                                # 因为 listen key 是通过 URL 参数传递的
+                                if self.ws:
+                                    logger.info("WS: Closing connection to reconnect with new listen key")
+                                    await self.ws.close()
                         except Exception as e:
                             logger.warning(f"WS: Failed to refresh listen key: {e}")
                 except asyncio.CancelledError:
@@ -399,12 +416,19 @@ class XTUserStreamService:
             self._listen_key_refresh_task = None
 
     async def _send_pong(self) -> None:
-        """Respond to server ping."""
+        """Respond to server ping with text format.
+        
+        According to XT docs, pong should be plain text "pong", not JSON.
+        However, XT typically only requires client to send ping, server replies with pong.
+        """
         if self.ws:
             try:
-                await self.ws.pong()
-            except Exception:
-                pass
+                # XT WebSocket 需要发送纯文本 "pong"，不是 JSON
+                # 根据文档：服务器会回复文本 "pong" 响应客户端的 "ping"
+                await self.ws.send("pong")
+                logger.debug("WS: Sent text pong message")
+            except Exception as e:
+                logger.debug(f"WS: Failed to send pong: {e}")
 
     # ========================================
     # MESSAGE HANDLING
@@ -412,22 +436,39 @@ class XTUserStreamService:
 
     async def _handle_message(self, message: str) -> None:
         """Route incoming WebSocket messages."""
+        # 记录所有收到的原始消息（用于调试）
+        logger.info(f"WS: RAW MESSAGE: {message[:500]}")
+
+        # XT WebSocket 可能发送纯文本 "pong" 或 JSON 格式的消息
+        # 根据文档：服务器会回复文本 "pong" 响应客户端的 "ping"
+        if message.strip() == "pong":
+            logger.debug("WS: Received text pong from server")
+            return
+
+        # 尝试解析 JSON 消息
         try:
             data = json.loads(message)
         except json.JSONDecodeError:
+            # 如果不是 JSON，可能是其他文本消息，记录一下
+            logger.warning(f"WS: Received non-JSON message: {message[:100]}")
             return
 
-        # Handle ping/pong
-        if data.get("ping"):
+        # Handle ping/pong (JSON format, if server sends it)
+        if isinstance(data, dict) and data.get("ping"):
             await self._send_pong()
             return
 
         # Handle subscription confirmation
         if "result" in data or "id" in data:
+            logger.info(f"WS: Subscription confirmation: {data}")
             return
 
         # Route by topic/channel
         topic = data.get("topic", "")
+        
+        # 记录收到的消息（用于调试）
+        if topic:
+            logger.info(f"WS: Received message with topic: {topic}")
 
         if "account" in topic:
             await self._handle_account_update(data)
@@ -542,8 +583,8 @@ class XTUserStreamService:
 
         # Queue for batch write (non-blocking)
         if not await self._trade_queue.put(trade_data, block=False):
-                return
-            
+            return
+
         # Update Prometheus metrics in background
         asyncio.create_task(self._update_trade_metrics_async(trade_data))
 
@@ -589,7 +630,7 @@ class XTUserStreamService:
                         await save_batch_fn(batch)
                     except Exception:
                         pass
-                        batch = []
+                    batch = []
         
         # Flush remaining on exit
         if batch:
@@ -650,16 +691,16 @@ class XTUserStreamService:
                             order_id = trade.get("orderId", "")
                             ts = trade.get("timestamp", "")
                             trade_id = f"{order_id}_{ts}" if order_id else None
-                    
-                    if not trade_id:
-                        continue
-                    
+
+                        if not trade_id:
+                            continue
+
                         record = TradeModel(
                             update_time=self._parse_timestamp(trade.get("timestamp")),
-                        account_id=self.account_id,
+                            account_id=self.account_id,
                             symbol=trade.get("symbol", ""),
                             order_id=str(trade.get("orderId", "")),
-                        trade_id=str(trade_id),
+                            trade_id=str(trade_id),
                             side=trade.get("orderSide") or trade.get("side", ""),
                             price=self._safe_decimal(trade.get("price")),
                             quantity=self._safe_decimal(trade.get("quantity")),
@@ -673,11 +714,11 @@ class XTUserStreamService:
                             or trade.get("feeCurrency", ""),
                             is_maker=trade.get("takerMaker") == "MAKER",
                             position_side=trade.get("positionSide", ""),
-                        raw_data=json.dumps(trade, cls=DecimalEncoder),
-                    )
-                    session.add(record)
-                    count += 1
-                
+                            raw_data=json.dumps(trade, cls=DecimalEncoder),
+                        )
+                        session.add(record)
+                        count += 1
+
                 await session.commit()
                 
             duration = (datetime.utcnow() - start).total_seconds()
@@ -741,7 +782,7 @@ class XTUserStreamService:
                     await session.execute(stmt)
                     count += 1
 
-                    await session.commit()
+                await session.commit()
 
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(
@@ -786,7 +827,7 @@ class XTUserStreamService:
                     session.add(record)
                     count += 1
 
-                    await session.commit()
+                await session.commit()
 
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(
@@ -812,7 +853,7 @@ class XTUserStreamService:
 
                 record = AccountModel(
                     update_time=datetime.utcnow(),
-                        account_id=self.account_id,
+                    account_id=self.account_id,
                     currency=data.get("coin", ""),
                     available=available,
                     frozen=frozen,
@@ -888,7 +929,7 @@ class XTUserStreamService:
 
                 record = AccountModel(
                     update_time=datetime.utcnow(),
-                            account_id=self.account_id,
+                    account_id=self.account_id,
                     currency=currency,
                     available=available,
                     frozen=frozen,
@@ -896,7 +937,8 @@ class XTUserStreamService:
                     raw_data=json.dumps(balance_info, cls=DecimalEncoder),
                 )
                 session.add(record)
-                await session.commit()
+
+            await session.commit()
 
         logger.info(f"WS: Synced {len(balances)} account balances")
 
@@ -911,7 +953,7 @@ class XTUserStreamService:
                 # pos is a Position object, not a dict
                 record = PositionModel(
                     update_time=datetime.utcnow(),
-                            account_id=self.account_id,
+                    account_id=self.account_id,
                     symbol=pos.symbol if hasattr(pos, "symbol") else "",
                     side=pos.side if hasattr(pos, "side") else "",
                     quantity=self._safe_decimal(
@@ -943,7 +985,8 @@ class XTUserStreamService:
                     ),
                 )
                 session.add(record)
-                await session.commit()
+
+            await session.commit()
 
         logger.info(f"WS: Synced {len(positions)} positions")
 
@@ -1142,8 +1185,8 @@ class XTUserStreamService:
     async def _record_connection_end(self) -> None:
         """Record connection end in database."""
         if not self._connection_id:
-                return
-            
+            return
+
         try:
             from sqlalchemy import update
             

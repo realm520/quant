@@ -9,7 +9,7 @@
       "api_key": "28a898c2-afe2-4823-b2ca-306433959365",
       "api_secret": "5280f1ab4483a0a7c8ee4f63139ca3ed6e042921",
       "enabled": true,
-      "channels": ["order","trade","position"],
+      "channels": ["account", "order", "trade", "position"],
       "watch_tasks": {
         "balance": {
           "enabled": true,

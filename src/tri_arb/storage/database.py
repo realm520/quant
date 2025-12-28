@@ -107,7 +107,7 @@ class DatabaseManager:
 
                 # 获取 metadata 中定义的所有表
                 metadata_tables = set(metadata.tables.keys())
-                logger.info(
+                logger.debug(
                     f"{name}: Found {len(metadata_tables)} tables in metadata: {sorted(metadata_tables)}"
                 )
 
@@ -116,18 +116,9 @@ class DatabaseManager:
                 try:
                     inspector = inspect(sync_conn)
                     existing_tables = set(inspector.get_table_names())
-                    logger.info(
+                    logger.debug(
                         f"{name}: Found {len(existing_tables)} existing tables in database"
                     )
-                    # 特别检查 binance_balance_rest
-                    if "binance_balance_rest" in existing_tables:
-                        logger.info(
-                            f"{name}: ✓ binance_balance_rest already exists in database"
-                        )
-                    else:
-                        logger.info(
-                            f"{name}: binance_balance_rest does NOT exist in database (will create)"
-                        )
                 except Exception as inspect_err:
                     logger.warning(
                         f"{name}: Failed to inspect existing tables: {inspect_err}"
@@ -137,11 +128,11 @@ class DatabaseManager:
                 missing_tables = metadata_tables - existing_tables
 
                 if not missing_tables:
-                    logger.info(f"All {name} tables already exist")
+                    logger.debug(f"All {name} tables already exist")
                     return
 
                 logger.info(
-                    f"Creating {len(missing_tables)} missing {name} tables: {', '.join(sorted(missing_tables))}"
+                    f"Creating {len(missing_tables)} {name} tables: {', '.join(sorted(missing_tables))}"
                 )
 
                 # 对每个缺失的表，尝试创建（忽略索引错误）
@@ -387,7 +378,7 @@ class DatabaseManager:
                 verified_tables = []
                 missing_after_creation = []
 
-                logger.info(
+                logger.debug(
                     f"Verifying table creation: metadata has {len(metadata_tables)} tables, database has {len([t for t in existing_tables_after if t.startswith('xt_')])} xt_* tables"
                 )
 
@@ -416,7 +407,7 @@ class DatabaseManager:
 
                 # 总结创建结果
                 if verified_tables:
-                    logger.info(
+                    logger.debug(
                         f"✓ Successfully created/verified {len(verified_tables)} {name} tables: {', '.join(sorted(verified_tables))}"
                     )
                 if failed_tables:
@@ -443,13 +434,13 @@ class DatabaseManager:
                     )
 
             try:
-                logger.info("Creating Binance tables...")
+                logger.debug("Creating Binance tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, BinanceBase.metadata, "Binance"
                     )
                 )
-                logger.info("✓ Binance tables created/verified")
+                logger.debug("✓ Binance tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -461,11 +452,11 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating OKX tables...")
+                logger.debug("Creating OKX tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(sync_conn, OKXBase.metadata, "OKX")
                 )
-                logger.info("✓ OKX tables created/verified")
+                logger.debug("✓ OKX tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -477,13 +468,13 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating Gate.io tables...")
+                logger.debug("Creating Gate.io tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, GateBase.metadata, "Gate.io"
                     )
                 )
-                logger.info("✓ Gate.io tables created/verified")
+                logger.debug("✓ Gate.io tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -495,13 +486,13 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating XT WebSocket tables...")
+                logger.debug("Creating XT WebSocket tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, XTWebSocketBase.metadata, "XT WebSocket"
                     )
                 )
-                logger.info("✓ XT WebSocket tables created/verified")
+                logger.debug("✓ XT WebSocket tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -515,13 +506,13 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating REST API tables...")
+                logger.debug("Creating REST API tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, RestBase.metadata, "REST API"
                     )
                 )
-                logger.info("✓ REST API tables created/verified")
+                logger.debug("✓ REST API tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -535,13 +526,13 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating XT REST API tables...")
+                logger.debug("Creating XT REST API tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, XTRestBase.metadata, "XT REST API"
                     )
                 )
-                logger.info("✓ XT REST API tables created/verified")
+                logger.debug("✓ XT REST API tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:
@@ -557,8 +548,8 @@ class DatabaseManager:
             try:
                 # 先检查 metadata 中有哪些表
                 metadata_tables = list(ExchangeRestBase.metadata.tables.keys())
-                logger.info(
-                    f"Creating Exchange-specific REST API tables (binance_balance_rest, xt_balance_rest, etc.)... Found {len(metadata_tables)} tables in metadata: {metadata_tables}"
+                logger.debug(
+                    f"Creating Exchange-specific REST API tables... Found {len(metadata_tables)} tables in metadata"
                 )
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
@@ -567,7 +558,7 @@ class DatabaseManager:
                         "Exchange-specific REST API",
                     )
                 )
-                logger.info("✓ Exchange-specific REST API tables created/verified")
+                logger.debug("✓ Exchange-specific REST API tables created/verified")
             except Exception as e:
                 # 检查是否是索引/表已存在的错误（这些可以忽略）
                 error_str = str(e).lower()
@@ -583,13 +574,13 @@ class DatabaseManager:
                     raise
 
             try:
-                logger.info("Creating Position Metrics tables...")
+                logger.debug("Creating Position Metrics tables...")
                 await conn.run_sync(
                     lambda sync_conn: _create_safe(
                         sync_conn, PositionMetricsBase.metadata, "Position Metrics"
                     )
                 )
-                logger.info("✓ Position Metrics tables created/verified")
+                logger.debug("✓ Position Metrics tables created/verified")
             except Exception as e:
                 error_str = str(e).lower()
                 if "already exists" in error_str or "duplicate" in error_str:

@@ -3265,7 +3265,8 @@ async def _run_xt_watch_account_async(
     try:
         # 创建数据库表
         if account_id:
-            await xt_rest_service.ensure_account_tables()
+            # Tables are already created during initialization
+            # await xt_rest_service.ensure_account_tables()  # Method removed
             logger.info(f"账号 {account_label} 的数据库表已就绪")
         else:
             await db_manager.create_tables()
@@ -5780,7 +5781,8 @@ async def _run_xt_watch_account_async(
     try:
         # 创建数据库表
         if account_id:
-            await xt_rest_service.ensure_account_tables()
+            # Tables are already created during initialization
+            # await xt_rest_service.ensure_account_tables()  # Method removed
             logger.info(f"账号 {account_label} 的数据库表已就绪")
         else:
             await db_manager.create_tables()

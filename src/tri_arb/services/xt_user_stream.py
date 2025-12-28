@@ -135,10 +135,33 @@ class XTUserStreamService:
 
         # Queue statistics
         self._queue_stats = {
-            "order": {"max_size": 0, "overflow_count": 0},
-            "trade": {"max_size": 0, "overflow_count": 0},
-            "position": {"max_size": 0, "overflow_count": 0},
+            "order": {
+                "max_size": 0,
+                "overflow_count": 0,
+                "last_warning_time": None,
+                "last_warning_level": 0.0,
+            },
+            "trade": {
+                "max_size": 0,
+                "overflow_count": 0,
+                "last_warning_time": None,
+                "last_warning_level": 0.0,
+            },
+            "position": {
+                "max_size": 0,
+                "overflow_count": 0,
+                "last_warning_time": None,
+                "last_warning_level": 0.0,
+            },
         }
+
+        # Data statistics for periodic reporting
+        self._data_stats = {
+            "order": {"count": 0, "last_report_time": datetime.utcnow()},
+            "trade": {"count": 0, "last_report_time": datetime.utcnow()},
+            "position": {"count": 0, "last_report_time": datetime.utcnow()},
+        }
+        self._stats_report_interval = 60  # Report every 60 seconds
     
     def _get_model(self, model_name: str):
         """Get SQLAlchemy model by name."""
@@ -151,8 +174,24 @@ class XTUserStreamService:
         }
         return models.get(model_name)
 
+    def _maybe_report_stats(self, data_type: str) -> None:
+        """Report periodic statistics if interval has passed."""
+        stats = self._data_stats[data_type]
+        elapsed = (datetime.utcnow() - stats["last_report_time"]).total_seconds()
+
+        if elapsed >= self._stats_report_interval:
+            count = stats["count"]
+            rate = count / elapsed if elapsed > 0 else 0
+            logger.info(
+                f"📊 STATS: {data_type} - {count} records in {elapsed:.0f}s "
+                f"(~{rate:.1f}/s)"
+            )
+            # Reset counters
+            stats["count"] = 0
+            stats["last_report_time"] = datetime.utcnow()
+
     def _check_queue_health(self, queue: AsyncBoundedQueue, name: str, maxsize: int) -> None:
-        """Monitor queue health and log warnings/errors."""
+        """Monitor queue health and log warnings/errors with rate limiting."""
         current_size = queue.qsize()
 
         # Update max size statistics
@@ -162,18 +201,44 @@ class XTUserStreamService:
         # Calculate capacity usage
         capacity_usage = current_size / maxsize
 
+        # Get last warning info
+        last_warning_time = self._queue_stats[name]["last_warning_time"]
+        last_warning_level = self._queue_stats[name]["last_warning_level"]
+        now = datetime.utcnow()
+
+        # Rate limiting: only log if:
+        # 1. First warning (last_warning_time is None), OR
+        # 2. More than 60 seconds since last warning, OR
+        # 3. Capacity usage changed significantly (>10% difference)
+        should_log = (
+            last_warning_time is None or
+            (now - last_warning_time).total_seconds() >= 60 or
+            abs(capacity_usage - last_warning_level) >= 0.10
+        )
+
         # Log warnings at different thresholds
         if capacity_usage >= self._queue_critical_threshold:
-            logger.error(
-                f"🔴 CRITICAL: {name} queue near full! "
-                f"size={current_size}/{maxsize} ({capacity_usage:.1%}) "
-                f"Risk of data loss!"
-            )
+            if should_log:
+                logger.error(
+                    f"🔴 CRITICAL: {name} queue near full! "
+                    f"size={current_size}/{maxsize} ({capacity_usage:.1%}) "
+                    f"Risk of data loss!"
+                )
+                self._queue_stats[name]["last_warning_time"] = now
+                self._queue_stats[name]["last_warning_level"] = capacity_usage
         elif capacity_usage >= self._queue_warning_threshold:
-            logger.warning(
-                f"⚠️ WARNING: {name} queue pressure high. "
-                f"size={current_size}/{maxsize} ({capacity_usage:.1%})"
-            )
+            if should_log:
+                logger.warning(
+                    f"⚠️ WARNING: {name} queue pressure high. "
+                    f"size={current_size}/{maxsize} ({capacity_usage:.1%})"
+                )
+                self._queue_stats[name]["last_warning_time"] = now
+                self._queue_stats[name]["last_warning_level"] = capacity_usage
+        else:
+            # Reset warning state when queue is healthy
+            if last_warning_time is not None:
+                self._queue_stats[name]["last_warning_time"] = None
+                self._queue_stats[name]["last_warning_level"] = 0.0
 
     # ========================================
     # SERVICE LIFECYCLE
@@ -577,13 +642,11 @@ class XTUserStreamService:
         ):
             return
         
-        # Log summary (debug only - high frequency)
-        symbol = position_data.get("symbol", "")
-        side = position_data.get("positionSide", "")
-        qty = position_data.get("positionSize", "")
-        entry = position_data.get("entryPrice", "")
-        pnl = position_data.get("floatingPL", "")
-        logger.debug(f"POS: {symbol} {side} qty={qty} entry={entry} pnl={pnl}")
+        # Update statistics
+        self._data_stats["position"]["count"] += 1
+
+        # Periodic statistics report
+        self._maybe_report_stats("position")
 
         # Queue for batch write
         await self._position_queue.put(position_data, block=False)
@@ -602,14 +665,22 @@ class XTUserStreamService:
         ):
             return
 
-        # Log summary (debug only - high frequency)
-        order_id = order_data.get("orderId", "")
-        symbol = order_data.get("symbol", "")
-        side = order_data.get("orderSide", "")
-        qty = order_data.get("origQty", "")
-        price = order_data.get("price", "")
+        # Update statistics
+        self._data_stats["order"]["count"] += 1
+
+        # Log important order status changes (INFO level)
         status = order_data.get("state", "")
-        logger.debug(f"ORDER: {symbol} {side} {qty}@{price} {status} id={order_id}")
+        critical_states = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+        if status in critical_states:
+            order_id = order_data.get("orderId", "")
+            symbol = order_data.get("symbol", "")
+            side = order_data.get("orderSide", "")
+            qty = order_data.get("origQty", "")
+            price = order_data.get("price", "")
+            logger.info(f"ORDER: {symbol} {side} {qty}@{price} {status} id={order_id}")
+
+        # Periodic statistics report
+        self._maybe_report_stats("order")
 
         # Overload protection: skip non-critical states when queue is under pressure
         queue_size = self._order_queue.qsize()
@@ -643,13 +714,20 @@ class XTUserStreamService:
         ):
             return
         
-        # Log summary (debug only - high frequency)
-        trade_id = trade_data.get("tradeId") or trade_data.get("execId", "")
-        symbol = trade_data.get("symbol", "")
-        side = trade_data.get("orderSide") or trade_data.get("side", "")
-        qty = trade_data.get("quantity", "")
-        price = trade_data.get("price", "")
-        logger.debug(f"TRADE: {symbol} {side} {qty}@{price} id={trade_id}")
+        # Update statistics
+        self._data_stats["trade"]["count"] += 1
+
+        # Log large trades (INFO level, sampling)
+        qty = self._safe_decimal(trade_data.get("quantity", 0))
+        if qty > 1000:  # Sample: log trades with quantity > 1000
+            trade_id = trade_data.get("tradeId") or trade_data.get("execId", "")
+            symbol = trade_data.get("symbol", "")
+            side = trade_data.get("orderSide") or trade_data.get("side", "")
+            price = trade_data.get("price", "")
+            logger.info(f"TRADE: {symbol} {side} {qty}@{price} id={trade_id}")
+
+        # Periodic statistics report
+        self._maybe_report_stats("trade")
 
         # Queue for batch write (non-blocking)
         if not await self._trade_queue.put(trade_data, block=False):
@@ -756,17 +834,19 @@ class XTUserStreamService:
     # ========================================
 
     async def _save_trade_batch(self, batch: list) -> None:
-        """Save trades to database."""
+        """Save trades to database - optimized batch insert."""
         if not batch:
             return
-        
+
         start = datetime.utcnow()
         count = 0
-        
+
         try:
             async with self.db_manager.session() as session:
                 TradeModel = self._get_model("XTTradeUpdate")
 
+                # Prepare all mappings first for bulk insert
+                mappings = []
                 for data in batch:
                     # Extract trade(s) from data
                     trades = self._extract_trades(data)
@@ -781,32 +861,38 @@ class XTUserStreamService:
                         if not trade_id:
                             continue
 
-                        record = TradeModel(
-                            update_time=self._parse_timestamp(trade.get("timestamp")),
-                            account_id=self.account_id,
-                            symbol=trade.get("symbol", ""),
-                            order_id=str(trade.get("orderId", "")),
-                            trade_id=str(trade_id),
-                            side=trade.get("orderSide") or trade.get("side", ""),
-                            price=self._safe_decimal(trade.get("price")),
-                            quantity=self._safe_decimal(trade.get("quantity")),
-                            quote_quantity=self._safe_decimal(
+                        mappings.append({
+                            "update_time": self._parse_timestamp(trade.get("timestamp")),
+                            "account_id": self.account_id,
+                            "symbol": trade.get("symbol", ""),
+                            "order_id": str(trade.get("orderId", "")),
+                            "trade_id": str(trade_id),
+                            "side": trade.get("orderSide") or trade.get("side", ""),
+                            "price": self._safe_decimal(trade.get("price")),
+                            "quantity": self._safe_decimal(trade.get("quantity")),
+                            "quote_quantity": self._safe_decimal(
                                 trade.get("quoteQuantity", 0)
                             ),
-                            commission=self._safe_decimal(
+                            "commission": self._safe_decimal(
                                 trade.get("fee") or trade.get("commission", 0)
                             ),
-                            commission_asset=trade.get("feeCoin")
+                            "commission_asset": trade.get("feeCoin")
                             or trade.get("feeCurrency", ""),
-                            is_maker=trade.get("takerMaker") == "MAKER",
-                            position_side=trade.get("positionSide", ""),
-                            raw_data=json.dumps(trade, cls=DecimalEncoder),
-                        )
-                        session.add(record)
+                            "is_maker": trade.get("takerMaker") == "MAKER",
+                            "position_side": trade.get("positionSide", ""),
+                            "raw_data": json.dumps(trade, cls=DecimalEncoder),
+                        })
                         count += 1
 
-                await session.commit()
-                
+                # Single bulk insert (much faster!)
+                if mappings:
+                    await session.run_sync(
+                        lambda sync_session: sync_session.bulk_insert_mappings(
+                            TradeModel, mappings
+                        )
+                    )
+                    await session.commit()
+
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(
                 f"BATCH: {count} trades in {duration:.2f}s q={self._trade_queue.qsize()}"
@@ -816,24 +902,26 @@ class XTUserStreamService:
             logger.error(f"WS: Failed to save trade batch: {e}")
 
     async def _save_order_batch(self, batch: list) -> None:
-        """Save orders to database with ON CONFLICT handling."""
+        """Save orders to database with ON CONFLICT handling - optimized batch insert."""
         if not batch:
             return
-        
+
         start = datetime.utcnow()
         count = 0
-        
+
         try:
             from sqlalchemy.dialects.postgresql import insert  # type: ignore[import-untyped]
-            
+
             async with self.db_manager.session() as session:
                 OrderModel = self._get_model("XTOrderUpdate")
 
+                # Collect all values for batch insert
+                values_list = []
                 for data in batch:
                     order_id = data.get("orderId") or data.get("order_id")
                     if not order_id:
                         continue
-                    
+
                     values = {
                         "update_time": self._parse_timestamp(
                             data.get("updatedTime") or data.get("createdTime")
@@ -854,65 +942,75 @@ class XTUserStreamService:
                         "time_in_force": data.get("timeInForce", "GTC"),
                         "raw_data": json.dumps(data, cls=DecimalEncoder),
                     }
+                    values_list.append(values)
+                    count += 1
 
-                    stmt = insert(OrderModel).values(**values)
+                # Single bulk insert with ON CONFLICT (much faster!)
+                if values_list:
+                    stmt = insert(OrderModel).values(values_list)
                     stmt = stmt.on_conflict_do_update(
-                        constraint="uq_xt_order_id_time_account",
+                        constraint="uq_xt_order_id_time_account_status",
                         set_={
                             "filled_quantity": stmt.excluded.filled_quantity,
-                            "status": stmt.excluded.status,
                             "raw_data": stmt.excluded.raw_data,
                         },
                     )
                     await session.execute(stmt)
-                    count += 1
-
-                await session.commit()
+                    await session.commit()
 
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(
                 f"BATCH: {count} orders in {duration:.2f}s q={self._order_queue.qsize()}"
-                        )
-                
+            )
+
         except Exception as e:
             logger.error(f"WS: Failed to save order batch: {e}")
 
     async def _save_position_batch(self, batch: list) -> None:
-        """Save positions to database."""
+        """Save positions to database - optimized batch insert."""
         if not batch:
             return
-        
+
         start = datetime.utcnow()
         count = 0
-        
+
         try:
             async with self.db_manager.session() as session:
                 PositionModel = self._get_model("XTPositionUpdate")
+                now = datetime.utcnow()
 
+                # Prepare all mappings first for bulk insert
+                mappings = []
                 for data in batch:
                     symbol = data.get("symbol", "")
                     side = data.get("positionSide", "")
                     if not symbol:
                         continue
-                    
-                    record = PositionModel(
-                        update_time=datetime.utcnow(),
-                        account_id=self.account_id,
-                        symbol=symbol,
-                        side=side,
-                        quantity=self._safe_decimal(data.get("positionSize")),
-                        entry_price=self._safe_decimal(data.get("entryPrice")),
-                        mark_price=self._safe_decimal(data.get("calMarkPrice")),
-                        unrealized_pnl=self._safe_decimal(data.get("floatingPL", 0)),
-                        leverage=self._safe_int(data.get("leverage", 1)),
-                        liquidation_price=self._safe_decimal(data.get("breakPrice", 0)),
-                        margin=self._safe_decimal(data.get("isolatedMargin", 0)),
-                        raw_data=json.dumps(data, cls=DecimalEncoder),
-                    )
-                    session.add(record)
+
+                    mappings.append({
+                        "update_time": now,
+                        "account_id": self.account_id,
+                        "symbol": symbol,
+                        "side": side,
+                        "quantity": self._safe_decimal(data.get("positionSize")),
+                        "entry_price": self._safe_decimal(data.get("entryPrice")),
+                        "mark_price": self._safe_decimal(data.get("calMarkPrice")),
+                        "unrealized_pnl": self._safe_decimal(data.get("floatingPL", 0)),
+                        "leverage": self._safe_int(data.get("leverage", 1)),
+                        "liquidation_price": self._safe_decimal(data.get("breakPrice", 0)),
+                        "margin": self._safe_decimal(data.get("isolatedMargin", 0)),
+                        "raw_data": json.dumps(data, cls=DecimalEncoder),
+                    })
                     count += 1
 
-                await session.commit()
+                # Single bulk insert (much faster!)
+                if mappings:
+                    await session.run_sync(
+                        lambda sync_session: sync_session.bulk_insert_mappings(
+                            PositionModel, mappings
+                        )
+                    )
+                    await session.commit()
 
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(

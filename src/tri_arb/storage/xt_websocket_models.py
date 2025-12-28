@@ -163,9 +163,10 @@ class XTOrderUpdate(Base):
         Index("idx_xt_order_symbol_status_time", "symbol", "status", "update_time"),
         Index("idx_xt_order_time", "update_time"),
         Index("idx_xt_order_account_time", "account_id", "update_time"),
-        # 唯一约束：防止重复订单记录（对账服务依赖此约束）
+        # 唯一约束：防止重复订单记录，允许同一订单在同一时间的不同状态
         UniqueConstraint(
-            "order_id", "update_time", "account_id", name="uq_xt_order_id_time_account"
+            "order_id", "update_time", "account_id", "status",
+            name="uq_xt_order_id_time_account_status"
         ),
     )
 

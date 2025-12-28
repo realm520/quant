@@ -309,14 +309,12 @@ def user_stream(
                     api_key=key,
                     api_secret=secret,
                     db_manager=db_manager,
+                    account_id=account_id,
                     auto_reconnect=True,
-                    display_format=output,
                     enabled_channels=channel_list,
                     enable_data_sync=enable_data_sync,
                 )
-                if account_id:
-                    service.account_id = account_id
-                    # 不再需要按账号分表，统一使用 account_id 字段
+                # 不再需要按账号分表，统一使用 account_id 字段
 
             console.print("[green]✅ 服务已启动[/green]")
             console.print("[cyan]正在连接WebSocket...[/cyan]\n")

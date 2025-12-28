@@ -126,8 +126,19 @@ class XTUserStreamService:
         self._position_writer_task: Optional[asyncio.Task] = None
 
         # Batch settings
-        self._batch_size = 50
-        self._batch_timeout = 0.5
+        self._batch_size = 100  # Increased from 50 to reduce DB roundtrips
+        self._batch_timeout = 0.3  # Decreased from 0.5s for faster writes
+
+        # Queue monitoring thresholds
+        self._queue_warning_threshold = 0.5  # 50% capacity
+        self._queue_critical_threshold = 0.8  # 80% capacity
+
+        # Queue statistics
+        self._queue_stats = {
+            "order": {"max_size": 0, "overflow_count": 0},
+            "trade": {"max_size": 0, "overflow_count": 0},
+            "position": {"max_size": 0, "overflow_count": 0},
+        }
     
     def _get_model(self, model_name: str):
         """Get SQLAlchemy model by name."""
@@ -140,6 +151,30 @@ class XTUserStreamService:
         }
         return models.get(model_name)
 
+    def _check_queue_health(self, queue: AsyncBoundedQueue, name: str, maxsize: int) -> None:
+        """Monitor queue health and log warnings/errors."""
+        current_size = queue.qsize()
+
+        # Update max size statistics
+        if current_size > self._queue_stats[name]["max_size"]:
+            self._queue_stats[name]["max_size"] = current_size
+
+        # Calculate capacity usage
+        capacity_usage = current_size / maxsize
+
+        # Log warnings at different thresholds
+        if capacity_usage >= self._queue_critical_threshold:
+            logger.error(
+                f"🔴 CRITICAL: {name} queue near full! "
+                f"size={current_size}/{maxsize} ({capacity_usage:.1%}) "
+                f"Risk of data loss!"
+            )
+        elif capacity_usage >= self._queue_warning_threshold:
+            logger.warning(
+                f"⚠️ WARNING: {name} queue pressure high. "
+                f"size={current_size}/{maxsize} ({capacity_usage:.1%})"
+            )
+
     # ========================================
     # SERVICE LIFECYCLE
     # ========================================
@@ -149,9 +184,19 @@ class XTUserStreamService:
         if self.is_running:
             logger.warning("WS: Service already running")
             return
-        
+
         self.is_running = True
         logger.info(f"WS: Starting service account={self.account_id}")
+        logger.info(
+            f"WS: Performance config - batch_size={self._batch_size}, "
+            f"batch_timeout={self._batch_timeout}s, "
+            f"queue_sizes(order={1000}, trade={1000}, position={500})"
+        )
+        logger.info(
+            f"WS: Queue monitoring - warning={self._queue_warning_threshold:.0%}, "
+            f"critical={self._queue_critical_threshold:.0%}, "
+            f"overload_protection=enabled(>70%)"
+        )
 
         # Initialize REST client for data sync
         if self.enable_data_sync:
@@ -320,13 +365,13 @@ class XTUserStreamService:
 
     async def _subscribe_user_data(self) -> None:
         """Subscribe to user data channels."""
-        if not self.ws:
+        if not self.ws or not self.listen_key:
             return
 
-        # XT subscription format
+        # XT subscription format: order@{listenKey}, trade@{listenKey}, etc.
         sub_msg = {
             "method": "subscribe",
-            "params": [f"user.{ch}" for ch in self.enabled_channels],
+            "params": [f"{ch}@{self.listen_key}" for ch in self.enabled_channels],
             "id": 1,
         }
         await self.ws.send(json.dumps(sub_msg))
@@ -381,17 +426,35 @@ class XTUserStreamService:
             # - 每次调用 GET 会返回新 key，旧 key 可能立即失效
             # - 因此：必须先关闭旧连接，再获取新 key，避免数据丢失
             #
-            # 策略：每 50 分钟主动重连（listen key 约 60 分钟过期）
+            # 策略：每 7 小时主动重连（listen key 有效期 8 小时）
             while self.is_running and self.ws:
                 try:
-                    await asyncio.sleep(50 * 60)  # 50分钟
+                    await asyncio.sleep(7 * 60 * 60)  # 7小时（留出1小时安全边际）
                     if self.is_running and self.ws:
-                        logger.info("WS: Listen key refresh - closing connection for renewal")
-                        # ⚠️ 关键修复：先关闭旧连接，避免旧 key 失效期间数据丢失
+                        logger.info("WS: Listen key refresh - flushing queues before closing connection")
                         old_key = self.listen_key[:8] if self.listen_key else "unknown"
+                        
+                        # ⚠️ 重要：关闭连接前先刷新队列，避免数据丢失
+                        # 刷新所有队列中待写入的数据
+                        if self._order_queue:
+                            await self._flush_queue(
+                                self._order_queue, self._save_order_batch, "order"
+                            )
+                        if self._trade_queue:
+                            await self._flush_queue(
+                                self._trade_queue, self._save_trade_batch, "trade"
+                            )
+                        if self._position_queue:
+                            await self._flush_queue(
+                                self._position_queue, self._save_position_batch, "position"
+                            )
+                        
+                        # 设置断开时间，确保重连时触发数据同步
+                        self.disconnect_time = datetime.utcnow()
+                        
+                        # 关闭连接，触发重连
                         if self.ws:
                             await self.ws.close()
-                        # WebSocket 关闭后会自动重连，并获取新 listen key
                         logger.info(f"WS: Connection closed for listen key renewal (old: {old_key}...)")
                 except asyncio.CancelledError:
                     break
@@ -433,12 +496,12 @@ class XTUserStreamService:
     async def _handle_message(self, message: str) -> None:
         """Route incoming WebSocket messages."""
         # 记录所有收到的原始消息（用于调试）
-        logger.info(f"WS: RAW MESSAGE: {message[:500]}")
+        logger.debug(f"WS: RAW MESSAGE: {message[:500]}")
 
         # XT WebSocket 可能发送纯文本 "pong" 或 JSON 格式的消息
         # 根据文档：服务器会回复文本 "pong" 响应客户端的 "ping"
         if message.strip() == "pong":
-            logger.debug("WS: Received text pong from server")
+            # logger.debug("WS: Received text pong from server")  # Too verbose
             return
 
         # 尝试解析 JSON 消息
@@ -464,7 +527,7 @@ class XTUserStreamService:
         
         # 记录收到的消息（用于调试）
         if topic:
-            logger.info(f"WS: Received message with topic: {topic}")
+            logger.debug(f"WS: Received message with topic: {topic}")
 
         if "account" in topic:
             await self._handle_account_update(data)
@@ -489,13 +552,13 @@ class XTUserStreamService:
         ):
             return
         
-        # Log summary
+        # Log summary (debug only - high frequency)
         currency = account_data.get("coin", "")
         available = account_data.get("availableBalance") or account_data.get(
             "amount", ""
         )
         total = account_data.get("walletBalance") or account_data.get("totalAmount", "")
-        logger.info(f"ACCT: {currency} avail={available} total={total}")
+        logger.debug(f"ACCT: {currency} avail={available} total={total}")
 
         # Save immediately (low volume)
         await self._save_account_update(account_data)
@@ -514,13 +577,13 @@ class XTUserStreamService:
         ):
             return
         
-        # Log summary
+        # Log summary (debug only - high frequency)
         symbol = position_data.get("symbol", "")
         side = position_data.get("positionSide", "")
         qty = position_data.get("positionSize", "")
         entry = position_data.get("entryPrice", "")
         pnl = position_data.get("floatingPL", "")
-        logger.info(f"POS: {symbol} {side} qty={qty} entry={entry} pnl={pnl}")
+        logger.debug(f"POS: {symbol} {side} qty={qty} entry={entry} pnl={pnl}")
 
         # Queue for batch write
         await self._position_queue.put(position_data, block=False)
@@ -529,24 +592,35 @@ class XTUserStreamService:
         """Process order updates - queue for batch write + metrics."""
         if "order" not in self.enabled_channels:
             return
-        
+
         order_data = data.get("data", {})
         if not order_data:
             return
-        
+
         if not self._has_data_changed(
             order_data, self._last_order_data, self._order_key
         ):
             return
-        
-        # Log summary
+
+        # Log summary (debug only - high frequency)
         order_id = order_data.get("orderId", "")
         symbol = order_data.get("symbol", "")
         side = order_data.get("orderSide", "")
         qty = order_data.get("origQty", "")
         price = order_data.get("price", "")
         status = order_data.get("state", "")
-        logger.info(f"ORDER: {symbol} {side} {qty}@{price} {status} id={order_id}")
+        logger.debug(f"ORDER: {symbol} {side} {qty}@{price} {status} id={order_id}")
+
+        # Overload protection: skip non-critical states when queue is under pressure
+        queue_size = self._order_queue.qsize()
+        if queue_size > 700:  # 70% capacity
+            # Only record important state changes
+            critical_states = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "PARTIALLY_FILLED"}
+            if status not in critical_states:
+                logger.debug(
+                    f"Overload protection: skipping {status} order (queue={queue_size}/1000)"
+                )
+                return
 
         # Queue for batch write (non-blocking)
         if not await self._order_queue.put(order_data, block=False):
@@ -569,13 +643,13 @@ class XTUserStreamService:
         ):
             return
         
-        # Log summary
+        # Log summary (debug only - high frequency)
         trade_id = trade_data.get("tradeId") or trade_data.get("execId", "")
         symbol = trade_data.get("symbol", "")
         side = trade_data.get("orderSide") or trade_data.get("side", "")
         qty = trade_data.get("quantity", "")
         price = trade_data.get("price", "")
-        logger.info(f"TRADE: {symbol} {side} {qty}@{price} id={trade_id}")
+        logger.debug(f"TRADE: {symbol} {side} {qty}@{price} id={trade_id}")
 
         # Queue for batch write (non-blocking)
         if not await self._trade_queue.put(trade_data, block=False):
@@ -594,12 +668,19 @@ class XTUserStreamService:
         save_batch_fn: Callable[[list], Awaitable[None]],
         name: str,
     ) -> None:
-        """Generic batch writer loop."""
+        """Generic batch writer loop with queue monitoring."""
         batch = []
         logger.info(f"WS: {name} writer started")
-        
+
+        # Determine queue maxsize for monitoring
+        maxsize_map = {"order": 1000, "trade": 1000, "position": 500}
+        maxsize = maxsize_map.get(name, 1000)
+
         while self.is_running:
             try:
+                # Check queue health periodically
+                self._check_queue_health(queue, name, maxsize)
+
                 try:
                     item = await asyncio.wait_for(
                         queue.get(), timeout=self._batch_timeout
@@ -610,13 +691,13 @@ class XTUserStreamService:
                         await save_batch_fn(batch)
                         batch = []
                     continue
-                
+
                 if len(batch) >= self._batch_size:
                     await save_batch_fn(batch)
                     batch = []
-                
+
                 queue.task_done()
-                
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -627,12 +708,17 @@ class XTUserStreamService:
                     except Exception:
                         pass
                     batch = []
-        
+
         # Flush remaining on exit
         if batch:
             await save_batch_fn(batch)
 
-        logger.info(f"WS: {name} writer stopped")
+        # Log final statistics
+        logger.info(
+            f"WS: {name} writer stopped. "
+            f"Stats: max_queue_size={self._queue_stats[name]['max_size']}, "
+            f"overflow_count={self._queue_stats[name]['overflow_count']}"
+        )
 
     async def _flush_queue(
         self,
@@ -658,8 +744,12 @@ class XTUserStreamService:
                 logger.error(f"WS: Failed to flush {name}s: {e}")
 
     async def _handle_queue_overflow(self, item: Any, name: str) -> None:
-        """Generic queue overflow handler."""
-        logger.error(f"WS: {name} queue full, dropping message")
+        """Generic queue overflow handler with statistics."""
+        self._queue_stats[name]["overflow_count"] += 1
+        logger.error(
+            f"🔴 DATA LOSS: {name} queue full (1000), dropping message! "
+            f"Total dropped: {self._queue_stats[name]['overflow_count']}"
+        )
 
     # ========================================
     # BATCH SAVE METHODS
@@ -767,9 +857,8 @@ class XTUserStreamService:
 
                     stmt = insert(OrderModel).values(**values)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=["account_id", "order_id"],
+                        constraint="uq_xt_order_id_time_account",
                         set_={
-                            "update_time": stmt.excluded.update_time,
                             "filled_quantity": stmt.excluded.filled_quantity,
                             "status": stmt.excluded.status,
                             "raw_data": stmt.excluded.raw_data,

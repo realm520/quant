@@ -45,6 +45,7 @@ dev = [
 [project.scripts]
 tri-arb = "tri_arb.__main__:main"
 cextools = "tri_arb.cli.main:main"
+cleanup-old-data = "tri_arb.cli.commands.cleanup:main"
 
 [build-system]
 requires = ["hatchling"]

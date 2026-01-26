@@ -108,15 +108,15 @@ class XTUserStreamService:
 
         # Async queues for batch processing
         self._trade_queue = AsyncBoundedQueue(
-            maxsize=1000,
+            maxsize=5000,
             overflow_handler=lambda item: self._handle_queue_overflow(item, "trade"),
         )
         self._order_queue = AsyncBoundedQueue(
-            maxsize=1000,
+            maxsize=5000,
             overflow_handler=lambda item: self._handle_queue_overflow(item, "order"),
         )
         self._position_queue = AsyncBoundedQueue(
-            maxsize=500,
+            maxsize=5000,
             overflow_handler=lambda item: self._handle_queue_overflow(item, "position"),
         )
 
@@ -126,8 +126,8 @@ class XTUserStreamService:
         self._position_writer_task: Optional[asyncio.Task] = None
 
         # Batch settings
-        self._batch_size = 100  # Increased from 50 to reduce DB roundtrips
-        self._batch_timeout = 0.3  # Decreased from 0.5s for faster writes
+        self._batch_size = 500  # Increased from 50 to reduce DB roundtrips
+        self._batch_timeout = 0.1 # Decreased from 0.5s for faster writes
 
         # Queue monitoring thresholds
         self._queue_warning_threshold = 0.5  # 50% capacity
@@ -255,7 +255,7 @@ class XTUserStreamService:
         logger.info(
             f"WS: Performance config - batch_size={self._batch_size}, "
             f"batch_timeout={self._batch_timeout}s, "
-            f"queue_sizes(order={1000}, trade={1000}, position={500})"
+            f"queue_sizes(order={5000}, trade={5000}, position={5000})"
         )
         logger.info(
             f"WS: Queue monitoring - warning={self._queue_warning_threshold:.0%}, "
@@ -684,12 +684,12 @@ class XTUserStreamService:
 
         # Overload protection: skip non-critical states when queue is under pressure
         queue_size = self._order_queue.qsize()
-        if queue_size > 700:  # 70% capacity
+        if queue_size > 3500:  # 70% capacity (5000 * 0.7)
             # Only record important state changes
             critical_states = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "PARTIALLY_FILLED"}
             if status not in critical_states:
                 logger.debug(
-                    f"Overload protection: skipping {status} order (queue={queue_size}/1000)"
+                    f"Overload protection: skipping {status} order (queue={queue_size}/5000)"
                 )
                 return
 
@@ -751,8 +751,8 @@ class XTUserStreamService:
         logger.info(f"WS: {name} writer started")
 
         # Determine queue maxsize for monitoring
-        maxsize_map = {"order": 1000, "trade": 1000, "position": 500}
-        maxsize = maxsize_map.get(name, 1000)
+        maxsize_map = {"order": 5000, "trade": 5000, "position": 5000}
+        maxsize = maxsize_map.get(name, 5000)
 
         while self.is_running:
             try:
@@ -824,8 +824,11 @@ class XTUserStreamService:
     async def _handle_queue_overflow(self, item: Any, name: str) -> None:
         """Generic queue overflow handler with statistics."""
         self._queue_stats[name]["overflow_count"] += 1
+        # 获取实际队列大小用于日志
+        queue_sizes = {"order": 5000, "trade": 5000, "position": 5000}
+        maxsize = queue_sizes.get(name, 5000)
         logger.error(
-            f"🔴 DATA LOSS: {name} queue full (1000), dropping message! "
+            f"🔴 DATA LOSS: {name} queue full ({maxsize}), dropping message! "
             f"Total dropped: {self._queue_stats[name]['overflow_count']}"
         )
 

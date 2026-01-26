@@ -63,6 +63,7 @@ dmypy.json
 logs/
 .env
 tri_arb.db
+config/
 
 # OS
 .DS_Store

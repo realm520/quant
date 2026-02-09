@@ -28,6 +28,7 @@ from tri_arb.storage.xt_websocket_models import (
     XTTradeUpdate,
     XTWebSocketConnection,
 )
+from tri_arb.storage.s3_writer import S3Writer
 from tri_arb.utils.async_utils import AsyncBoundedQueue
 
 logger = get_logger(__name__)
@@ -53,6 +54,8 @@ class XTUserStreamService:
     """
 
     WS_URL = "wss://fstream.xt.com/ws/user"
+    # Order states worth logging and keeping under overload
+    CRITICAL_ORDER_STATES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "PARTIALLY_FILLED"}
     
     def __init__(
         self,
@@ -66,6 +69,11 @@ class XTUserStreamService:
         reconnect_delay: float = 5.0,
         enabled_channels: Optional[Set[str]] = None,
         enable_data_sync: bool = True,
+        s3_bucket: Optional[str] = None,
+        s3_prefix: str = "xt-websocket-data",
+        s3_local_dir: str = "/tmp/xt-ws-data",
+        s3_aws_access_key: Optional[str] = None,
+        s3_aws_secret_key: Optional[str] = None,
     ) -> None:
         """Initialize XT WebSocket service."""
         self.api_key = api_key
@@ -100,11 +108,18 @@ class XTUserStreamService:
         # REST client for data sync
         self.rest_client: Optional[XTPerpExchange] = None
 
-        # Change detection caches
-        self._last_account_data: Dict[str, str] = {}
-        self._last_position_data: Dict[str, str] = {}
-        self._last_order_data: Dict[str, str] = {}
-        self._last_trade_data: Dict[str, str] = {}
+        # S3 Writer (optional)
+        self.s3_writer: Optional[S3Writer] = None
+        if s3_bucket:
+            self.s3_writer = S3Writer(
+                bucket=s3_bucket,
+                prefix=s3_prefix,
+                account_id=self.account_id,
+                local_dir=s3_local_dir,
+                aws_access_key=s3_aws_access_key,
+                aws_secret_key=s3_aws_secret_key,
+            )
+            logger.info(f"WS: S3 storage enabled → s3://{s3_bucket}/{s3_prefix}")
 
         # Async queues for batch processing
         self._trade_queue = AsyncBoundedQueue(
@@ -129,30 +144,11 @@ class XTUserStreamService:
         self._batch_size = 500  # Increased from 50 to reduce DB roundtrips
         self._batch_timeout = 0.1 # Decreased from 0.5s for faster writes
 
-        # Queue monitoring thresholds
-        self._queue_warning_threshold = 0.5  # 50% capacity
-        self._queue_critical_threshold = 0.8  # 80% capacity
-
-        # Queue statistics
+        # Queue statistics (overflow tracking + last log time for rate-limiting)
         self._queue_stats = {
-            "order": {
-                "max_size": 0,
-                "overflow_count": 0,
-                "last_warning_time": None,
-                "last_warning_level": 0.0,
-            },
-            "trade": {
-                "max_size": 0,
-                "overflow_count": 0,
-                "last_warning_time": None,
-                "last_warning_level": 0.0,
-            },
-            "position": {
-                "max_size": 0,
-                "overflow_count": 0,
-                "last_warning_time": None,
-                "last_warning_level": 0.0,
-            },
+            "order": {"overflow_count": 0, "last_log": None},
+            "trade": {"overflow_count": 0, "last_log": None},
+            "position": {"overflow_count": 0, "last_log": None},
         }
 
         # Data statistics for periodic reporting
@@ -191,54 +187,18 @@ class XTUserStreamService:
             stats["last_report_time"] = datetime.utcnow()
 
     def _check_queue_health(self, queue: AsyncBoundedQueue, name: str, maxsize: int) -> None:
-        """Monitor queue health and log warnings/errors with rate limiting."""
-        current_size = queue.qsize()
-
-        # Update max size statistics
-        if current_size > self._queue_stats[name]["max_size"]:
-            self._queue_stats[name]["max_size"] = current_size
-
-        # Calculate capacity usage
-        capacity_usage = current_size / maxsize
-
-        # Get last warning info
-        last_warning_time = self._queue_stats[name]["last_warning_time"]
-        last_warning_level = self._queue_stats[name]["last_warning_level"]
+        """Log queue pressure warnings (rate-limited to once per 60s)."""
+        size = queue.qsize()
+        if size < maxsize * 0.5:
+            return
         now = datetime.utcnow()
-
-        # Rate limiting: only log if:
-        # 1. First warning (last_warning_time is None), OR
-        # 2. More than 60 seconds since last warning, OR
-        # 3. Capacity usage changed significantly (>10% difference)
-        should_log = (
-            last_warning_time is None or
-            (now - last_warning_time).total_seconds() >= 60 or
-            abs(capacity_usage - last_warning_level) >= 0.10
-        )
-
-        # Log warnings at different thresholds
-        if capacity_usage >= self._queue_critical_threshold:
-            if should_log:
-                logger.error(
-                    f"🔴 CRITICAL: {name} queue near full! "
-                    f"size={current_size}/{maxsize} ({capacity_usage:.1%}) "
-                    f"Risk of data loss!"
-                )
-                self._queue_stats[name]["last_warning_time"] = now
-                self._queue_stats[name]["last_warning_level"] = capacity_usage
-        elif capacity_usage >= self._queue_warning_threshold:
-            if should_log:
-                logger.warning(
-                    f"⚠️ WARNING: {name} queue pressure high. "
-                    f"size={current_size}/{maxsize} ({capacity_usage:.1%})"
-                )
-                self._queue_stats[name]["last_warning_time"] = now
-                self._queue_stats[name]["last_warning_level"] = capacity_usage
-        else:
-            # Reset warning state when queue is healthy
-            if last_warning_time is not None:
-                self._queue_stats[name]["last_warning_time"] = None
-                self._queue_stats[name]["last_warning_level"] = 0.0
+        last = self._queue_stats[name]["last_log"]
+        if last and (now - last).total_seconds() < 60:
+            return
+        self._queue_stats[name]["last_log"] = now
+        pct = size / maxsize
+        level = logger.error if pct >= 0.8 else logger.warning
+        level(f"⚠️ {name} queue: {size}/{maxsize} ({pct:.0%})")
 
     # ========================================
     # SERVICE LIFECYCLE
@@ -262,6 +222,10 @@ class XTUserStreamService:
             f"critical={self._queue_critical_threshold:.0%}, "
             f"overload_protection=enabled(>70%)"
         )
+
+        # Start S3 writer if configured
+        if self.s3_writer:
+            await self.s3_writer.start()
 
         # Initialize REST client for data sync
         if self.enable_data_sync:
@@ -323,6 +287,10 @@ class XTUserStreamService:
         logger.info("WS: Stopping service...")
         self.is_running = False
         
+        # Flush and stop S3 writer
+        if self.s3_writer:
+            await self.s3_writer.flush_and_stop()
+
         # Stop heartbeat and listen key refresh
         await self._stop_heartbeat()
         await self._stop_listen_key_refresh()
@@ -612,10 +580,9 @@ class XTUserStreamService:
         if not account_data:
             return
         
-        if not self._has_data_changed(
-            account_data, self._last_account_data, self._json_key
-        ):
-            return
+        # S3 写入（同步，内部 try-except，不影响 DB 逻辑）
+        if self.s3_writer:
+            self.s3_writer.write("accounts", data)
         
         # Log summary (debug only - high frequency)
         currency = account_data.get("coin", "")
@@ -637,10 +604,9 @@ class XTUserStreamService:
         if not position_data:
             return
         
-        if not self._has_data_changed(
-            position_data, self._last_position_data, self._json_key
-        ):
-            return
+        # S3 写入（同步，内部 try-except，不影响 DB 逻辑）
+        if self.s3_writer:
+            self.s3_writer.write("positions", data)
         
         # Update statistics
         self._data_stats["position"]["count"] += 1
@@ -660,18 +626,16 @@ class XTUserStreamService:
         if not order_data:
             return
 
-        if not self._has_data_changed(
-            order_data, self._last_order_data, self._order_key
-        ):
-            return
+        # S3 写入（同步，内部 try-except，不影响 DB 逻辑）
+        if self.s3_writer:
+            self.s3_writer.write("orders", data)
 
         # Update statistics
         self._data_stats["order"]["count"] += 1
 
         # Log important order status changes (INFO level)
         status = order_data.get("state", "")
-        critical_states = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
-        if status in critical_states:
+        if status in self.CRITICAL_ORDER_STATES:
             order_id = order_data.get("orderId", "")
             symbol = order_data.get("symbol", "")
             side = order_data.get("orderSide", "")
@@ -685,9 +649,7 @@ class XTUserStreamService:
         # Overload protection: skip non-critical states when queue is under pressure
         queue_size = self._order_queue.qsize()
         if queue_size > 3500:  # 70% capacity (5000 * 0.7)
-            # Only record important state changes
-            critical_states = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "PARTIALLY_FILLED"}
-            if status not in critical_states:
+            if status not in self.CRITICAL_ORDER_STATES:
                 logger.debug(
                     f"Overload protection: skipping {status} order (queue={queue_size}/5000)"
                 )
@@ -709,10 +671,9 @@ class XTUserStreamService:
         if not trade_data:
             return
         
-        if not self._has_data_changed(
-            trade_data, self._last_trade_data, self._trade_key
-        ):
-            return
+        # S3 写入（同步，内部 try-except，不影响 DB 逻辑）
+        if self.s3_writer:
+            self.s3_writer.write("trades", data)
         
         # Update statistics
         self._data_stats["trade"]["count"] += 1
@@ -794,7 +755,6 @@ class XTUserStreamService:
         # Log final statistics
         logger.info(
             f"WS: {name} writer stopped. "
-            f"Stats: max_queue_size={self._queue_stats[name]['max_size']}, "
             f"overflow_count={self._queue_stats[name]['overflow_count']}"
         )
 
@@ -822,14 +782,10 @@ class XTUserStreamService:
                 logger.error(f"WS: Failed to flush {name}s: {e}")
 
     async def _handle_queue_overflow(self, item: Any, name: str) -> None:
-        """Generic queue overflow handler with statistics."""
+        """Queue overflow handler - log data loss."""
         self._queue_stats[name]["overflow_count"] += 1
-        # 获取实际队列大小用于日志
-        queue_sizes = {"order": 5000, "trade": 5000, "position": 5000}
-        maxsize = queue_sizes.get(name, 5000)
         logger.error(
-            f"🔴 DATA LOSS: {name} queue full ({maxsize}), dropping message! "
-            f"Total dropped: {self._queue_stats[name]['overflow_count']}"
+            f"🔴 {name} queue full, dropped! total_dropped={self._queue_stats[name]['overflow_count']}"
         )
 
     # ========================================
@@ -904,10 +860,18 @@ class XTUserStreamService:
         except Exception as e:
             logger.error(f"WS: Failed to save trade batch: {e}")
 
-    async def _save_order_batch(self, batch: list) -> None:
-        """Save orders to database with ON CONFLICT handling - optimized batch insert."""
+    async def _save_order_batch(self, batch: list, *, from_rest: bool = False) -> int:
+        """Save orders to database - unified batch insert.
+        
+        Args:
+            batch: List of order data dicts
+            from_rest: If True, use ON CONFLICT DO NOTHING (REST sync);
+                       otherwise ON CONFLICT DO UPDATE (WebSocket stream)
+        Returns:
+            Number of records saved
+        """
         if not batch:
-            return
+            return 0
 
         start = datetime.utcnow()
         count = 0
@@ -918,14 +882,13 @@ class XTUserStreamService:
             async with self.db_manager.session() as session:
                 OrderModel = self._get_model("XTOrderUpdate")
 
-                # Collect all values for batch insert
                 values_list = []
                 for data in batch:
                     order_id = data.get("orderId") or data.get("order_id")
                     if not order_id:
                         continue
 
-                    values = {
+                    values_list.append({
                         "update_time": self._parse_timestamp(
                             data.get("updatedTime") or data.get("createdTime")
                         ),
@@ -944,30 +907,36 @@ class XTUserStreamService:
                         "position_side": data.get("positionSide", ""),
                         "time_in_force": data.get("timeInForce", "GTC"),
                         "raw_data": json.dumps(data, cls=DecimalEncoder),
-                    }
-                    values_list.append(values)
+                    })
                     count += 1
 
-                # Single bulk insert with ON CONFLICT (much faster!)
                 if values_list:
                     stmt = insert(OrderModel).values(values_list)
-                    stmt = stmt.on_conflict_do_update(
-                        constraint="uq_xt_order_id_time_account_status",
-                        set_={
-                            "filled_quantity": stmt.excluded.filled_quantity,
-                            "raw_data": stmt.excluded.raw_data,
-                        },
-                    )
+                    if from_rest:
+                        stmt = stmt.on_conflict_do_nothing(
+                            constraint="uq_xt_order_id_time_account"
+                        )
+                    else:
+                        stmt = stmt.on_conflict_do_update(
+                            constraint="uq_xt_order_id_time_account_status",
+                            set_={
+                                "filled_quantity": stmt.excluded.filled_quantity,
+                                "raw_data": stmt.excluded.raw_data,
+                            },
+                        )
                     await session.execute(stmt)
                     await session.commit()
 
             duration = (datetime.utcnow() - start).total_seconds()
             logger.info(
-                f"BATCH: {count} orders in {duration:.2f}s q={self._order_queue.qsize()}"
+                f"BATCH: {count} orders in {duration:.2f}s"
+                f"{'' if from_rest else f' q={self._order_queue.qsize()}'}"
             )
 
         except Exception as e:
             logger.error(f"WS: Failed to save order batch: {e}")
+
+        return count
 
     async def _save_position_batch(self, batch: list) -> None:
         """Save positions to database - optimized batch insert."""
@@ -1200,103 +1169,8 @@ class XTUserStreamService:
         logger.info(f"WS: Synced {total_saved} orders")
 
     async def _save_order_batch_from_rest(self, orders: list) -> int:
-        """Batch save REST orders with ON CONFLICT DO NOTHING."""
-        if not orders:
-            return 0
-
-        saved = 0
-
-        try:
-            from sqlalchemy.dialects.postgresql import insert  # type: ignore[import-untyped]
-
-            async with self.db_manager.session() as session:
-                OrderModel = self._get_model("XTOrderUpdate")
-
-                for data in orders:
-                    order_id = data.get("orderId")
-                    if not order_id:
-                        continue
-                
-                    values = {
-                        "update_time": self._parse_timestamp(
-                            data.get("updatedTime") or data.get("createdTime")
-                        ),
-                        "account_id": self.account_id,
-                        "symbol": data.get("symbol", ""),
-                        "order_id": str(order_id),
-                        "client_order_id": data.get("clientOrderId", ""),
-                        "price": self._safe_decimal(data.get("price")),
-                        "quantity": self._safe_decimal(data.get("origQty")),
-                        "filled_quantity": self._safe_decimal(
-                            data.get("executedQty", 0)
-                        ),
-                        "status": data.get("state", ""),
-                        "order_type": data.get("orderType", ""),
-                        "side": data.get("orderSide", ""),
-                        "position_side": data.get("positionSide", ""),
-                        "time_in_force": data.get("timeInForce", "GTC"),
-                        "raw_data": json.dumps(data, cls=DecimalEncoder),
-                    }
-
-                    stmt = insert(OrderModel).values(**values)
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_xt_order_id_time_account"
-                    )
-                    await session.execute(stmt)
-                    saved += 1
-
-                await session.commit()
-        except Exception as e:
-            logger.error(f"WS: Failed to save REST orders: {e}")
-
-        return saved
-
-    # ========================================
-    # CHANGE DETECTION
-    # ========================================
-
-    def _has_data_changed(
-        self,
-        data: Dict[str, Any],
-        cache: Dict[str, str],
-        key_fn: Callable[[Dict[str, Any]], str],
-    ) -> bool:
-        """Generic change detection."""
-        try:
-            key = key_fn(data)
-        except Exception:
-            return True
-
-        if not key:
-            return True
-
-        if key == cache.get("key"):
-            return False
-
-        cache["key"] = key
-        return True
-
-    @staticmethod
-    def _order_key(data: Dict[str, Any]) -> str:
-        """Extract order cache key (order_id:status)."""
-        order_id = data.get("orderId") or data.get("order_id") or ""
-        status = data.get("state") or data.get("status") or ""
-        return f"{order_id}:{status}"
-
-    @staticmethod
-    def _trade_key(data: Dict[str, Any]) -> str:
-        """Extract trade cache key."""
-        trade_id = data.get("tradeId") or data.get("execId")
-        if trade_id:
-            return str(trade_id)
-        order_id = data.get("orderId") or data.get("order_id") or ""
-        timestamp = data.get("timestamp") or ""
-        return f"{order_id}_{timestamp}" if order_id else ""
-
-    @staticmethod
-    def _json_key(data: Dict[str, Any]) -> str:
-        """Extract JSON-based cache key."""
-        return json.dumps(data, sort_keys=True, cls=DecimalEncoder)
+        """Batch save REST orders (delegates to _save_order_batch)."""
+        return await self._save_order_batch(orders, from_rest=True)
 
     # ========================================
     # UTILITIES

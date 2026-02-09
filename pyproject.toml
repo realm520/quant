@@ -27,6 +27,7 @@ dependencies = [
     "aiohttp>=3.9",
     "pyxt>=0.1",
     "greenlet>=2.0",
+    "aiobotocore>=2.9.0",
 ]
 
 [project.optional-dependencies]

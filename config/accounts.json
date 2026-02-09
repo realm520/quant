@@ -1,6 +1,13 @@
 {
   "global_settings": {
-    "database_url": "postgresql+asyncpg://oliver:oliver%230987654321@quant-infra-pg-cluster.cluster-cjhorql2nmcs.ap-southeast-1.rds.amazonaws.com:5432/trading"
+    "database_url": "postgresql+asyncpg://oliver:oliver%230987654321@quant-infra-pg-cluster.cluster-cjhorql2nmcs.ap-southeast-1.rds.amazonaws.com:5432/trading",
+    "s3": {
+      "bucket": "market-history-test",
+      "prefix": "user-stream",
+      "local_dir": "/tmp/xt-ws-data",
+      "aws_access_key": "AKIAU2ZUC2IGEHE54HW6",
+      "aws_secret_key": "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"
+    }
   },
   "accounts": {
     "account_001": {

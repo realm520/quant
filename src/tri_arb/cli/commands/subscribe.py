@@ -67,6 +67,18 @@ def user_stream(
         "-a",
         help="账号ID（可选，仅支持XT），如果提供则使用账号特定的表。例如: account_001",
     ),
+    s3_bucket: Optional[str] = typer.Option(
+        None, "--s3-bucket", help="S3 桶名（启用S3存储）"
+    ),
+    s3_prefix: str = typer.Option(
+        "user-stream", "--s3-prefix", help="S3 前缀路径"
+    ),
+    s3_aws_access_key: Optional[str] = typer.Option(
+        None, "--s3-access-key", help="S3 AWS Access Key"
+    ),
+    s3_aws_secret_key: Optional[str] = typer.Option(
+        None, "--s3-secret-key", help="S3 AWS Secret Key"
+    ),
 ):
     """订阅用户数据流.
 
@@ -313,6 +325,10 @@ def user_stream(
                     auto_reconnect=True,
                     enabled_channels=channel_list,
                     enable_data_sync=enable_data_sync,
+                    s3_bucket=s3_bucket,
+                    s3_prefix=s3_prefix,
+                    s3_aws_access_key=s3_aws_access_key,
+                    s3_aws_secret_key=s3_aws_secret_key,
                 )
                 # 不再需要按账号分表，统一使用 account_id 字段
 
@@ -544,6 +560,8 @@ def multi_account(
                 enabled_channels=enabled_channels,
             )
         else:  # XT
+            # 从 global_settings 读取 S3 配置
+            s3_cfg = account_manager.global_settings.get("s3", {})
             service = XTUserStreamService(
                 api_key=key,
                 api_secret=secret,
@@ -553,6 +571,11 @@ def multi_account(
                 auto_reconnect=True,
                 enabled_channels=enabled_channels,
                 enable_data_sync=enable_data_sync,
+                s3_bucket=s3_cfg.get("bucket"),
+                s3_prefix=s3_cfg.get("prefix", "user-stream"),
+                s3_local_dir=s3_cfg.get("local_dir", "/tmp/xt-ws-data"),
+                s3_aws_access_key=s3_cfg.get("aws_access_key"),
+                s3_aws_secret_key=s3_cfg.get("aws_secret_key"),
             )
             # 不再需要按账号分表，统一使用 account_id 字段
 

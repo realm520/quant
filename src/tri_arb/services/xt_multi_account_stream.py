@@ -26,6 +26,11 @@ class XTMultiAccountStreamService:
         auto_reconnect: bool = True,
         display_format: str = "table",
         enable_data_sync: bool = True,
+        s3_bucket: Optional[str] = None,
+        s3_prefix: str = "user-stream",
+        s3_local_dir: str = "/tmp/xt-ws-data",
+        s3_aws_access_key: Optional[str] = None,
+        s3_aws_secret_key: Optional[str] = None,
     ):
         """初始化多账号订阅服务.
 
@@ -35,12 +40,22 @@ class XTMultiAccountStreamService:
             auto_reconnect: 是否自动重连
             display_format: 显示格式 (table, json)
             enable_data_sync: 是否启用数据同步
+            s3_bucket: S3 桶名
+            s3_prefix: S3 前缀路径
+            s3_local_dir: 本地缓冲目录
+            s3_aws_access_key: AWS Access Key
+            s3_aws_secret_key: AWS Secret Key
         """
         self.account_manager = account_manager
         self.db_manager = db_manager
         self.auto_reconnect = auto_reconnect
         self.display_format = display_format
         self.enable_data_sync = enable_data_sync
+        self.s3_bucket = s3_bucket
+        self.s3_prefix = s3_prefix
+        self.s3_local_dir = s3_local_dir
+        self.s3_aws_access_key = s3_aws_access_key
+        self.s3_aws_secret_key = s3_aws_secret_key
 
         # 账号服务实例字典
         self.account_services: Dict[str, XTUserStreamService] = {}
@@ -75,6 +90,11 @@ class XTMultiAccountStreamService:
             display_format=self.display_format,
             enabled_channels=enabled_channels,
             enable_data_sync=self.enable_data_sync,
+            s3_bucket=self.s3_bucket,
+            s3_prefix=self.s3_prefix,
+            s3_local_dir=self.s3_local_dir,
+            s3_aws_access_key=self.s3_aws_access_key,
+            s3_aws_secret_key=self.s3_aws_secret_key,
         )
 
         # 将账号ID附加到服务实例（不再需要 account_models）

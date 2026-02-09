@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""数据清理脚本：删除15天前的数据，保留最近15天的数据.
+"""数据清理脚本：删除旧数据，默认保留最近3天.
 
 此脚本用于定期清理数据库，释放存储空间。
 只删除超过保留期的数据，不会影响最近的数据。
@@ -71,26 +71,6 @@ TABLE_CONFIGS: List[Tuple[str, str, str]] = [
     ("xt_transfer_update", "transfer_time", "XT划转记录"),
     ("xt_order_history", "sync_time", "XT历史订单"),
     ("xt_connection", "start_time", "XT连接记录"),
-    
-    # Binance 表
-    ("binance_account_update", "event_time", "Binance账户更新"),
-    ("binance_order_update", "event_time", "Binance订单更新"),
-    ("binance_trade_update", "event_time", "Binance成交更新"),
-    
-    # OKX 表
-    ("okx_account_update", "update_time", "OKX账户更新"),
-    ("okx_position_update", "update_time", "OKX持仓更新"),
-    ("okx_order_update", "u_time", "OKX订单更新"),
-    ("okx_trade_update", "fill_time", "OKX成交更新"),
-    
-    # Gate.io 表
-    ("gate_account_update", "update_time", "Gate账户更新"),
-    ("gate_position_update", "update_time", "Gate持仓更新"),
-    ("gate_order_update", "update_time", "Gate订单更新"),
-    ("gate_trade_update", "create_time", "Gate成交更新"),
-    
-    # 持仓指标表
-    ("position_metrics", "timestamp", "持仓指标"),
 ]
 
 
@@ -177,16 +157,41 @@ async def cleanup_table(
         return 0, 0
 
 
+async def vacuum_tables(db_manager: DatabaseManager, table_names: list[str]) -> None:
+    """对多个表执行 VACUUM FULL 回收磁盘空间.
+    
+    使用 VACUUM FULL 重写整个表，彻底回收磁盘空间。
+    注意: VACUUM FULL 会锁表，但清理后数据量很少，锁定时间极短。
+    不能在事务中执行，需要使用 autocommit 模式的原始连接。
+    """
+    engine = db_manager.async_engine
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        
+        for table_name in table_names:
+            try:
+                logger.info(f"  VACUUM FULL {table_name} ...")
+                await conn.execute(text(f"VACUUM FULL {table_name}"))
+                logger.info(f"  ✅ VACUUM FULL {table_name} 完成")
+            except Exception as e:
+                logger.warning(f"  ⚠️ VACUUM FULL {table_name} 失败，尝试普通 VACUUM...")
+                try:
+                    await conn.execute(text(f"VACUUM (ANALYZE) {table_name}"))
+                    logger.info(f"  ✅ VACUUM {table_name} 完成（普通模式）")
+                except Exception as e2:
+                    logger.warning(f"  ⚠️ VACUUM {table_name} 也失败: {e2}")
+
+
 async def cleanup_all_tables(
     db_manager: DatabaseManager,
-    retention_days: int = 15,
+    retention_days: int = 3,
     dry_run: bool = False,
 ) -> Dict[str, Dict[str, int]]:
     """清理所有配置的表.
     
     Args:
         db_manager: 数据库管理器
-        retention_days: 保留天数（默认15天）
+        retention_days: 保留天数（默认3天）
         dry_run: 是否为模拟运行
     
     Returns:
@@ -203,6 +208,8 @@ async def cleanup_all_tables(
         "total_deleted": 0,
         "tables": {},
     }
+    
+    tables_with_deletes = []
     
     async with db_manager.session() as session:
         # 为每个表执行清理
@@ -227,6 +234,13 @@ async def cleanup_all_tables(
             # 如果不是模拟运行，提交事务
             if not dry_run:
                 await session.commit()
+                if deleted > 0:
+                    tables_with_deletes.append(table_name)
+    
+    # DELETE 后执行 VACUUM 回收磁盘空间
+    if not dry_run and tables_with_deletes:
+        logger.info(f"\n回收磁盘空间 (VACUUM {len(tables_with_deletes)} 个表)...")
+        await vacuum_tables(db_manager, tables_with_deletes)
     
     return stats
 
@@ -258,10 +272,10 @@ async def get_database_size(db_manager: DatabaseManager) -> Dict[str, float]:
 @app.command()
 def cleanup(
     days: int = typer.Option(
-        15,
+        3,
         "--days",
         "-d",
-        help="保留天数（默认15天）",
+        help="保留天数（默认3天）",
     ),
     dry_run: bool = typer.Option(
         False,

@@ -16,7 +16,16 @@ logger = get_logger(__name__)
 
 _DEFAULT_PORT = int(os.getenv("PROM_METRICS_PORT", "9500"))
 _SERVER_STARTED = False
+# When True, we skipped starting because another process already listens on the port.
+# In that case, "localhost connect" checks can be flaky under load; prefer bind-based checks.
+_SERVER_EXTERNAL = False
 _SERVER_LOCK = threading.Lock()
+
+# Metrics server mode:
+# - auto (default): current behavior (try to start; if port in use, assume external server)
+# - owner: always try to start (and fail fast if it can't)
+# - off: never start an HTTP server (still allows metrics updates in-process)
+_METRICS_SERVER_MODE = (os.getenv("PROM_METRICS_SERVER_MODE", "auto") or "auto").lower()
 
 # 跟踪每个账户的当前仓位标签，用于清除已平仓的仓位
 _position_labels_cache: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
@@ -171,32 +180,27 @@ def ensure_metrics_server(port: int | None = None) -> None:
     it will still mark as started to avoid repeated attempts. In this case,
     you may need to restart the process or check the logs for errors.
     """
-    global _SERVER_STARTED
-    if _SERVER_STARTED:
-        # Double-check if server is actually running by trying to connect
-        # This helps recover from cases where the server was marked as started
-        # but actually failed to start
-        target_port = port or _DEFAULT_PORT
-        try:
-            import socket
+    global _SERVER_STARTED, _SERVER_EXTERNAL
 
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            test_socket.settimeout(0.1)
-            result = test_socket.connect_ex(("localhost", target_port))
-            test_socket.close()
-            if result == 0:
-                # Port is open, server is likely running
-                return
-            else:
-                # Port is not open, but we marked as started - reset and retry
-                logger.warning(
-                    f"Metrics server was marked as started but port {target_port} is not accessible. "
-                    "Resetting state and retrying..."
-                )
-                _SERVER_STARTED = False
-        except Exception:
-            # If check fails, assume server might be running and return
-            pass
+    if _METRICS_SERVER_MODE == "off":
+        return
+
+    if _SERVER_STARTED:
+        # Double-check if server is actually running.
+        # If we previously detected an external listener, prefer bind-based checks:
+        # a connect() probe can intermittently fail under load/backlog pressure.
+        target_port = port or _DEFAULT_PORT
+        # If the port is still not available, someone is listening -> good enough.
+        if not _is_port_available(target_port):
+            return
+
+        # Otherwise, nothing is listening anymore. Reset and allow restart attempts.
+        logger.warning(
+            f"Metrics server was marked as started but port {target_port} is not accessible. "
+            "Resetting state and retrying..."
+        )
+        _SERVER_STARTED = False
+        _SERVER_EXTERNAL = False
 
     with _SERVER_LOCK:
         # Check again after acquiring lock
@@ -207,24 +211,30 @@ def ensure_metrics_server(port: int | None = None) -> None:
 
         # Check if port is already in use
         if not _is_port_available(target_port):
+            if _METRICS_SERVER_MODE == "owner":
+                raise OSError(
+                    f"PROM_METRICS_SERVER_MODE=owner but port {target_port} is already in use"
+                )
             logger.warning(
                 f"Prometheus metrics port {target_port} is already in use. "
                 "Skipping server start (assuming another process is providing metrics)."
             )
             # Still mark as started to avoid repeated checks
             _SERVER_STARTED = True
+            _SERVER_EXTERNAL = True
             return
 
         try:
             start_http_server(target_port)
             _SERVER_STARTED = True
+            _SERVER_EXTERNAL = False
             logger.info(f"Prometheus metrics server started on port {target_port}")
             # Verify server is actually accessible
             try:
                 import socket
 
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_socket.settimeout(0.5)
+                test_socket.settimeout(1.0)
                 result = test_socket.connect_ex(("localhost", target_port))
                 test_socket.close()
                 if result == 0:
@@ -248,6 +258,7 @@ def ensure_metrics_server(port: int | None = None) -> None:
             # Don't mark as started if we failed - allow retry on next call
             # This helps recover from transient errors
             _SERVER_STARTED = False
+            _SERVER_EXTERNAL = False
             raise
 
 

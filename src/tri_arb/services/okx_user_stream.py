@@ -32,7 +32,6 @@ from tri_arb.storage.okx_models import (
 )
 from tri_arb.storage.models import ConnectionStatus
 from tri_arb.exchanges.okx_perp import OKXPerpExchange
-from tri_arb.services.okx_reconciliation import OKXReconciliationService
 from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 
 logger = get_logger(__name__)
@@ -161,21 +160,12 @@ class OKXUserStreamService:
         # 后台任务
         self._monitor_task: Optional[asyncio.Task] = None
 
-        # 对账服务（按需对账，仅在重连时触发）
-        self.reconciliation_service = OKXReconciliationService(
-            exchange=self.exchange,
-            db_manager=db_manager,
-            poll_interval=0,  # 只在断线恢复时手动触发
-            lookback_window=7200,  # 默认回溯2小时
-        )
-
         logger.info(
             "OKXUserStreamService initialized",
             display_format=display_format,
             inst_type=inst_type,
             skip_duplicate_updates=skip_duplicate_updates,
             enabled_channels=list(self.enabled_channels),
-            reconciliation_mode="on_reconnect",
         )
 
     def _generate_signature(
@@ -1728,23 +1718,7 @@ class OKXUserStreamService:
                             exc_info=True,
                         )
 
-                    lookback = max(disconnect_duration + 300, 600)
-                    try:
-                        await self.reconciliation_service.reconcile_once(
-                            lookback_seconds=lookback
-                        )
-                        logger.info(
-                            "OKX reconciliation completed after reconnect",
-                            lookback_seconds=lookback,
-                        )
-                    except Exception as recon_error:
-                        logger.error(
-                            "OKX reconciliation failed after reconnect",
-                            error=str(recon_error),
-                            exc_info=True,
-                        )
-
-                    # 清除断线时间记录
+                    # 清除断线时间记录（对账模块已移除）
                     self.disconnect_time = None
 
                 # 启动后台监控任务

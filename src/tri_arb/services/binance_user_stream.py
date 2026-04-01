@@ -24,7 +24,6 @@ from tri_arb.storage.models import (
     TradeUpdate,
     ConnectionStatus,
 )
-from tri_arb.services.binance_reconciliation import BinanceReconciliationService
 from tri_arb.metrics.prometheus import (
     ensure_metrics_server,
     update_order_metrics,
@@ -83,22 +82,13 @@ class BinanceUserStreamService:
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.is_running = False
 
-        # 对账服务（按需对账，仅在重连时触发）
-        self.reconciliation_service = BinanceReconciliationService(
-            exchange=self.exchange,
-            db_manager=db_manager,
-            poll_interval=60,  # 保留参数但不启动定时任务
-            lookback_window=3600,  # 重连时回溯1小时
-        )
-
-        # 记录断线时间，用于重连后计算回溯时间
+        # 记录断线时间（重连后可做补数等；对账模块已移除）
         self.disconnect_time: Optional[datetime] = None
 
         logger.info(
             "BinanceUserStreamService initialized",
             display_format=display_format,
             enabled_channels=list(self.enabled_channels),
-            reconciliation_mode="on_reconnect",
         )
 
     async def get_listen_key(self) -> str:
@@ -1282,34 +1272,15 @@ class BinanceUserStreamService:
                 # 更新连接状态
                 await self.update_connection_status(is_connected=True)
 
-                # 如果是重连（有断线时间记录），则触发对账
+                # 重连后清除断线时间（不再执行 REST 对账）
                 if self.disconnect_time is not None:
                     disconnect_duration = int(
                         (datetime.now() - self.disconnect_time).total_seconds()
                     )
                     logger.info(
-                        "Reconnected after disconnection, triggering reconciliation",
+                        "Reconnected after disconnection (reconciliation disabled)",
                         disconnect_duration=disconnect_duration,
                     )
-
-                    try:
-                        # 回溯时间为断线时长 + 额外缓冲时间（300秒）
-                        lookback = max(disconnect_duration + 300, 600)  # 至少回溯10分钟
-                        await self.reconciliation_service.reconcile_once(
-                            lookback_seconds=lookback
-                        )
-                        logger.info(
-                            "Reconnection reconciliation completed",
-                            lookback_seconds=lookback,
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Reconnection reconciliation failed",
-                            error=str(e),
-                            exc_info=True,
-                        )
-
-                    # 清除断线时间记录
                     self.disconnect_time = None
 
                 # 接收消息循环

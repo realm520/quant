@@ -31,7 +31,6 @@ from tri_arb.storage.gate_models import (
 )
 from tri_arb.storage.models import ConnectionStatus
 from tri_arb.exchanges.gate_perp import GatePerpExchange
-from tri_arb.services.gate_reconciliation import GateReconciliationService
 from tri_arb.metrics.prometheus import ensure_metrics_server, update_order_metrics
 
 logger = get_logger(__name__)
@@ -104,19 +103,10 @@ class GateUserStreamService:
         self.last_message_time: Optional[datetime] = None
         self.disconnect_time: Optional[datetime] = None
 
-        # 对账服务（按需对账，仅在重连时触发）
-        self.reconciliation_service = GateReconciliationService(
-            exchange=self.exchange,
-            db_manager=db_manager,
-            poll_interval=60,  # 保留参数但不启动定时任务
-            lookback_window=3600,  # 重连时回溯1小时
-        )
-
         logger.info(
             "GateUserStreamService initialized",
             display_format=display_format,
             enabled_channels=list(self.enabled_channels),
-            reconciliation_mode="on_reconnect",
         )
 
     def _has_account_changed(self, data: dict) -> bool:
@@ -1304,28 +1294,9 @@ class GateUserStreamService:
                         (datetime.now() - disconnect_time).total_seconds()
                     )
                     logger.info(
-                        "Reconnected after disconnection, triggering order data reconciliation",
+                        "Reconnected after disconnection (reconciliation disabled)",
                         disconnect_duration=disconnect_duration,
                     )
-
-                    try:
-                        # 回溯时间为断线时长 + 额外缓冲时间（300秒）
-                        lookback = max(disconnect_duration + 300, 600)  # 至少回溯10分钟
-                        await self.reconciliation_service.reconcile_once(
-                            lookback_seconds=lookback
-                        )
-                        logger.info(
-                            "Gate reconnection order data reconciliation completed",
-                            lookback_seconds=lookback,
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Gate reconnection order data reconciliation failed",
-                            error=str(e),
-                            exc_info=True,
-                        )
-
-                    # 清除断线时间记录
                     self.disconnect_time = None
 
                 # 接收消息循环

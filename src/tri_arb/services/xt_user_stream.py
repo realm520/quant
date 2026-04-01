@@ -150,6 +150,8 @@ class XTUserStreamService:
             "trade": {"overflow_count": 0, "last_log": None},
             "position": {"overflow_count": 0, "last_log": None},
         }
+        self._queue_warning_threshold = 0.5
+        self._queue_critical_threshold = 0.8
 
         # Data statistics for periodic reporting
         self._data_stats = {
@@ -189,7 +191,7 @@ class XTUserStreamService:
     def _check_queue_health(self, queue: AsyncBoundedQueue, name: str, maxsize: int) -> None:
         """Log queue pressure warnings (rate-limited to once per 60s)."""
         size = queue.qsize()
-        if size < maxsize * 0.5:
+        if size < maxsize * self._queue_warning_threshold:
             return
         now = datetime.utcnow()
         last = self._queue_stats[name]["last_log"]
@@ -197,7 +199,9 @@ class XTUserStreamService:
             return
         self._queue_stats[name]["last_log"] = now
         pct = size / maxsize
-        level = logger.error if pct >= 0.8 else logger.warning
+        level = (
+            logger.error if pct >= self._queue_critical_threshold else logger.warning
+        )
         level(f"⚠️ {name} queue: {size}/{maxsize} ({pct:.0%})")
 
     # ========================================

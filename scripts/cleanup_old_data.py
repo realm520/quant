@@ -625,13 +625,7 @@ def _scheduler_loop(
     
     logger.info(f"定时任务已启动，将在每天 {schedule_time} 执行清理（保留 {days} 天数据）")
     
-    # 设置信号处理，优雅退出
-    def signal_handler(signum, frame):
-        logger.info(f"收到信号 {signum}，正在停止定时任务...")
-        _scheduler_running = False
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # 注意：signal.signal 只能在主线程调用，故注册逻辑放在 _start_scheduler
     
     while _scheduler_running:
         try:
@@ -715,6 +709,15 @@ def _start_scheduler(
         logger.info(f"保留天数: {days} 天")
         logger.info(f"模拟运行: {'是' if dry_run else '否'}")
         logger.info(f"仅清理订单: {'是' if only_orders else '否'}")
+        
+        def _request_shutdown(signum, frame) -> None:
+            global _scheduler_running
+            logger.info(f"收到信号 {signum}，正在停止定时任务...")
+            _scheduler_running = False
+
+        # 仅在主线程注册（worker 线程里调用 signal 会报错；PM2 stop 会发 SIGTERM）
+        signal.signal(signal.SIGINT, _request_shutdown)
+        signal.signal(signal.SIGTERM, _request_shutdown)
         
         # 等待线程结束（保持主线程运行）
         try:

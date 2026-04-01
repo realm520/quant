@@ -2,7 +2,12 @@
 """数据清理脚本：删除旧数据，默认保留最近3天.
 
 此脚本用于定期清理数据库，释放存储空间。
+默认会清理各类「流式推送 / REST 快照 / 多账号分表」中的历史行，不仅限于订单表。
 只删除超过保留期的数据，不会影响最近的数据。
+
+未纳入清理的表（避免影响在线状态）：
+- connection_status（WebSocket 连接与断线补全指针）
+- scheduled_queries（定时任务配置与统计，通常体积极小）
 
 支持两种模式：
 1. 立即执行模式（默认）：执行一次清理后退出
@@ -36,7 +41,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Iterable
 
 import typer
 from sqlalchemy import text
@@ -59,10 +64,10 @@ _scheduler_running = False
 _scheduler_lock = threading.Lock()
 
 
-# 定义需要清理的表及其时间字段配置
-# 格式: (表名, 时间字段名, 说明)
-TABLE_CONFIGS: List[Tuple[str, str, str]] = [
-    # XT WebSocket 表
+# 表清理配置
+# 静态表配置格式: (表名, 时间字段名, 说明)
+STATIC_TABLE_CONFIGS: List[Tuple[str, str, str]] = [
+    # ---- XT WebSocket（单表）----
     ("xt_account_update", "update_time", "XT账户更新"),
     ("xt_spot_update", "update_time", "XT现货更新"),
     ("xt_position_update", "update_time", "XT持仓更新"),
@@ -71,7 +76,98 @@ TABLE_CONFIGS: List[Tuple[str, str, str]] = [
     ("xt_transfer_update", "transfer_time", "XT划转记录"),
     ("xt_order_history", "sync_time", "XT历史订单"),
     ("xt_connection", "start_time", "XT连接记录"),
+    # ---- Binance WebSocket（单表）----
+    ("binance_account_update", "event_time", "Binance账户/持仓更新"),
+    ("binance_order_update", "event_time", "Binance订单更新"),
+    ("binance_trade_update", "event_time", "Binance成交更新"),
+    # ---- Gate WebSocket ----
+    ("gate_account_update", "update_time", "Gate账户更新"),
+    ("gate_position_update", "update_time", "Gate持仓更新"),
+    ("gate_order_update", "update_time", "Gate订单更新"),
+    ("gate_trade_update", "create_time", "Gate成交更新"),
+    # ---- OKX WebSocket ----
+    ("okx_account_update", "update_time", "OKX账户更新"),
+    ("okx_position_update", "update_time", "OKX持仓更新"),
+    ("okx_order_update", "u_time", "OKX订单更新"),
+    ("okx_trade_update", "fill_time", "OKX成交更新"),
+    # ---- 通用 REST 聚合表 ----
+    ("rest_balances", "query_time", "REST余额快照"),
+    ("rest_positions", "query_time", "REST持仓快照"),
+    ("rest_orders", "query_time", "REST订单快照"),
+    # ---- XT REST（与 exchange_rest 的 xt 快照并行存在的表名）----
+    ("xt_account_snapshot", "query_time", "XT账户余额快照"),
+    ("xt_position_snapshot", "query_time", "XT持仓快照"),
+    # ---- 各所 REST 快照（exchange_rest_models）----
+    ("binance_account_snapshot", "query_time", "Binance余额REST快照"),
+    ("binance_position_snapshot", "query_time", "Binance持仓REST快照"),
+    ("binance_order_snapshot", "query_time", "Binance订单REST快照"),
+    ("xt_order_snapshot", "query_time", "XT订单REST快照"),
+    ("okx_account_snapshot", "query_time", "OKX余额REST快照"),
+    ("okx_position_snapshot", "query_time", "OKX持仓REST快照"),
+    ("okx_order_snapshot", "query_time", "OKX订单REST快照"),
+    ("gate_account_snapshot", "query_time", "Gate余额REST快照"),
+    ("gate_position_snapshot", "query_time", "Gate持仓REST快照"),
+    ("gate_order_snapshot", "query_time", "Gate订单REST快照"),
+    # ---- 定时计算的时序指标 ----
+    ("position_metrics", "timestamp", "持仓指标时序"),
+    # ---- ListenKey 历史（体量通常不大，可一并收敛）----
+    ("listen_keys", "created_at", "Binance ListenKey 记录"),
 ]
+
+# 动态表模式（多账号表），格式: (like_pattern, 时间字段名, 说明)
+TABLE_PATTERN_CONFIGS: List[Tuple[str, str, str]] = [
+    ("xt_account_updates_%", "update_time", "XT账户更新（多账号表）"),
+    ("xt_spot_updates_%", "update_time", "XT现货更新（多账号表）"),
+    ("xt_position_updates_%", "update_time", "XT持仓更新（多账号表）"),
+    ("xt_order_updates_%", "update_time", "XT订单更新（多账号表）"),
+    ("xt_trade_updates_%", "update_time", "XT成交更新（多账号表）"),
+    ("binance_account_updates_%", "event_time", "Binance账户更新（多账号表）"),
+    ("binance_order_updates_%", "event_time", "Binance订单更新（多账号表）"),
+    ("binance_trade_updates_%", "event_time", "Binance成交更新（多账号表）"),
+]
+
+
+def _is_safe_identifier(value: str) -> bool:
+    """Very small guardrail: only allow [a-zA-Z0-9_]."""
+    if not value:
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in value)
+
+
+async def discover_tables_by_patterns(
+    session: AsyncSession, patterns: Iterable[Tuple[str, str, str]]
+) -> list[Tuple[str, str, str]]:
+    """Discover tables in public schema by LIKE patterns."""
+    discovered: list[Tuple[str, str, str]] = []
+    for like_pattern, time_column, description in patterns:
+        result = await session.execute(
+            text(
+                """
+                SELECT tablename
+                FROM pg_catalog.pg_tables
+                WHERE schemaname = 'public' AND tablename LIKE :pattern
+                ORDER BY tablename
+                """
+            ),
+            {"pattern": like_pattern},
+        )
+        for (table_name,) in result.fetchall():
+            # Only accept safe identifiers
+            if _is_safe_identifier(table_name) and _is_safe_identifier(time_column):
+                discovered.append((table_name, time_column, description))
+    return discovered
+
+
+async def build_table_configs(session: AsyncSession) -> list[Tuple[str, str, str]]:
+    """Build final table config list (static + discovered patterns)."""
+    configs = list(STATIC_TABLE_CONFIGS)
+    discovered = await discover_tables_by_patterns(session, TABLE_PATTERN_CONFIGS)
+    # Avoid duplicates if a static table name matches a pattern
+    existing = {t for (t, _, _) in configs}
+    for table_name, time_column, desc in discovered:
+        if table_name not in existing:
+            configs.append((table_name, time_column, desc))
+    return configs
 
 
 async def get_table_row_count(session: AsyncSession, table_name: str) -> int:
@@ -106,6 +202,12 @@ async def cleanup_table(
         (删除前的行数, 删除的行数)
     """
     try:
+        if not _is_safe_identifier(table_name) or not _is_safe_identifier(time_column):
+            logger.warning(
+                f"跳过不安全的表/字段名: table={table_name!r}, column={time_column!r}"
+            )
+            return 0, 0
+
         # 获取删除前的行数
         total_before = await get_table_row_count(session, table_name)
         
@@ -186,6 +288,8 @@ async def cleanup_all_tables(
     db_manager: DatabaseManager,
     retention_days: int = 3,
     dry_run: bool = False,
+    *,
+    only_orders: bool = False,
 ) -> Dict[str, Dict[str, int]]:
     """清理所有配置的表.
     
@@ -212,8 +316,15 @@ async def cleanup_all_tables(
     tables_with_deletes = []
     
     async with db_manager.session() as session:
+        table_configs = await build_table_configs(session)
+        if only_orders:
+            table_configs = [
+                (t, c, d)
+                for (t, c, d) in table_configs
+                if ("order" in t.lower()) or ("订单" in (d or ""))
+            ]
         # 为每个表执行清理
-        for table_name, time_column, description in TABLE_CONFIGS:
+        for table_name, time_column, description in table_configs:
             logger.info(f"\n处理表: {table_name} ({description})")
             
             before, deleted = await cleanup_table(
@@ -306,6 +417,11 @@ def cleanup(
         "-t",
         help="定时任务执行时间（格式: HH:MM，默认: 02:00）",
     ),
+    only_orders: bool = typer.Option(
+        False,
+        "--only-orders",
+        help="仅清理订单相关表（默认关闭：清理全部已配置的业务流水与快照表）",
+    ),
 ) -> None:
     """清理数据库中超过保留期的旧数据.
     
@@ -336,10 +452,10 @@ def cleanup(
     """
     if schedule:
         # 启动定时任务模式
-        _start_scheduler(days, dry_run, database_url, config, schedule_time)
+        _start_scheduler(days, dry_run, database_url, config, schedule_time, only_orders)
     else:
         # 立即执行清理
-        asyncio.run(_cleanup_async(days, dry_run, database_url, config))
+        asyncio.run(_cleanup_async(days, dry_run, database_url, config, only_orders))
 
 
 def load_database_url_from_config(config_path: str = "config/accounts.json") -> str | None:
@@ -375,6 +491,7 @@ async def _cleanup_async(
     dry_run: bool,
     database_url: str | None,
     config_path: str | None,
+    only_orders: bool = False,
 ) -> None:
     try:
         # 初始化数据库管理器
@@ -408,6 +525,7 @@ async def _cleanup_async(
             db_manager=db_manager,
             retention_days=days,
             dry_run=dry_run,
+            only_orders=only_orders,
         )
         
         # 打印统计信息
@@ -450,14 +568,24 @@ async def _cleanup_async(
 @app.command()
 def list_tables() -> None:
     """列出所有将被清理的表."""
-    logger.info("配置的数据清理表列表:")
+    logger.info("配置的数据清理表列表（静态 + 动态表模式）:")
     logger.info("=" * 80)
-    
-    for i, (table_name, time_column, description) in enumerate(TABLE_CONFIGS, 1):
-        logger.info(f"{i:2d}. {table_name:30s} | 时间字段: {time_column:20s} | {description}")
-    
+
+    for i, (table_name, time_column, description) in enumerate(STATIC_TABLE_CONFIGS, 1):
+        logger.info(
+            f"{i:2d}. {table_name:30s} | 时间字段: {time_column:20s} | {description}"
+        )
+
+    logger.info("-" * 80)
+    for i, (pattern, time_column, description) in enumerate(TABLE_PATTERN_CONFIGS, 1):
+        logger.info(
+            f"P{i:02d}. {pattern:30s} | 时间字段: {time_column:20s} | {description}"
+        )
+
     logger.info("=" * 80)
-    logger.info(f"共 {len(TABLE_CONFIGS)} 个表")
+    logger.info(
+        "提示：动态表会在 cleanup 运行时从数据库自动发现并清理（例如 xt_order_updates_*）。"
+    )
 
 
 @app.command()
@@ -472,6 +600,7 @@ def _scheduler_loop(
     database_url: Optional[str],
     config: Optional[str],
     schedule_time: str,
+    only_orders: bool,
 ) -> None:
     """定时任务循环.
     
@@ -528,7 +657,7 @@ def _scheduler_loop(
             # 如果任务还在运行，执行清理
             if _scheduler_running:
                 logger.info(f"开始执行定时清理任务（{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}）")
-                asyncio.run(_cleanup_async(days, dry_run, database_url, config))
+                asyncio.run(_cleanup_async(days, dry_run, database_url, config, only_orders))
                 logger.info("定时清理任务执行完成，等待下次执行...")
         
         except KeyboardInterrupt:
@@ -554,6 +683,7 @@ def _start_scheduler(
     database_url: Optional[str],
     config: Optional[str],
     schedule_time: str,
+    only_orders: bool,
 ) -> None:
     """启动定时任务.
     
@@ -574,7 +704,7 @@ def _start_scheduler(
         _scheduler_running = True
         _scheduler_thread = threading.Thread(
             target=_scheduler_loop,
-            args=(days, dry_run, database_url, config, schedule_time),
+            args=(days, dry_run, database_url, config, schedule_time, only_orders),
             daemon=False,
             name="CleanupScheduler"
         )
@@ -584,6 +714,7 @@ def _start_scheduler(
         logger.info(f"执行时间: 每天 {schedule_time}")
         logger.info(f"保留天数: {days} 天")
         logger.info(f"模拟运行: {'是' if dry_run else '否'}")
+        logger.info(f"仅清理订单: {'是' if only_orders else '否'}")
         
         # 等待线程结束（保持主线程运行）
         try:
